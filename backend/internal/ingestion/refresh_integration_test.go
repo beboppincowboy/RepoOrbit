@@ -499,3 +499,65 @@ func TestPrivateCommitWithheldWhenUnsavedInstallationIsRemovedAfterFetch(t *test
 		t.Fatal("private metadata committed after an unrelated-looking installation removal")
 	}
 }
+
+// A deselection that is in flight (uncommitted) while the refresh commits cannot slip between the eligibility check
+// and the metadata write: the commit takes a share lock on the credential owner's selection row and, when it cannot
+// get it at once, defers instead of waiting (which is also what keeps it out of any lock-wait cycle).
+func TestInFlightDeselectionWithholdsTheCommit(t *testing.T) {
+	e := setup(t)
+	uid := e.signIn("alice")
+	id := e.gh.AddRepo("bob", "tool", false)
+	e.store(uid, id, false)
+	ctx := context.Background()
+	var tx2 pgx.Tx
+	f := txFence{pool: e.pool, before: func() {
+		if tx2 != nil {
+			return // later commits of this run (status recording) must not start a second deselection
+		}
+		var err error
+		if tx2, err = e.pool.Begin(ctx); err != nil {
+			t.Error(err)
+			return
+		}
+		if _, err = tx2.Exec(ctx, "UPDATE selections SET deselected_at = now()"); err != nil {
+			t.Error(err)
+		}
+	}}
+	var d *jobs.Defer
+	err := e.run(f, id)
+	if tx2 != nil {
+		defer tx2.Rollback(ctx)
+	}
+	if !errors.As(err, &d) {
+		t.Fatalf("err = %v, want *jobs.Defer", err)
+	}
+	if e.name(id) != "stale/name" {
+		t.Fatal("metadata committed under an in-flight deselection")
+	}
+	if ok, _ := e.syncRow(id); ok {
+		t.Fatal("success recorded under an in-flight deselection")
+	}
+}
+
+// The credential's owner deselects while another user still follows: the refresh used the owner's credential, so it
+// must not commit under it (pick again), and nothing is written.
+func TestOwnerDeselectionWithOtherFollowerStillWithholdsTheCommit(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	bob := e.signIn("bob")
+	id := e.gh.AddRepo("carol", "tool", false)
+	e.store(alice, id, false)
+	if _, err := e.pool.Exec(context.Background(), `INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES ($1, $2, 'starred', now() + interval '1 second')`, bob, id); err != nil {
+		t.Fatal(err)
+	}
+	f := txFence{pool: e.pool, before: func() {
+		_, _ = e.pool.Exec(context.Background(), "UPDATE selections SET deselected_at = now() WHERE user_id = $1", alice)
+	}}
+	var d *jobs.Defer
+	if err := e.run(f, id); !errors.As(err, &d) {
+		t.Fatalf("err = %v, want *jobs.Defer", err)
+	}
+	if e.name(id) != "stale/name" {
+		t.Fatal("metadata committed under a credential whose owner stopped following")
+	}
+}
