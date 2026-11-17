@@ -102,3 +102,9 @@ type User struct {
 	RefreshExpiresAt pgtype.Timestamptz
 	CreatedAt        pgtype.Timestamptz
 }
+
+type WebhookDelivery struct {
+	DeliveryID string
+	Event      string
+	ReceivedAt pgtype.Timestamptz
+}
