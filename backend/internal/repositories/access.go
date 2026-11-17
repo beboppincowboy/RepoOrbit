@@ -42,7 +42,7 @@ type Service struct {
 	AppURL     string // browser-facing origin for redirects
 	InstallURL string // where users install the GitHub App; empty when no app slug is configured
 	// OnSelect runs inside the selection transaction after the repository and selection rows are written, so
-	// durable scheduling (ingestion.RequestRefresh) commits or rolls back with the selection. Nil schedules nothing.
+	// durable scheduling (ingestion.RequestMetadataRefresh) commits or rolls back with the selection. Nil schedules nothing.
 	OnSelect func(ctx context.Context, tx pgx.Tx, repoID int64) error
 
 	mu      sync.Mutex
@@ -148,7 +148,7 @@ func (s *Service) takeFence(ctx context.Context, userID int64) (accessfence.Snap
 	if s.Pool == nil {
 		return accessfence.Snapshot{}, nil
 	}
-	return accessfence.TakeForUser(ctx, s.Pool, userID)
+	return accessfence.TakeSnapshotForUser(ctx, s.Pool, userID)
 }
 
 // fenceHolds reports whether no authorization change happened since the cached set was fetched. Fails closed.

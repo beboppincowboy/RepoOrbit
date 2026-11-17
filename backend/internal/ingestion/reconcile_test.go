@@ -81,7 +81,7 @@ func TestStarHandlerFailurePathsCommitNothingAndSpendNoAttempt(t *testing.T) {
 		check func(error) bool
 	}{
 		{"no credential pauses", &fakeStars{err: ErrNoCredential}, func(err error) bool { var p *jobs.Pause; return errors.As(err, &p) }},
-		{"rate limit defers", &fakeStars{res: StarRefresh{RetryAt: &retry}}, func(err error) bool { var d *jobs.Defer; return errors.As(err, &d) && d.Until.Equal(retry) }},
+		{"rate limit defers", &fakeStars{res: StarRefresh{RetryAt: &retry}}, func(err error) bool { var d *jobs.Defer; return errors.As(err, &d) && d.RetryAt.Equal(retry) }},
 		{"failed refresh retries ordinarily", &fakeStars{}, func(err error) bool {
 			var p *jobs.Pause
 			var d *jobs.Defer

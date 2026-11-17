@@ -180,7 +180,7 @@ func TestSecurityBumpFailureIsNotAcknowledged(t *testing.T) {
 	}
 }
 
-// Real fence: skipped until U3b merges. A webhook after Take (revocation during a fetch) makes Valid false,
+// Real fence: skipped until U3b merges. A webhook after TakeSnapshot (revocation during a fetch) makes Valid false,
 // even for an installation "created" event (delayed events cannot grant, and still invalidate).
 func TestRealFenceBumpBlocksInFlightCommit(t *testing.T) {
 	_, pool := testutil.Database(t)
@@ -202,7 +202,7 @@ func TestRealFenceBumpBlocksInFlightCommit(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		s, err := accessfence.Take(ctx, tx, uid, repoID)
+		s, err := accessfence.TakeSnapshot(ctx, tx, uid, repoID)
 		if notImplemented(err) {
 			t.Skip("needs U3b: " + err.Error())
 		}
@@ -217,7 +217,7 @@ func TestRealFenceBumpBlocksInFlightCommit(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		ok, err := s.Valid(ctx, tx)
+		ok, err := s.StillCurrent(ctx, tx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -257,7 +257,7 @@ func TestRealRefreshOnlyForSelectedRepositories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = RequestRefresh(ctx, tx, 42)
+	_, err = RequestMetadataRefresh(ctx, tx, 42)
 	tx.Rollback(ctx)
 	if notImplemented(err) {
 		t.Skip("needs U3a/U3b: " + err.Error())

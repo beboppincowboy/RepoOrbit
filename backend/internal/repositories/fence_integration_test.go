@@ -27,7 +27,7 @@ func TestCachedPrivateReadHonorsFenceBump(t *testing.T) {
 		t.Fatal("cache should still serve inside the TTL without a bump")
 	}
 	tx, _ := e.pool.Begin(ctx)
-	if err := accessfence.Bump(ctx, tx, accessfence.ScopeInstallation, 9); err != nil {
+	if err := accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeInstallation, 9); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -139,7 +139,7 @@ func waitFor(t *testing.T, cond func() bool) {
 
 func TestConcurrentClaimsNeverShareAJob(t *testing.T) {
 	e := setup(t)
-	e.w.Register(kind, func(context.Context, Job, Fence) error { return nil })
+	e.w.Register(kind, func(context.Context, Job, ClaimFence) error { return nil })
 	const n = 30
 	for i := 0; i < n; i++ {
 		e.enqueue("k" + strconv.Itoa(i))
@@ -183,7 +183,7 @@ func TestEnqueueSemantics(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{})
 	var first atomic.Bool
-	e.w.Register(kind, func(ctx context.Context, j Job, f Fence) error {
+	e.w.Register(kind, func(ctx context.Context, j Job, f ClaimFence) error {
 		if j.Key == "run" && first.CompareAndSwap(false, true) {
 			close(started)
 			<-release
@@ -240,7 +240,7 @@ func TestReclaimRejectsStaleWorkerEffects(t *testing.T) {
 	effect := func(v string) func(tx pgx.Tx) error {
 		return func(tx pgx.Tx) error { _, err := tx.Exec(ctx, `INSERT INTO effects VALUES ($1)`, v); return err }
 	}
-	e.w.Register(kind, func(ctx context.Context, j Job, f Fence) error {
+	e.w.Register(kind, func(ctx context.Context, j Job, f ClaimFence) error {
 		if j.Generation == 1 {
 			started <- j
 			<-release
@@ -289,7 +289,7 @@ func TestStaleFailureCannotDisturbNewClaim(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	hold := make(chan struct{})
-	e.w.Register(kind, func(ctx context.Context, j Job, f Fence) error {
+	e.w.Register(kind, func(ctx context.Context, j Job, f ClaimFence) error {
 		if j.Generation == 1 {
 			close(started)
 			<-release
@@ -314,7 +314,7 @@ func TestStaleFailureCannotDisturbNewClaim(t *testing.T) {
 func TestExecutionTimeLimitFailsTheAttempt(t *testing.T) {
 	e := setup(t)
 	e.enqueue("t")
-	e.w.Register(kind, func(ctx context.Context, j Job, f Fence) error {
+	e.w.Register(kind, func(ctx context.Context, j Job, f ClaimFence) error {
 		<-ctx.Done() // a stuck handler that honors cancellation
 		return ctx.Err()
 	})
@@ -341,7 +341,7 @@ func TestTransientFailuresExhaustThenStayDeadUntilRequeue(t *testing.T) {
 	ctx := context.Background()
 	var fail atomic.Bool
 	fail.Store(true)
-	e.w.Register(kind, func(context.Context, Job, Fence) error {
+	e.w.Register(kind, func(context.Context, Job, ClaimFence) error {
 		if fail.Load() {
 			return errors.New("boom")
 		}
@@ -372,7 +372,7 @@ func TestTransientFailuresExhaustThenStayDeadUntilRequeue(t *testing.T) {
 		t.Fatal("dead enqueue should keep pending intent")
 	}
 	fail.Store(false)
-	e.must(e.tx(func(tx pgx.Tx) error { return Requeue(ctx, tx, kind, "x", e.clk.Now()) }))
+	e.must(e.tx(func(tx pgx.Tx) error { return RequeueDead(ctx, tx, kind, "x", e.clk.Now()) }))
 	e.want("x", "queued", 0) // fresh attempt budget
 	if !e.runOnce() {
 		t.Fatal("requeued job did not run")
@@ -380,7 +380,7 @@ func TestTransientFailuresExhaustThenStayDeadUntilRequeue(t *testing.T) {
 	e.gone("x")
 	// Requeue of a job that is not dead reports it instead of silently doing nothing
 	e.enqueue("y")
-	err := e.tx(func(tx pgx.Tx) error { return Requeue(ctx, tx, kind, "y", e.clk.Now()) })
+	err := e.tx(func(tx pgx.Tx) error { return RequeueDead(ctx, tx, kind, "y", e.clk.Now()) })
 	if !errors.Is(err, ErrNotDead) {
 		t.Fatalf("Requeue of a queued job = %v, want ErrNotDead", err)
 	}
@@ -388,7 +388,7 @@ func TestTransientFailuresExhaustThenStayDeadUntilRequeue(t *testing.T) {
 
 func TestCrashLoopExhaustsAttempts(t *testing.T) {
 	e := setup(t)
-	e.w.Register(kind, func(context.Context, Job, Fence) error { return nil })
+	e.w.Register(kind, func(context.Context, Job, ClaimFence) error { return nil })
 	e.enqueue("c")
 	for i := 0; i < 5; i++ {
 		if _, found, err := e.w.claim(context.Background()); err != nil || !found {
@@ -406,10 +406,10 @@ func TestWaitsDoNotConsumeAttemptsAndPermanentIsDead(t *testing.T) {
 	e := setup(t)
 	mode := "defer"
 	var until time.Time
-	e.w.Register(kind, func(context.Context, Job, Fence) error {
+	e.w.Register(kind, func(context.Context, Job, ClaimFence) error {
 		switch mode {
 		case "defer":
-			return &Defer{Until: until, Reason: "rate limited"}
+			return &Defer{RetryAt: until, Reason: "rate limited"}
 		case "pause":
 			return &Pause{Reason: "no credential"}
 		}
@@ -423,7 +423,7 @@ func TestWaitsDoNotConsumeAttemptsAndPermanentIsDead(t *testing.T) {
 		}
 		e.want("d", "queued", 0)
 		if e.runOnce() {
-			t.Fatal("deferred job ran before Until")
+			t.Fatal("deferred job ran before RetryAt")
 		}
 		e.clk.Advance(11 * time.Minute)
 	}
@@ -456,7 +456,7 @@ func TestGracefulShutdown(t *testing.T) {
 			started := make(chan struct{})
 			finish := make(chan struct{})
 			var once sync.Once
-			e.w.Register(kind, func(ctx context.Context, j Job, f Fence) error {
+			e.w.Register(kind, func(ctx context.Context, j Job, f ClaimFence) error {
 				once.Do(func() { close(started) })
 				if tc.stuck {
 					<-ctx.Done()
@@ -493,7 +493,7 @@ func TestGracefulShutdown(t *testing.T) {
 func TestRunProcessesQueuedWork(t *testing.T) {
 	e := setup(t)
 	var n atomic.Int32
-	e.w.Register(kind, func(context.Context, Job, Fence) error { n.Add(1); return nil })
+	e.w.Register(kind, func(context.Context, Job, ClaimFence) error { n.Add(1); return nil })
 	for _, k := range []string{"1", "2", "3"} {
 		e.enqueue(k)
 	}
