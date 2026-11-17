@@ -78,31 +78,6 @@ func (q *Queries) ListEligibleSelectors(ctx context.Context, repositoryID int64)
 	return items, nil
 }
 
-const listRefreshableRepositoryIDs = `-- name: ListRefreshableRepositoryIDs :many
-SELECT DISTINCT s.repository_id FROM selections s JOIN repositories r ON r.id = s.repository_id
-WHERE s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false ORDER BY s.repository_id
-`
-
-func (q *Queries) ListRefreshableRepositoryIDs(ctx context.Context) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listRefreshableRepositoryIDs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []int64
-	for rows.Next() {
-		var repository_id int64
-		if err := rows.Scan(&repository_id); err != nil {
-			return nil, err
-		}
-		items = append(items, repository_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const lockEligibleSelection = `-- name: LockEligibleSelection :one
 SELECT s.user_id FROM selections s JOIN repositories r ON r.id = s.repository_id
 WHERE s.repository_id = $1 AND s.user_id = $2 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false

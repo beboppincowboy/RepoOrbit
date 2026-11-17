@@ -88,7 +88,7 @@ func ReconcileSelections(ctx context.Context, pool *pgxpool.Pool) (int, error) {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	ids, err := db.New(tx).ListRefreshableRepositoryIDs(ctx)
+	ids, err := db.New(tx).ListFollowedRepositoryIDs(ctx)
 	if err != nil {
 		return 0, err
 	}
