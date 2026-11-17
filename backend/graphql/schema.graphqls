@@ -7,7 +7,8 @@ type Repository { id: ID!, fullName: String!, description: String!, private: Boo
 # followSuspended means the viewer unstarred a followed repository: the selection is kept but not used for synchronization.
 type MetadataStatus { state: String!, lastSuccessAt: String, nextAttemptAt: String, paused: Boolean!, failureCode: String, followSuspended: Boolean! }
 # Activity (issues, pull requests, history) is synchronized separately from metadata; until activity ingestion exists synchronized is false for real repositories whatever the metadata state.
-type ActivityStatus { synchronized: Boolean!, message: String! }
+type ActivityStatus { synchronized: Boolean!, message: String!, issues: ActivityResourceStatus, futureResources: [String!]! }
+type ActivityResourceStatus { phase: String!, boundary: String!, catchupThrough: String, lastSuccessAt: String, failureCode: String, jobState: String!, nextAttemptAt: String }
 type Issue { id: ID!, repositoryId: ID!, title: String!, state: String! }
 # endCursor is the id of the last stored row scanned (even if access filtering hid it), so pass it as `after` to continue; null when the page held no rows.
 # withheld counts items hidden because access could not be verified; retryAt (RFC 3339) is set when that is a rate limit.

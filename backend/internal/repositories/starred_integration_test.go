@@ -119,6 +119,7 @@ func TestFailedStarRefreshKeepsSnapshot(t *testing.T) {
 		t.Fatalf("rate limited refresh: %+v", limited)
 	}
 	e.gh.LimitUntil(time.Time{})
+	e.repos.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
 	if ok := alice.starred("?refresh=1"); ok.RefreshFailed || len(ok.Repositories) != 30 || ok.Withheld != 0 {
 		t.Fatalf("recovered refresh: %+v", ok)
 	}

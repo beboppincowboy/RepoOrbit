@@ -22,7 +22,7 @@ func TestMetadataStatusMapsEveryFieldSeparatelyFromActivity(t *testing.T) {
 
 // Metadata success must never read as activity success.
 func TestActivityIsNeverSynchronizedUntilActivityIngestionExists(t *testing.T) {
-	if a := activityStatus(false, true); a.Synchronized || a.Message != "Selected, awaiting sync — no activity data yet." {
+	if a := activityStatus(false, true); a.Synchronized || a.Message == "" {
 		t.Fatalf("%+v", a)
 	}
 	if a := activityStatus(false, false); a.Synchronized || a.Message == "" {

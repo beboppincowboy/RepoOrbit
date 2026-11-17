@@ -31,6 +31,18 @@ func RequestMetadataRefresh(ctx context.Context, tx pgx.Tx, repoID int64) (bool,
 	return true, nil
 }
 
+// RequestActivity schedules issue backfill alongside the eligible selection.
+func RequestActivity(ctx context.Context, tx pgx.Tx, repoID int64, now time.Time) error {
+	ok, err := db.New(tx).HasEligibleSelection(ctx, repoID)
+	if err != nil || !ok {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO activity_resources (repository_id, resource, boundary) VALUES ($1, 'issues', $2) ON CONFLICT DO NOTHING`, repoID, now.Add(-90*24*time.Hour)); err != nil {
+		return err
+	}
+	return jobs.Enqueue(ctx, tx, jobs.KindActivityIssues, repoKey(repoID), now)
+}
+
 // ReconcileSelections schedules a refresh for every repository with an eligible active selection,
 // including selections made before durable scheduling existed. Safe to repeat (the queue coalesces).
 // Call at worker startup. Returns how many repositories were scheduled.
@@ -52,6 +64,9 @@ func ReconcileSelections(ctx context.Context, pool *pgxpool.Pool) (int, error) {
 			return 0, err
 		}
 		if ok {
+			if err := RequestActivity(ctx, tx, id, time.Now()); err != nil {
+				return 0, err
+			}
 			n++
 		}
 	}

@@ -46,9 +46,21 @@ type DirectiveRoot struct {
 }
 
 type ComplexityRoot struct {
+	ActivityResourceStatus struct {
+		Boundary       func(childComplexity int) int
+		CatchupThrough func(childComplexity int) int
+		FailureCode    func(childComplexity int) int
+		JobState       func(childComplexity int) int
+		LastSuccessAt  func(childComplexity int) int
+		NextAttemptAt  func(childComplexity int) int
+		Phase          func(childComplexity int) int
+	}
+
 	ActivityStatus struct {
-		Message      func(childComplexity int) int
-		Synchronized func(childComplexity int) int
+		FutureResources func(childComplexity int) int
+		Issues          func(childComplexity int) int
+		Message         func(childComplexity int) int
+		Synchronized    func(childComplexity int) int
 	}
 
 	Issue struct {
@@ -132,6 +144,69 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 	ec := executionContext{nil, e, 0, 0, nil}
 	_ = ec
 	switch typeName + "." + field {
+
+	case "ActivityResourceStatus.boundary":
+		if e.complexity.ActivityResourceStatus.Boundary == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.Boundary(childComplexity), true
+
+	case "ActivityResourceStatus.catchupThrough":
+		if e.complexity.ActivityResourceStatus.CatchupThrough == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.CatchupThrough(childComplexity), true
+
+	case "ActivityResourceStatus.failureCode":
+		if e.complexity.ActivityResourceStatus.FailureCode == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.FailureCode(childComplexity), true
+
+	case "ActivityResourceStatus.jobState":
+		if e.complexity.ActivityResourceStatus.JobState == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.JobState(childComplexity), true
+
+	case "ActivityResourceStatus.lastSuccessAt":
+		if e.complexity.ActivityResourceStatus.LastSuccessAt == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.LastSuccessAt(childComplexity), true
+
+	case "ActivityResourceStatus.nextAttemptAt":
+		if e.complexity.ActivityResourceStatus.NextAttemptAt == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.NextAttemptAt(childComplexity), true
+
+	case "ActivityResourceStatus.phase":
+		if e.complexity.ActivityResourceStatus.Phase == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.Phase(childComplexity), true
+
+	case "ActivityStatus.futureResources":
+		if e.complexity.ActivityStatus.FutureResources == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.FutureResources(childComplexity), true
+
+	case "ActivityStatus.issues":
+		if e.complexity.ActivityStatus.Issues == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.Issues(childComplexity), true
 
 	case "ActivityStatus.message":
 		if e.complexity.ActivityStatus.Message == nil {
@@ -809,6 +884,302 @@ func (ec *executionContext) field___Type_fields_argsIncludeDeprecated(
 
 // region    **************************** field.gotpl *****************************
 
+func (ec *executionContext) _ActivityResourceStatus_phase(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_phase(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Phase, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_phase(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_boundary(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_boundary(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Boundary, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_boundary(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_catchupThrough(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_catchupThrough(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.CatchupThrough, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_catchupThrough(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_lastSuccessAt(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_lastSuccessAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.LastSuccessAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_lastSuccessAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_failureCode(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_failureCode(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.FailureCode, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_failureCode(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_jobState(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_jobState(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.JobState, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_jobState(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_nextAttemptAt(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_nextAttemptAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.NextAttemptAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_nextAttemptAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _ActivityStatus_synchronized(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_ActivityStatus_synchronized(ctx, field)
 	if err != nil {
@@ -885,6 +1256,107 @@ func (ec *executionContext) _ActivityStatus_message(ctx context.Context, field g
 }
 
 func (ec *executionContext) fieldContext_ActivityStatus_message(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_issues(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_issues(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Issues, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.ActivityResourceStatus)
+	fc.Result = res
+	return ec.marshalOActivityResourceStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐActivityResourceStatus(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_issues(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "phase":
+				return ec.fieldContext_ActivityResourceStatus_phase(ctx, field)
+			case "boundary":
+				return ec.fieldContext_ActivityResourceStatus_boundary(ctx, field)
+			case "catchupThrough":
+				return ec.fieldContext_ActivityResourceStatus_catchupThrough(ctx, field)
+			case "lastSuccessAt":
+				return ec.fieldContext_ActivityResourceStatus_lastSuccessAt(ctx, field)
+			case "failureCode":
+				return ec.fieldContext_ActivityResourceStatus_failureCode(ctx, field)
+			case "jobState":
+				return ec.fieldContext_ActivityResourceStatus_jobState(ctx, field)
+			case "nextAttemptAt":
+				return ec.fieldContext_ActivityResourceStatus_nextAttemptAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ActivityResourceStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_futureResources(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_futureResources(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.FutureResources, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]string)
+	fc.Result = res
+	return ec.marshalNString2ᚕstringᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_futureResources(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "ActivityStatus",
 		Field:      field,
@@ -2296,6 +2768,10 @@ func (ec *executionContext) fieldContext_Repository_activity(_ context.Context, 
 				return ec.fieldContext_ActivityStatus_synchronized(ctx, field)
 			case "message":
 				return ec.fieldContext_ActivityStatus_message(ctx, field)
+			case "issues":
+				return ec.fieldContext_ActivityStatus_issues(ctx, field)
+			case "futureResources":
+				return ec.fieldContext_ActivityStatus_futureResources(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type ActivityStatus", field.Name)
 		},
@@ -4582,6 +5058,63 @@ func (ec *executionContext) fieldContext___Type_isOneOf(_ context.Context, field
 
 // region    **************************** object.gotpl ****************************
 
+var activityResourceStatusImplementors = []string{"ActivityResourceStatus"}
+
+func (ec *executionContext) _ActivityResourceStatus(ctx context.Context, sel ast.SelectionSet, obj *model.ActivityResourceStatus) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, activityResourceStatusImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ActivityResourceStatus")
+		case "phase":
+			out.Values[i] = ec._ActivityResourceStatus_phase(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "boundary":
+			out.Values[i] = ec._ActivityResourceStatus_boundary(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "catchupThrough":
+			out.Values[i] = ec._ActivityResourceStatus_catchupThrough(ctx, field, obj)
+		case "lastSuccessAt":
+			out.Values[i] = ec._ActivityResourceStatus_lastSuccessAt(ctx, field, obj)
+		case "failureCode":
+			out.Values[i] = ec._ActivityResourceStatus_failureCode(ctx, field, obj)
+		case "jobState":
+			out.Values[i] = ec._ActivityResourceStatus_jobState(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "nextAttemptAt":
+			out.Values[i] = ec._ActivityResourceStatus_nextAttemptAt(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
 var activityStatusImplementors = []string{"ActivityStatus"}
 
 func (ec *executionContext) _ActivityStatus(ctx context.Context, sel ast.SelectionSet, obj *model.ActivityStatus) graphql.Marshaler {
@@ -4600,6 +5133,13 @@ func (ec *executionContext) _ActivityStatus(ctx context.Context, sel ast.Selecti
 			}
 		case "message":
 			out.Values[i] = ec._ActivityStatus_message(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "issues":
+			out.Values[i] = ec._ActivityStatus_issues(ctx, field, obj)
+		case "futureResources":
+			out.Values[i] = ec._ActivityStatus_futureResources(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
@@ -5663,6 +6203,36 @@ func (ec *executionContext) marshalNString2string(ctx context.Context, sel ast.S
 	return res
 }
 
+func (ec *executionContext) unmarshalNString2ᚕstringᚄ(ctx context.Context, v any) ([]string, error) {
+	var vSlice []any
+	vSlice = graphql.CoerceList(v)
+	var err error
+	res := make([]string, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNString2string(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func (ec *executionContext) marshalNString2ᚕstringᚄ(ctx context.Context, sel ast.SelectionSet, v []string) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	for i := range v {
+		ret[i] = ec.marshalNString2string(ctx, sel, v[i])
+	}
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
 func (ec *executionContext) marshalN__Directive2githubᚗcomᚋ99designsᚋgqlgenᚋgraphqlᚋintrospectionᚐDirective(ctx context.Context, sel ast.SelectionSet, v introspection.Directive) graphql.Marshaler {
 	return ec.___Directive(ctx, sel, &v)
 }
@@ -5914,6 +6484,13 @@ func (ec *executionContext) marshalN__TypeKind2string(ctx context.Context, sel a
 		}
 	}
 	return res
+}
+
+func (ec *executionContext) marshalOActivityResourceStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐActivityResourceStatus(ctx context.Context, sel ast.SelectionSet, v *model.ActivityResourceStatus) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._ActivityResourceStatus(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalOBoolean2bool(ctx context.Context, v any) (bool, error) {

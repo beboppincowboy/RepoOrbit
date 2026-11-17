@@ -2,9 +2,21 @@
 
 package model
 
+type ActivityResourceStatus struct {
+	Phase          string  `json:"phase"`
+	Boundary       string  `json:"boundary"`
+	CatchupThrough *string `json:"catchupThrough,omitempty"`
+	LastSuccessAt  *string `json:"lastSuccessAt,omitempty"`
+	FailureCode    *string `json:"failureCode,omitempty"`
+	JobState       string  `json:"jobState"`
+	NextAttemptAt  *string `json:"nextAttemptAt,omitempty"`
+}
+
 type ActivityStatus struct {
-	Synchronized bool   `json:"synchronized"`
-	Message      string `json:"message"`
+	Synchronized    bool                    `json:"synchronized"`
+	Message         string                  `json:"message"`
+	Issues          *ActivityResourceStatus `json:"issues,omitempty"`
+	FutureResources []string                `json:"futureResources"`
 }
 
 type Issue struct {
