@@ -14,6 +14,11 @@ type AccessFence struct {
 	Epoch     int64
 }
 
+type CredentialThrottle struct {
+	UserID     int64
+	RetryAfter pgtype.Timestamptz
+}
+
 type Installation struct {
 	UserID         int64
 	InstallationID int64

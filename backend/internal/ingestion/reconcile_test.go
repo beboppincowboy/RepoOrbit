@@ -100,13 +100,13 @@ func TestStarHandlerFailurePathsCommitNothingAndSpendNoAttempt(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			h := StarReconcileHandler(c.stars, &fakeClock{now: retry})
+			h := StarReconcileHandler(c.stars, &fakeClock{now: retry}, nil)
 			if err := h(context.Background(), jobs.Job{Key: "user:7"}, nil); !c.check(err) {
 				t.Fatalf("got %v", err)
 			}
 		})
 	}
-	h := StarReconcileHandler(&fakeStars{}, &fakeClock{})
+	h := StarReconcileHandler(&fakeStars{}, &fakeClock{}, nil)
 	err := h(context.Background(), jobs.Job{Key: "repo:7"}, nil)
 	if err == nil || err.Error() != "bad star reconcile key \"repo:7\"" {
 		t.Fatalf("got %v", err)
@@ -126,7 +126,7 @@ func (f onceFence) Commit(_ context.Context, fn func(pgx.Tx) error) error {
 // The snapshot is stored only inside the claim-fenced commit: a worker that lost its claim after fetching stores nothing.
 func TestStarHandlerStoresOnlyInsideTheClaimFence(t *testing.T) {
 	stars := &fakeStars{res: StarFetch{Completed: true}}
-	h := StarReconcileHandler(stars, &fakeClock{})
+	h := StarReconcileHandler(stars, &fakeClock{}, nil)
 	if err := h(context.Background(), jobs.Job{Key: "user:7"}, onceFence{lost: true}); !errors.Is(err, jobs.ErrLostClaim) {
 		t.Fatalf("lost claim: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestStarHandlerStoresOnlyInsideTheClaimFence(t *testing.T) {
 // Fetching never stores: the handler gets nothing to write when the fetch is incomplete.
 func TestStarHandlerIncompleteFetchStoresNothing(t *testing.T) {
 	stars := &fakeStars{}
-	_ = StarReconcileHandler(stars, &fakeClock{})(context.Background(), jobs.Job{Key: "user:7"}, onceFence{})
+	_ = StarReconcileHandler(stars, &fakeClock{}, nil)(context.Background(), jobs.Job{Key: "user:7"}, onceFence{})
 	if stars.stored != 0 {
 		t.Fatal("incomplete fetch reached the store")
 	}

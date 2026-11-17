@@ -7,7 +7,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -58,27 +57,17 @@ type Deps struct {
 	Tokens TokenSource
 	Access AccessChecker
 	Clock  jobs.Clock
-
-	mu        sync.Mutex
-	throttled map[int64]time.Time // user id -> do not use this credential before
 }
 
 // Register wires the handler into a worker.
 func (d *Deps) Register(w *jobs.Worker) { w.Register(jobs.KindRepoMetadataRefresh, d.RefreshMetadata) }
 
-func (d *Deps) throttledUntil(userID int64) time.Time {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.throttled[userID]
+func (d *Deps) throttledUntil(ctx context.Context, userID int64) time.Time {
+	return credentialThrottledUntil(ctx, db.New(d.Pool), userID)
 }
 
-func (d *Deps) throttle(userID int64, until time.Time) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.throttled == nil {
-		d.throttled = map[int64]time.Time{}
-	}
-	d.throttled[userID] = until
+func (d *Deps) throttle(ctx context.Context, userID int64, until time.Time) {
+	throttleCredential(ctx, db.New(d.Pool), userID, until)
 }
 
 func parseRepoKey(key string) (int64, error) {
@@ -116,7 +105,7 @@ func (d *Deps) RefreshMetadata(ctx context.Context, job jobs.Job, fence jobs.Cla
 
 	var transient, notFound bool
 	for _, uid := range users {
-		if until := d.throttledUntil(uid); until.After(d.Clock.Now()) {
+		if until := d.throttledUntil(ctx, uid); until.After(d.Clock.Now()) {
 			return d.deferred(ctx, fence, repoID, until) // pace the credential; never rotate to dodge a limit
 		}
 		token, err := d.Tokens.AccessToken(ctx, uid)
@@ -135,7 +124,7 @@ func (d *Deps) RefreshMetadata(ctx context.Context, job jobs.Job, fence jobs.Cla
 			}
 			switch dec := d.Access.CheckOne(ctx, uid, repoID, true); {
 			case dec.Unverified && !dec.RetryAt.IsZero():
-				d.throttle(uid, dec.RetryAt)
+				d.throttle(ctx, uid, dec.RetryAt)
 				return d.deferred(ctx, fence, repoID, dec.RetryAt)
 			case dec.Unverified:
 				transient = true
@@ -153,7 +142,7 @@ func (d *Deps) RefreshMetadata(ctx context.Context, job jobs.Job, fence jobs.Cla
 			}
 			continue
 		case errors.As(err, &apiErr) && apiErr.RateLimited():
-			d.throttle(uid, apiErr.RetryAt)
+			d.throttle(ctx, uid, apiErr.RetryAt)
 			return d.deferred(ctx, fence, repoID, apiErr.RetryAt)
 		case errors.As(err, &apiErr) && apiErr.NotFound():
 			notFound = true

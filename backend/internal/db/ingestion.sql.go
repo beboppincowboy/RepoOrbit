@@ -11,6 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getCredentialThrottle = `-- name: GetCredentialThrottle :one
+SELECT retry_after FROM credential_throttle WHERE user_id = $1
+`
+
+func (q *Queries) GetCredentialThrottle(ctx context.Context, userID int64) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getCredentialThrottle, userID)
+	var retry_after pgtype.Timestamptz
+	err := row.Scan(&retry_after)
+	return retry_after, err
+}
+
 const getSyncRepository = `-- name: GetSyncRepository :one
 SELECT is_private, is_demo FROM repositories WHERE id = $1
 `
@@ -149,6 +160,22 @@ type RecordSyncSuccessParams struct {
 
 func (q *Queries) RecordSyncSuccess(ctx context.Context, arg RecordSyncSuccessParams) error {
 	_, err := q.db.Exec(ctx, recordSyncSuccess, arg.RepositoryID, arg.LastSuccessAt)
+	return err
+}
+
+const setCredentialThrottle = `-- name: SetCredentialThrottle :exec
+INSERT INTO credential_throttle (user_id, retry_after) VALUES ($1, $2)
+ON CONFLICT (user_id) DO UPDATE SET retry_after = GREATEST(credential_throttle.retry_after, EXCLUDED.retry_after)
+`
+
+type SetCredentialThrottleParams struct {
+	UserID     int64
+	RetryAfter pgtype.Timestamptz
+}
+
+// Keeps the later time: an earlier retry-after never shortens a pause another job kind recorded.
+func (q *Queries) SetCredentialThrottle(ctx context.Context, arg SetCredentialThrottleParams) error {
+	_, err := q.db.Exec(ctx, setCredentialThrottle, arg.UserID, arg.RetryAfter)
 	return err
 }
 
