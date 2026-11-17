@@ -105,6 +105,11 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 					return err
 				}
 			}
+			// Reviews normally go with their PR via the cascade; delete by their own repository too so a review
+			// tagged with this repository whose PR row lives elsewhere cannot outlive the purge.
+			if _, err = tx.Exec(ctx, `DELETE FROM activity_reviews WHERE repository_id=$1`, repoID); err != nil {
+				return err
+			}
 			if _, err = tx.Exec(ctx, `DELETE FROM activity_pull_requests WHERE repository_id=$1`, repoID); err != nil {
 				return err
 			}

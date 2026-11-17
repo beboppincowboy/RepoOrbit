@@ -17,10 +17,6 @@ SELECT s.user_id FROM selections s JOIN repositories r ON r.id = s.repository_id
 WHERE s.repository_id = $1 AND s.user_id = $2 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false
 FOR SHARE OF s NOWAIT;
 
--- name: ListRefreshableRepositoryIDs :many
-SELECT DISTINCT s.repository_id FROM selections s JOIN repositories r ON r.id = s.repository_id
-WHERE s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false ORDER BY s.repository_id;
-
 -- name: GetSyncRepository :one
 SELECT is_private, is_demo FROM repositories WHERE id = $1;
 
