@@ -8,6 +8,12 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AccessFence struct {
+	Scope     string
+	SubjectID int64
+	Epoch     int64
+}
+
 type Installation struct {
 	UserID         int64
 	InstallationID int64
@@ -51,12 +57,19 @@ type Repository struct {
 	IsPrivate   bool
 }
 
+type RepositorySync struct {
+	RepositoryID  int64
+	LastSuccessAt pgtype.Timestamptz
+	LastErrorCode pgtype.Text
+}
+
 type Selection struct {
-	UserID       int64
-	RepositoryID int64
-	Source       string
-	SelectedAt   pgtype.Timestamptz
-	DeselectedAt pgtype.Timestamptz
+	UserID            int64
+	RepositoryID      int64
+	Source            string
+	SelectedAt        pgtype.Timestamptz
+	DeselectedAt      pgtype.Timestamptz
+	FollowSuspendedAt pgtype.Timestamptz
 }
 
 type Session struct {
