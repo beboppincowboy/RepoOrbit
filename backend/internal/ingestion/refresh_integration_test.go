@@ -478,3 +478,24 @@ func TestOverlappingRefreshProducesFollowUp(t *testing.T) {
 		t.Fatal("refresh requested during execution was not retained")
 	}
 }
+
+// A removal for an installation the system never saved still withholds a private commit (global permissions version).
+func TestPrivateCommitWithheldWhenUnsavedInstallationIsRemovedAfterFetch(t *testing.T) {
+	e := setup(t)
+	a := e.signIn("alice")
+	id := e.gh.AddRepo("alice", "secret", true)
+	e.gh.Install("alice", 9, id)
+	e.store(a, id, true)
+	f := txFence{pool: e.pool, before: func() {
+		tx, _ := e.pool.Begin(context.Background())
+		_ = accessfence.InvalidateAccess(context.Background(), tx, accessfence.ScopeInstallation, 424242)
+		_ = tx.Commit(context.Background())
+	}}
+	var d *jobs.Defer
+	if err := e.run(f, id); !errors.As(err, &d) {
+		t.Fatalf("err = %v, want *jobs.Defer", err)
+	}
+	if e.name(id) != "stale/name" {
+		t.Fatal("private metadata committed after an unrelated-looking installation removal")
+	}
+}

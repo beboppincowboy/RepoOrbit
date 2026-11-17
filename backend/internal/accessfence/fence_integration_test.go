@@ -80,20 +80,81 @@ func TestBumpInvalidatesSnapshotPerScope(t *testing.T) {
 	}
 }
 
-func TestUnrelatedBumpAndRollbackKeepSnapshotValid(t *testing.T) {
+// A rolled-back bump changes nothing. A committed bump of any subject, related or not, withholds a private
+// commit (one retry): the global permissions version cannot tell which subject a fetch depended on.
+func TestRolledBackBumpKeepsSnapshotValidButAnyCommittedBumpWithholds(t *testing.T) {
+	ctx := context.Background()
+	_, pool := testutil.Database(t)
+	user := seed(t, pool)
+	s := take(t, pool, user, 500)
+	tx, _ := pool.Begin(ctx)
+	_ = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeUser, user)
+	_ = tx.Rollback(ctx)
+	if !valid(t, pool, s) {
+		t.Fatal("a rolled-back bump invalidated the snapshot")
+	}
+	inTx(t, pool, func(tx pgx.Tx) { _ = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeRepository, 999) })
+	if valid(t, pool, s) {
+		t.Fatal("a committed bump of an unrelated subject must still withhold a private commit")
+	}
+}
+
+// Removal of an installation the system never saved (so the snapshot cannot track it) still withholds the commit.
+func TestBumpOfUnsavedInstallationWithholds(t *testing.T) {
 	ctx := context.Background()
 	_, pool := testutil.Database(t)
 	user := seed(t, pool)
 	s := take(t, pool, user, 500)
 	inTx(t, pool, func(tx pgx.Tx) {
-		_ = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeRepository, 999)
-		_ = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeUser, user+1)
+		if err := accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeInstallation, 424242); err != nil {
+			t.Fatal(err)
+		}
 	})
-	tx, _ := pool.Begin(ctx)
-	_ = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeUser, user)
-	_ = tx.Rollback(ctx)
-	if !valid(t, pool, s) {
-		t.Fatal("unrelated bump or rolled-back bump invalidated the snapshot")
+	if valid(t, pool, s) {
+		t.Fatal("bump of an installation absent from the local table did not withhold the commit")
+	}
+}
+
+// A bump and a private commit check queue on the global row first, so repeated concurrent runs never deadlock.
+func TestConcurrentBumpAndStillCurrentNeverDeadlock(t *testing.T) {
+	ctx := context.Background()
+	_, pool := testutil.Database(t)
+	user := seed(t, pool)
+	for i := 0; i < 25; i++ {
+		s := take(t, pool, user, 500)
+		errs := make(chan error, 2)
+		go func() {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer tx.Rollback(ctx)
+			if err := accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeInstallation, 77); err != nil {
+				errs <- err
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+			errs <- tx.Commit(ctx)
+		}()
+		go func() {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer tx.Rollback(ctx)
+			if _, err := s.StillCurrent(ctx, tx); err != nil {
+				errs <- err
+				return
+			}
+			errs <- tx.Commit(ctx)
+		}()
+		for j := 0; j < 2; j++ {
+			if err := <-errs; err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+		}
 	}
 }
 
@@ -139,5 +200,27 @@ func TestCurrentSeesBumpWithoutTransaction(t *testing.T) {
 	inTx(t, pool, func(tx pgx.Tx) { _ = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeRepository, 12345) })
 	if ok, _ := s.Current(ctx, pool); ok {
 		t.Fatal("any repository bump must invalidate cached user reads")
+	}
+}
+
+// The down migration must succeed with a global row present and restore the three-scope check.
+func TestGlobalFenceDownMigrationStatements(t *testing.T) {
+	ctx := context.Background()
+	_, pool := testutil.Database(t)
+	seed(t, pool)
+	inTx(t, pool, func(tx pgx.Tx) { _ = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeUser, 1) })
+	tx, _ := pool.Begin(ctx)
+	defer tx.Rollback(ctx)
+	for _, q := range []string{
+		`DELETE FROM access_fences WHERE scope = 'global'`,
+		`ALTER TABLE access_fences DROP CONSTRAINT access_fences_scope_check`,
+		`ALTER TABLE access_fences ADD CONSTRAINT access_fences_scope_check CHECK (scope IN ('user', 'installation', 'repository'))`,
+	} {
+		if _, err := tx.Exec(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO access_fences (scope, subject_id, epoch) VALUES ('global', 0, 1)`); err == nil {
+		t.Fatal("restored constraint still accepts the global scope")
 	}
 }
