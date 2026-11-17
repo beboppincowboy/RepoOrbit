@@ -49,15 +49,29 @@ const (
 	selectionSourceStarred = "starred"
 )
 
-// storeSelection upserts repo's metadata and the user's selection of it. Fails (loudly) if repo's id collides
+// storeSelection upserts repo's metadata and the user's selection of it, plus durable scheduling (OnSelect), in one transaction. Fails (loudly) if repo's id collides
 // with a demo row, which is never overwritten.
 func (s *Service) storeSelection(ctx context.Context, userID int64, repo githubapp.Repo, source string) error {
-	if _, err := s.Queries.UpsertRepository(ctx, db.UpsertRepositoryParams{ID: repo.ID, Name: repo.FullName, Description: repo.Description, IsPrivate: repo.Private}); errors.Is(err, pgx.ErrNoRows) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	q := s.Queries.WithTx(tx)
+	if _, err := q.UpsertRepository(ctx, db.UpsertRepositoryParams{ID: repo.ID, Name: repo.FullName, Description: repo.Description, IsPrivate: repo.Private}); errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("repository %d collides with a demo row", repo.ID)
 	} else if err != nil {
 		return err
 	}
-	return s.Queries.UpsertSelection(ctx, db.UpsertSelectionParams{UserID: userID, RepositoryID: repo.ID, Source: source, SelectedAt: pgtype.Timestamptz{Time: s.now(), Valid: true}})
+	if err := q.UpsertSelection(ctx, db.UpsertSelectionParams{UserID: userID, RepositoryID: repo.ID, Source: source, SelectedAt: pgtype.Timestamptz{Time: s.now(), Valid: true}}); err != nil {
+		return err
+	}
+	if s.OnSelect != nil {
+		if err := s.OnSelect(ctx, tx, repo.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // Deselect marks the user's own selection deselected, for either source (also unfollows). It touches only that

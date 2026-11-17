@@ -10,6 +10,7 @@ INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES ($1,
 ON CONFLICT (user_id, repository_id) DO UPDATE SET
  selected_at = CASE WHEN selections.deselected_at IS NULL THEN selections.selected_at ELSE EXCLUDED.selected_at END,
  deselected_at = NULL,
+ follow_suspended_at = NULL,
  source = CASE WHEN selections.source = 'owned' OR EXCLUDED.source = 'owned' THEN 'owned' ELSE 'starred' END;
 
 -- name: DeselectRepository :execrows
