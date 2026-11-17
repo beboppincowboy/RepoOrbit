@@ -2,6 +2,11 @@
 
 package model
 
+type ActivityStatus struct {
+	Synchronized bool   `json:"synchronized"`
+	Message      string `json:"message"`
+}
+
 type Issue struct {
 	ID           string `json:"id"`
 	RepositoryID string `json:"repositoryId"`
@@ -17,16 +22,27 @@ type IssueConnection struct {
 	RetryAt     *string  `json:"retryAt,omitempty"`
 }
 
+type MetadataStatus struct {
+	State           string  `json:"state"`
+	LastSuccessAt   *string `json:"lastSuccessAt,omitempty"`
+	NextAttemptAt   *string `json:"nextAttemptAt,omitempty"`
+	Paused          bool    `json:"paused"`
+	FailureCode     *string `json:"failureCode,omitempty"`
+	FollowSuspended bool    `json:"followSuspended"`
+}
+
 type Query struct {
 }
 
 type Repository struct {
-	ID          string `json:"id"`
-	FullName    string `json:"fullName"`
-	Description string `json:"description"`
-	Private     bool   `json:"private"`
-	Selected    bool   `json:"selected"`
-	SyncState   string `json:"syncState"`
+	ID             string          `json:"id"`
+	FullName       string          `json:"fullName"`
+	Description    string          `json:"description"`
+	Private        bool            `json:"private"`
+	Selected       bool            `json:"selected"`
+	SyncState      string          `json:"syncState"`
+	MetadataStatus *MetadataStatus `json:"metadataStatus,omitempty"`
+	Activity       *ActivityStatus `json:"activity"`
 }
 
 type RepositoryConnection struct {
