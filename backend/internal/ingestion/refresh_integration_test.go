@@ -30,7 +30,7 @@ type wallClock struct{}
 
 func (wallClock) Now() time.Time { return time.Now() }
 
-// txFence is a fake jobs.Fence: it commits fn in a real transaction. before runs just ahead of it, standing
+// txFence is a fake jobs.ClaimFence: it commits fn in a real transaction. before runs just ahead of it, standing
 // in for something that happens while the job was fetching.
 type txFence struct {
 	pool   *pgxpool.Pool
@@ -116,7 +116,7 @@ func (e *env) store(userID, repoID int64, private bool) {
 	}
 }
 
-func (e *env) run(fence jobs.Fence, repoID int64) error {
+func (e *env) run(fence jobs.ClaimFence, repoID int64) error {
 	return e.deps.RefreshMetadata(context.Background(), jobs.Job{Kind: jobs.KindRepoMetadataRefresh, Key: fmt.Sprintf("repo:%d", repoID)}, fence)
 }
 
@@ -286,7 +286,7 @@ func TestPrivateCommitWithheldWhenFenceBumpedAfterFetch(t *testing.T) {
 	e.store(a, id, true)
 	f := txFence{pool: e.pool, before: func() { // revocation lands between fetch and commit
 		tx, _ := e.pool.Begin(context.Background())
-		_ = accessfence.Bump(context.Background(), tx, accessfence.ScopeRepository, id)
+		_ = accessfence.InvalidateAccess(context.Background(), tx, accessfence.ScopeRepository, id)
 		_ = tx.Commit(context.Background())
 	}}
 	var d *jobs.Defer
@@ -330,7 +330,7 @@ func TestThrottledCredentialIsPacedNotRotated(t *testing.T) {
 	e.gh.LimitUntil(until)
 
 	var d *jobs.Defer
-	if err := e.run(e.fence(), id1); !errors.As(err, &d) || !d.Until.Equal(until) {
+	if err := e.run(e.fence(), id1); !errors.As(err, &d) || !d.RetryAt.Equal(until) {
 		t.Fatalf("err = %v, want Defer until %v", err, until)
 	}
 	if hits(e, id1) != 1 {
@@ -368,7 +368,7 @@ func TestRequestRefreshOnlyForEligibleSelections(t *testing.T) {
 		}
 		var scheduled bool
 		if err := inTx(t, e.pool, func(tx pgx.Tx) (err error) {
-			scheduled, err = ingestion.RequestRefresh(context.Background(), tx, id)
+			scheduled, err = ingestion.RequestMetadataRefresh(context.Background(), tx, id)
 			return
 		}); err != nil || scheduled {
 			t.Fatalf("%s: scheduled=%v err=%v", stmt, scheduled, err)
@@ -379,7 +379,7 @@ func TestRequestRefreshOnlyForEligibleSelections(t *testing.T) {
 	}
 	var scheduled bool
 	err := inTx(t, e.pool, func(tx pgx.Tx) (err error) {
-		scheduled, err = ingestion.RequestRefresh(context.Background(), tx, id)
+		scheduled, err = ingestion.RequestMetadataRefresh(context.Background(), tx, id)
 		return
 	})
 	if errors.Is(err, jobs.ErrNotImplemented) {
@@ -412,7 +412,7 @@ func TestSelectionAndScheduleRollBackTogether(t *testing.T) {
 	}
 	// And with the real hook: success commits both (when the queue exists).
 	e.repo.OnSelect = func(ctx context.Context, tx pgx.Tx, repoID int64) error {
-		_, err := ingestion.RequestRefresh(ctx, tx, repoID)
+		_, err := ingestion.RequestMetadataRefresh(ctx, tx, repoID)
 		return err
 	}
 	err := e.repo.Connect(context.Background(), uid, id)
@@ -452,7 +452,10 @@ func TestOverlappingRefreshProducesFollowUp(t *testing.T) {
 	uid := e.signIn("alice")
 	id := e.gh.AddRepo("bob", "tool", false)
 	e.store(uid, id, false)
-	err := inTx(t, e.pool, func(tx pgx.Tx) error { _, err := ingestion.RequestRefresh(context.Background(), tx, id); return err })
+	err := inTx(t, e.pool, func(tx pgx.Tx) error {
+		_, err := ingestion.RequestMetadataRefresh(context.Background(), tx, id)
+		return err
+	})
 	if errors.Is(err, jobs.ErrNotImplemented) {
 		t.Skip("needs U3a")
 	}
@@ -463,7 +466,10 @@ func TestOverlappingRefreshProducesFollowUp(t *testing.T) {
 	if _, err := e.pool.Exec(context.Background(), "UPDATE jobs SET state = 'running' WHERE key = $1", key); err != nil {
 		t.Fatal(err)
 	}
-	if err := inTx(t, e.pool, func(tx pgx.Tx) error { _, err := ingestion.RequestRefresh(context.Background(), tx, id); return err }); err != nil {
+	if err := inTx(t, e.pool, func(tx pgx.Tx) error {
+		_, err := ingestion.RequestMetadataRefresh(context.Background(), tx, id)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	var pending bool

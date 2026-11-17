@@ -31,7 +31,7 @@ type Job struct {
 	Kind       Kind
 	Key        string
 	Generation int64
-	Attempt    int
+	Attempt    int // 1-based: the number of failed attempts so far plus this one; Defer and Pause do not count
 }
 
 // ErrNotImplemented is retained for the frozen contract; the queue is implemented and never returns it.
@@ -43,36 +43,37 @@ var ErrNotImplemented = errors.New("jobs: not implemented (U3a)")
 //   - queued: coalesce (keep the earlier runAt)
 //   - running: set pending=true so a follow-up runs after completion (intent is never lost)
 //   - paused: record pending=true; stays paused until Resume
-//   - dead: record pending=true only; NEVER revives (dead-work barrier). Only Requeue revives.
+//   - dead: record pending=true only; NEVER revives (dead-work barrier). Only RequeueDead revives.
 func Enqueue(ctx context.Context, tx pgx.Tx, kind Kind, key string, runAt time.Time) error {
 	return db.New(tx).UpsertJob(ctx, db.UpsertJobParams{Kind: string(kind), Key: key, RunAt: ts(runAt)})
 }
 
-// Resume moves a paused job to queued at runAt (eligibility changed). No-op for other states.
+// Resume moves a PAUSED job to queued at runAt (eligibility changed). No-op for queued, running and dead jobs;
+// it never revives dead work (use RequeueDead, operator only). Runs inside the caller's transaction.
 func Resume(ctx context.Context, tx pgx.Tx, kind Kind, key string, runAt time.Time) error {
 	return db.New(tx).ResumeJob(ctx, db.ResumeJobParams{Kind: string(kind), Key: key, RunAt: ts(runAt)})
 }
 
 // Handler runs one claimed job. Return values:
 //   - nil: success; if pending was set during execution a follow-up is queued
-//   - *Defer: wait until Until; does NOT consume an attempt (rate limit)
+//   - *Defer: wait until RetryAt; does NOT consume an attempt (rate limit)
 //   - *Pause: park until Resume; makes no remote calls and consumes no attempt (no credential)
 //   - Permanent(err): job becomes dead
 //   - any other error: retried with backoff+jitter, at most 5 attempts, then dead
-type Handler func(ctx context.Context, job Job, fence Fence) error
+type Handler func(ctx context.Context, job Job, fence ClaimFence) error
 
-// Fence guards effects. Commit runs fn in a transaction that first verifies this job still
+// ClaimFence guards effects. Commit runs fn in a transaction that first verifies this job still
 // holds its claim (generation + lease) and fails with ErrLostClaim otherwise. No network
 // calls inside fn. Handlers must write projections only through Commit.
-type Fence interface {
+type ClaimFence interface {
 	Commit(ctx context.Context, fn func(tx pgx.Tx) error) error
 }
 
 var ErrLostClaim = errors.New("jobs: claim lost")
 
 type Defer struct {
-	Until  time.Time
-	Reason string
+	RetryAt time.Time
+	Reason  string
 }
 
 func (d *Defer) Error() string { return "jobs: deferred: " + d.Reason }
@@ -114,10 +115,10 @@ func (SystemClock) Now() time.Time { return time.Now() }
 
 func ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
 
-// Requeue is the operator command: revive a dead job with a fresh attempt budget.
+// RequeueDead is the operator command: revive a dead job with a fresh attempt budget.
 // Callers recheck eligibility afterwards (U3b handler does this on execution).
 // It returns ErrNotDead when no dead job exists for (kind, key).
-func Requeue(ctx context.Context, tx pgx.Tx, kind Kind, key string, runAt time.Time) error {
+func RequeueDead(ctx context.Context, tx pgx.Tx, kind Kind, key string, runAt time.Time) error {
 	n, err := db.New(tx).RequeueJob(ctx, db.RequeueJobParams{Kind: string(kind), Key: key, RunAt: ts(runAt)})
 	if err == nil && n == 0 {
 		return ErrNotDead

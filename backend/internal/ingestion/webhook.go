@@ -31,7 +31,7 @@ type WebhookDeps struct {
 	Secret []byte
 	Clock  jobs.Clock // nil means wall time
 
-	// Test seams; nil means the real RequestRefresh and accessfence.Bump.
+	// Test seams; nil means the real RequestMetadataRefresh and accessfence.InvalidateAccess.
 	refresh func(ctx context.Context, tx pgx.Tx, repoID int64) (bool, error)
 	bump    func(ctx context.Context, tx pgx.Tx, scope accessfence.Scope, subjectID int64) error
 }
@@ -58,10 +58,10 @@ type webhookPayload struct {
 // that is validly signed is acknowledged without work.
 func WebhookHandler(d WebhookDeps) http.Handler {
 	if d.refresh == nil {
-		d.refresh = RequestRefresh
+		d.refresh = RequestMetadataRefresh
 	}
 	if d.bump == nil {
-		d.bump = accessfence.Bump
+		d.bump = accessfence.InvalidateAccess
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

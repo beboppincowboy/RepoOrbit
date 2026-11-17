@@ -92,7 +92,7 @@ func parseRepoKey(key string) (int64, error) {
 // repository, shared by every user who selects it, using the first eligible selecting user's credential that
 // works. It writes only through fence.Commit, after rechecking the selection and (private repos) the access
 // fence, and makes no network call inside the commit. It never imports issues or activity.
-func (d *Deps) RefreshMetadata(ctx context.Context, job jobs.Job, fence jobs.Fence) error {
+func (d *Deps) RefreshMetadata(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) error {
 	repoID, err := parseRepoKey(job.Key)
 	if err != nil {
 		return jobs.Permanent(err)
@@ -175,9 +175,9 @@ func (d *Deps) RefreshMetadata(ctx context.Context, job jobs.Job, fence jobs.Fen
 	return &jobs.Pause{Reason: CodeNoCredential}
 }
 
-func (d *Deps) deferred(ctx context.Context, fence jobs.Fence, repoID int64, until time.Time) error {
+func (d *Deps) deferred(ctx context.Context, fence jobs.ClaimFence, repoID int64, until time.Time) error {
 	d.record(ctx, fence, repoID, CodeRateLimited)
-	return &jobs.Defer{Until: until, Reason: CodeRateLimited}
+	return &jobs.Defer{RetryAt: until, Reason: CodeRateLimited}
 }
 
 // takeFence snapshots authorization epochs before any private remote read.
@@ -187,7 +187,7 @@ func (d *Deps) takeFence(ctx context.Context, userID, repoID int64) (accessfence
 		return accessfence.Snapshot{}, err
 	}
 	defer tx.Rollback(ctx)
-	snap, err := accessfence.Take(ctx, tx, userID, repoID)
+	snap, err := accessfence.TakeSnapshot(ctx, tx, userID, repoID)
 	if err != nil {
 		return accessfence.Snapshot{}, err
 	}
@@ -195,7 +195,7 @@ func (d *Deps) takeFence(ctx context.Context, userID, repoID int64) (accessfence
 }
 
 // record stores a safe status code through the fence. Best effort: a lost claim just means someone else owns the job.
-func (d *Deps) record(ctx context.Context, fence jobs.Fence, repoID int64, code string) {
+func (d *Deps) record(ctx context.Context, fence jobs.ClaimFence, repoID int64, code string) {
 	err := fence.Commit(ctx, func(tx pgx.Tx) error {
 		return db.New(tx).RecordSyncError(ctx, db.RecordSyncErrorParams{RepositoryID: repoID, LastErrorCode: pgtype.Text{String: code, Valid: true}})
 	})
@@ -211,7 +211,7 @@ var (
 
 // commit applies fetched metadata inside the job fence's transaction after rechecking that the credential's
 // selection is still eligible and, for private repositories, that no authorization epoch moved since the fetch.
-func (d *Deps) commit(ctx context.Context, fence jobs.Fence, repoID, uid int64, wasPrivate bool, snap accessfence.Snapshot, r githubapp.Repo) error {
+func (d *Deps) commit(ctx context.Context, fence jobs.ClaimFence, repoID, uid int64, wasPrivate bool, snap accessfence.Snapshot, r githubapp.Repo) error {
 	privatized := false
 	err := fence.Commit(ctx, func(tx pgx.Tx) error {
 		q := db.New(tx)
@@ -230,7 +230,7 @@ func (d *Deps) commit(ctx context.Context, fence jobs.Fence, repoID, uid int64, 
 			return errRace // the credential's owner stopped following; pick again
 		}
 		if wasPrivate {
-			if ok, err := snap.Valid(ctx, tx); err != nil {
+			if ok, err := snap.StillCurrent(ctx, tx); err != nil {
 				return err
 			} else if !ok {
 				return errRace
@@ -251,9 +251,9 @@ func (d *Deps) commit(ctx context.Context, fence jobs.Fence, repoID, uid int64, 
 		return nil
 	case errors.Is(err, errRace):
 		d.record(ctx, fence, repoID, CodeAccessMoved)
-		return &jobs.Defer{Until: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
+		return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
 	case err == nil && privatized:
-		return &jobs.Defer{Until: d.Clock.Now(), Reason: "visibility_changed"}
+		return &jobs.Defer{RetryAt: d.Clock.Now(), Reason: "visibility_changed"}
 	}
 	return err
 }

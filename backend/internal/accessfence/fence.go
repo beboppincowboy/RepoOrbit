@@ -27,9 +27,9 @@ type DB interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// Bump durably invalidates access for a subject by incrementing its epoch, inside the
+// InvalidateAccess durably invalidates access for a subject by incrementing its epoch, inside the
 // caller's transaction (before any slower cleanup). Never grants access.
-func Bump(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) error {
+func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) error {
 	_, err := tx.Exec(ctx, `INSERT INTO access_fences (scope, subject_id, epoch) VALUES ($1, $2, 1)
 		ON CONFLICT (scope, subject_id) DO UPDATE SET epoch = access_fences.epoch + 1`, string(scope), subjectID)
 	return err
@@ -43,7 +43,7 @@ type key struct {
 // Snapshot captures epochs for a (user, repository) read before a remote fetch.
 type Snapshot struct {
 	epochs map[Scope]map[int64]int64
-	coarse *int64 // TakeForUser only: sum of every installation and repository epoch (any such bump invalidates)
+	coarse *int64 // TakeSnapshotForUser only: sum of every installation and repository epoch (any such bump invalidates)
 }
 
 func (s *Snapshot) set(k key, epoch int64) {
@@ -133,9 +133,9 @@ func userKeys(ctx context.Context, q DB, userID int64) ([]key, error) {
 	return ks, rows.Err()
 }
 
-// Take records current epochs for userID, repoID and every installation the user holds. It creates the
-// fence rows it tracks so that Valid can wait on a concurrent Bump.
-func Take(ctx context.Context, q pgx.Tx, userID, repoID int64) (Snapshot, error) {
+// TakeSnapshot records current epochs for userID, repoID and every installation the user holds. It creates the
+// fence rows it tracks so that StillCurrent can wait on a concurrent InvalidateAccess.
+func TakeSnapshot(ctx context.Context, q pgx.Tx, userID, repoID int64) (Snapshot, error) {
 	ks, err := userKeys(ctx, q, userID)
 	if err != nil {
 		return Snapshot{}, err
@@ -158,11 +158,11 @@ func Take(ctx context.Context, q pgx.Tx, userID, repoID int64) (Snapshot, error)
 	return s, nil
 }
 
-// TakeForUser snapshots what a cached read of everything the user can see depends on: the user, their
+// TakeSnapshotForUser snapshots what a cached read of everything the user can see depends on: the user, their
 // installations, and (coarsely) any installation or repository bump. Check it with Current. ponytail: an installation or repository bump
 // drops every user's cached listing once (the user's installation rows may not exist yet on a first fetch);
 // per-subject tracking if bumps ever get frequent.
-func TakeForUser(ctx context.Context, q DB, userID int64) (Snapshot, error) {
+func TakeSnapshotForUser(ctx context.Context, q DB, userID int64) (Snapshot, error) {
 	ks, err := userKeys(ctx, q, userID)
 	if err != nil {
 		return Snapshot{}, err
@@ -186,9 +186,9 @@ func TakeForUser(ctx context.Context, q DB, userID int64) (Snapshot, error) {
 	return s, nil
 }
 
-// Valid reports, inside the commit transaction, that no tracked epoch moved since Take. It waits for any
-// in-flight Bump. Private commits and cached private reads must check it; false means withhold the update.
-func (s Snapshot) Valid(ctx context.Context, tx pgx.Tx) (bool, error) {
+// StillCurrent reports, inside the commit transaction, that no tracked epoch moved since TakeSnapshot. It waits for any
+// in-flight InvalidateAccess. Private commits and cached private reads must check it; false means withhold the update.
+func (s Snapshot) StillCurrent(ctx context.Context, tx pgx.Tx) (bool, error) {
 	live, err := s.current(ctx, tx, true)
 	if err != nil {
 		return false, err
@@ -196,7 +196,7 @@ func (s Snapshot) Valid(ctx context.Context, tx pgx.Tx) (bool, error) {
 	return s.same(live), nil
 }
 
-// Current is Valid without locking, for cached reads outside a transaction.
+// Current is StillCurrent without locking, for cached reads outside a transaction.
 func (s Snapshot) Current(ctx context.Context, q DB) (bool, error) {
 	live, err := s.current(ctx, q, false)
 	if err != nil || !s.same(live) {

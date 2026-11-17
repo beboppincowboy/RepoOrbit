@@ -15,11 +15,11 @@ import (
 
 func repoKey(repoID int64) string { return fmt.Sprintf("repo:%d", repoID) }
 
-// RequestRefresh enqueues a metadata refresh for repoID inside tx, only when the repository
+// RequestMetadataRefresh enqueues a metadata refresh for repoID inside tx, only when the repository
 // has at least one active, follow-eligible selection (ordinary events never import
 // unselected repositories). Used by selection changes, webhooks and polls. A refresh requested while one
 // runs is retained by the queue as a follow-up; a dead one is not revived. Returns whether work was scheduled.
-func RequestRefresh(ctx context.Context, tx pgx.Tx, repoID int64) (bool, error) {
+func RequestMetadataRefresh(ctx context.Context, tx pgx.Tx, repoID int64) (bool, error) {
 	q := db.New(tx)
 	ok, err := q.HasEligibleSelection(ctx, repoID)
 	if err != nil || !ok {
@@ -47,7 +47,7 @@ func ReconcileSelections(ctx context.Context, pool *pgxpool.Pool) (int, error) {
 	}
 	n := 0
 	for _, id := range ids {
-		ok, err := RequestRefresh(ctx, tx, id)
+		ok, err := RequestMetadataRefresh(ctx, tx, id)
 		if err != nil {
 			return 0, err
 		}

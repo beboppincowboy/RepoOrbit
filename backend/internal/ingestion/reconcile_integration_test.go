@@ -15,7 +15,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
 
-// txFence is a stand-in jobs.Fence over a real transaction (the real claim check belongs to U3a).
+// txFence is a stand-in jobs.ClaimFence over a real transaction (the real claim check belongs to U3a).
 type txFence struct{ pool *pgxpool.Pool }
 
 func (f txFence) Commit(ctx context.Context, fn func(pgx.Tx) error) error {

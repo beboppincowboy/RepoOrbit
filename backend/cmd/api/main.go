@@ -50,7 +50,7 @@ func main() {
 		repos := &repositories.Service{Queries: queries, Pool: pool, GitHub: gh, TokenSource: authHandler.Service, AppURL: cfg.AppURL}
 		// A selection and its durable refresh intent commit together.
 		repos.OnSelect = func(ctx context.Context, tx pgx.Tx, repoID int64) error {
-			_, err := ingestion.RequestRefresh(ctx, tx, repoID)
+			_, err := ingestion.RequestMetadataRefresh(ctx, tx, repoID)
 			return err
 		}
 		webhooks = ingestion.WebhookHandler(ingestion.WebhookDeps{Pool: pool, Secret: cfg.WebhookSecret, Clock: jobs.SystemClock{}})

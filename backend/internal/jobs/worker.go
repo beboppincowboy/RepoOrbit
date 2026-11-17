@@ -46,6 +46,7 @@ func (w *Worker) backoff(attempt int) time.Duration {
 }
 
 // Register binds a handler to a kind. Call before Run; the worker only claims registered kinds.
+// Registering a kind twice replaces the earlier handler.
 func (w *Worker) Register(kind Kind, h Handler) {
 	if w.handlers == nil {
 		w.handlers = map[Kind]Handler{}
@@ -210,7 +211,7 @@ func (w *Worker) finish(ctx, hard context.Context, j Job, err error, cause error
 		// Forced shutdown: hand the job back without spending an attempt.
 		_, e = q.ReleaseJob(ctx, db.ReleaseJobParams{ID: j.ID, Generation: j.Generation, Now: ts(now)})
 	case errors.As(err, &d):
-		_, e = q.DeferJob(ctx, db.DeferJobParams{ID: j.ID, Generation: j.Generation, RunAt: ts(d.Until), Reason: reason(err), Now: ts(now)})
+		_, e = q.DeferJob(ctx, db.DeferJobParams{ID: j.ID, Generation: j.Generation, RunAt: ts(d.RetryAt), Reason: reason(err), Now: ts(now)})
 	case errors.As(err, &p):
 		_, e = q.PauseJob(ctx, db.PauseJobParams{ID: j.ID, Generation: j.Generation, Reason: reason(err), Now: ts(now)})
 	case errors.As(err, &perm):

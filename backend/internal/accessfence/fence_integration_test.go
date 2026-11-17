@@ -41,7 +41,7 @@ func inTx(t *testing.T, pool *pgxpool.Pool, fn func(tx pgx.Tx)) {
 func take(t *testing.T, pool *pgxpool.Pool, user, repo int64) (s accessfence.Snapshot) {
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		if s, err = accessfence.Take(context.Background(), tx, user, repo); err != nil {
+		if s, err = accessfence.TakeSnapshot(context.Background(), tx, user, repo); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -51,7 +51,7 @@ func take(t *testing.T, pool *pgxpool.Pool, user, repo int64) (s accessfence.Sna
 func valid(t *testing.T, pool *pgxpool.Pool, s accessfence.Snapshot) (ok bool) {
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		if ok, err = s.Valid(context.Background(), tx); err != nil {
+		if ok, err = s.StillCurrent(context.Background(), tx); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -70,7 +70,7 @@ func TestBumpInvalidatesSnapshotPerScope(t *testing.T) {
 			t.Fatalf("%s: fresh snapshot invalid", tc.scope)
 		}
 		inTx(t, pool, func(tx pgx.Tx) {
-			if err := accessfence.Bump(context.Background(), tx, tc.scope, tc.id); err != nil {
+			if err := accessfence.InvalidateAccess(context.Background(), tx, tc.scope, tc.id); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -86,42 +86,42 @@ func TestUnrelatedBumpAndRollbackKeepSnapshotValid(t *testing.T) {
 	user := seed(t, pool)
 	s := take(t, pool, user, 500)
 	inTx(t, pool, func(tx pgx.Tx) {
-		_ = accessfence.Bump(ctx, tx, accessfence.ScopeRepository, 999)
-		_ = accessfence.Bump(ctx, tx, accessfence.ScopeUser, user+1)
+		_ = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeRepository, 999)
+		_ = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeUser, user+1)
 	})
 	tx, _ := pool.Begin(ctx)
-	_ = accessfence.Bump(ctx, tx, accessfence.ScopeUser, user)
+	_ = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeUser, user)
 	_ = tx.Rollback(ctx)
 	if !valid(t, pool, s) {
 		t.Fatal("unrelated bump or rolled-back bump invalidated the snapshot")
 	}
 }
 
-// A commit transaction that checks Valid while a bump is in flight must wait for it and then see it.
+// A commit transaction that checks StillCurrent while a bump is in flight must wait for it and then see it.
 func TestValidWaitsForConcurrentBump(t *testing.T) {
 	ctx := context.Background()
 	_, pool := testutil.Database(t)
 	user := seed(t, pool)
 	s := take(t, pool, user, 500)
 	bump, _ := pool.Begin(ctx)
-	if err := accessfence.Bump(ctx, bump, accessfence.ScopeUser, user); err != nil {
+	if err := accessfence.InvalidateAccess(ctx, bump, accessfence.ScopeUser, user); err != nil {
 		t.Fatal(err)
 	}
 	res := make(chan bool, 1)
 	go func() {
 		tx, _ := pool.Begin(ctx)
 		defer tx.Rollback(ctx)
-		ok, _ := s.Valid(ctx, tx)
+		ok, _ := s.StillCurrent(ctx, tx)
 		res <- ok
 	}()
 	select {
 	case <-res:
-		t.Fatal("Valid did not wait for the in-flight bump")
+		t.Fatal("StillCurrent did not wait for the in-flight bump")
 	case <-time.After(300 * time.Millisecond):
 	}
 	_ = bump.Commit(ctx)
 	if ok := <-res; ok {
-		t.Fatal("Valid returned true after the bump committed")
+		t.Fatal("StillCurrent returned true after the bump committed")
 	}
 }
 
@@ -129,14 +129,14 @@ func TestCurrentSeesBumpWithoutTransaction(t *testing.T) {
 	ctx := context.Background()
 	_, pool := testutil.Database(t)
 	user := seed(t, pool)
-	s, err := accessfence.TakeForUser(ctx, pool, user)
+	s, err := accessfence.TakeSnapshotForUser(ctx, pool, user)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ok, _ := s.Current(ctx, pool); !ok {
 		t.Fatal("fresh cache snapshot invalid")
 	}
-	inTx(t, pool, func(tx pgx.Tx) { _ = accessfence.Bump(ctx, tx, accessfence.ScopeRepository, 12345) })
+	inTx(t, pool, func(tx pgx.Tx) { _ = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeRepository, 12345) })
 	if ok, _ := s.Current(ctx, pool); ok {
 		t.Fatal("any repository bump must invalidate cached user reads")
 	}

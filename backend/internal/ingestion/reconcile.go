@@ -77,7 +77,7 @@ func RecheckEligibility(ctx context.Context, tx pgx.Tx, userID int64, now time.T
 // are no longer starred (the Selection stays) and restores ones that are again, then rechecks paused work. A failed
 // refresh changes nothing. No credential pauses without spending an attempt; a rate limit defers without one too.
 func StarReconcileHandler(stars StarRefresher, clock jobs.Clock) jobs.Handler {
-	return func(ctx context.Context, job jobs.Job, fence jobs.Fence) error {
+	return func(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) error {
 		userID, err := strconv.ParseInt(strings.TrimPrefix(job.Key, "user:"), 10, 64)
 		if err != nil || !strings.HasPrefix(job.Key, "user:") {
 			return jobs.Permanent(fmt.Errorf("bad star reconcile key %q", job.Key))
@@ -89,7 +89,7 @@ func StarReconcileHandler(stars StarRefresher, clock jobs.Clock) jobs.Handler {
 		case err != nil:
 			return err
 		case !res.Completed && res.RetryAt != nil:
-			return &jobs.Defer{Until: *res.RetryAt, Reason: "rate limited"}
+			return &jobs.Defer{RetryAt: *res.RetryAt, Reason: "rate limited"}
 		case !res.Completed:
 			return errors.New("star refresh incomplete") // backoff retry; the previous snapshot and eligibility stay
 		}
