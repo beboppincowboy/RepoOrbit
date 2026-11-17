@@ -46,7 +46,11 @@ UPDATE jobs SET state = 'queued', run_at = sqlc.arg(run_at), pending = false, le
 WHERE id = $1 AND generation = $2 AND state = 'running' AND lease_until > sqlc.arg(now);
 
 -- name: PauseJob :execrows
-UPDATE jobs SET state = 'paused', pending = false, lease_until = NULL, last_error = sqlc.arg(reason), updated_at = now()
+-- A request that arrived while the job ran (pending) is not erased by the pause: the job goes back to queued, no attempt
+-- spent, and re-evaluates with the new request. With nothing pending it parks until Resume.
+UPDATE jobs SET state = CASE WHEN pending THEN 'queued' ELSE 'paused' END,
+ run_at = CASE WHEN pending THEN sqlc.arg(now) ELSE run_at END,
+ pending = false, lease_until = NULL, last_error = sqlc.arg(reason), updated_at = now()
 WHERE id = $1 AND generation = $2 AND state = 'running' AND lease_until > sqlc.arg(now);
 
 -- name: ReleaseJob :execrows
