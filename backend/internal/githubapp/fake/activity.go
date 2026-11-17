@@ -37,6 +37,48 @@ type CommentFixture struct {
 	UpdatedAt time.Time  `json:"updated_at"`
 }
 
+type ReleaseFixture struct {
+	ID          int64       `json:"id"`
+	Author      *IssueActor `json:"author"`
+	Name        string      `json:"name"`
+	TagName     string      `json:"tag_name"`
+	Body        string      `json:"body"`
+	HTMLURL     string      `json:"html_url"`
+	PublishedAt *time.Time  `json:"published_at"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
+	Draft       bool        `json:"draft"`
+	Prerelease  bool        `json:"prerelease"`
+}
+type EventIssueFixture struct {
+	ID     int64 `json:"id"`
+	Number int64 `json:"number"`
+}
+type EventLabelFixture struct {
+	Name string `json:"name"`
+}
+type IssueEventFixture struct {
+	ID        int64              `json:"id"`
+	Actor     *IssueActor        `json:"actor"`
+	Event     string             `json:"event"`
+	CreatedAt time.Time          `json:"created_at"`
+	URL       string             `json:"url"`
+	Issue     *EventIssueFixture `json:"issue"`
+	Assignee  *IssueActor        `json:"assignee"`
+	Label     *EventLabelFixture `json:"label"`
+}
+
+func (s *Server) SetReleases(repoID int64, items ...ReleaseFixture) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.releases[repoID] = append([]ReleaseFixture(nil), items...)
+}
+func (s *Server) SetIssueEvents(repoID int64, items ...IssueEventFixture) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issueEvents[repoID] = append([]IssueEventFixture(nil), items...)
+}
+
 func (s *Server) SetPullRequests(repoID int64, items ...PullRequestFixture) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -75,7 +117,11 @@ func (s *Server) repoActivity(w http.ResponseWriter, r *http.Request, login stri
 		return
 	}
 	number, _ := strconv.ParseInt(r.PathValue("number"), 10, 64)
-	if strings.HasSuffix(r.URL.Path, "/pulls") {
+	if strings.HasSuffix(r.URL.Path, "/releases") {
+		activityFixturePage(w, r, s.releases[id], false)
+	} else if strings.HasSuffix(r.URL.Path, "/issues/events") {
+		activityFixturePage(w, r, s.issueEvents[id], false)
+	} else if strings.HasSuffix(r.URL.Path, "/pulls") {
 		if r.URL.Query().Get("state") != "all" {
 			http.Error(w, `{"message":"Bad Request"}`, http.StatusBadRequest)
 			return

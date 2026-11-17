@@ -80,6 +80,11 @@ func RecheckEligibility(ctx context.Context, tx pgx.Tx, userID int64, now time.T
 		if err := jobs.Resume(ctx, tx, jobs.KindActivityPullRequests, repoKey(id), now); err != nil {
 			return err
 		}
+		for _, kind := range []jobs.Kind{jobs.KindActivityReleases, jobs.KindActivityIssueEvents} {
+			if err := jobs.Resume(ctx, tx, kind, repoKey(id), now); err != nil {
+				return err
+			}
+		}
 		rows, err := tx.Query(ctx, `SELECT resource, parent_id FROM activity_children WHERE repository_id=$1 AND NOT complete`, id)
 		if err != nil {
 			return err

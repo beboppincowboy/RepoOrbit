@@ -41,6 +41,8 @@ type Server struct {
 	pulls        map[int64][]PullRequestFixture
 	reviews      map[int64]map[int64][]ReviewFixture
 	comments     map[int64]map[int64][]CommentFixture
+	releases     map[int64][]ReleaseFixture
+	issueEvents  map[int64][]IssueEventFixture
 	limitedUntil time.Time // API calls fail with a rate limit until this time
 	failing      bool      // API calls fail with 502
 	hits         map[string]int
@@ -89,7 +91,7 @@ type install struct {
 type grant struct{ challenge, login string }
 
 func New(clientID, clientSecret string) *Server {
-	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, stars: map[string]map[int64]bool{}, issues: map[int64][]IssueFixture{}, pulls: map[int64][]PullRequestFixture{}, reviews: map[int64]map[int64][]ReviewFixture{}, comments: map[int64]map[int64][]CommentFixture{}, hits: map[string]int{}}
+	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, stars: map[string]map[int64]bool{}, issues: map[int64][]IssueFixture{}, pulls: map[int64][]PullRequestFixture{}, reviews: map[int64]map[int64][]ReviewFixture{}, comments: map[int64]map[int64][]CommentFixture{}, releases: map[int64][]ReleaseFixture{}, issueEvents: map[int64][]IssueEventFixture{}, hits: map[string]int{}}
 }
 
 // Refreshes reports how many refresh-token exchanges were accepted.
@@ -116,6 +118,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/user/installations/{id}/repositories", s.api(s.installationRepos))
 	mux.HandleFunc("/repositories/{id}", s.api(s.repoByID))
 	mux.HandleFunc("/repos/{owner}/{repo}/issues", s.api(s.repoIssues))
+	mux.HandleFunc("/repos/{owner}/{repo}/releases", s.api(s.repoActivity))
+	mux.HandleFunc("/repos/{owner}/{repo}/issues/events", s.api(s.repoActivity))
 	mux.HandleFunc("/repos/{owner}/{repo}/pulls", s.api(s.repoActivity))
 	mux.HandleFunc("/repos/{owner}/{repo}/pulls/{number}/reviews", s.api(s.repoActivity))
 	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/comments", s.api(s.repoActivity))

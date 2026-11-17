@@ -238,6 +238,16 @@ func (r *queryResolver) CommentEvidence(ctx context.Context, repositoryIds []str
 	return r.comments(ctx, repositoryIds, first, after)
 }
 
+// ReleaseEvidence is the resolver for the releaseEvidence field.
+func (r *queryResolver) ReleaseEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.ReleaseEvidenceConnection, error) {
+	return r.releases(ctx, repositoryIds, first, after)
+}
+
+// IssueEventEvidence is the resolver for the issueEventEvidence field.
+func (r *queryResolver) IssueEventEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.IssueEventEvidenceConnection, error) {
+	return r.issueEvents(ctx, repositoryIds, first, after)
+}
+
 // Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 

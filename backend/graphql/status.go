@@ -19,9 +19,9 @@ func activityStatus(demo, selected bool) *model.ActivityStatus {
 		return &model.ActivityStatus{Synchronized: false, Message: "Demo sample data; not synchronized from GitHub.", FutureResources: []string{"pull requests", "reviews", "comments", "releases", "issue events"}}
 	}
 	if !selected {
-		return &model.ActivityStatus{Synchronized: false, Message: "Not selected; nothing is synchronized.", FutureResources: []string{"releases", "issue events"}}
+		return &model.ActivityStatus{Synchronized: false, Message: "Not selected; nothing is synchronized.", FutureResources: []string{}}
 	}
-	return &model.ActivityStatus{Synchronized: false, Message: "Activity import in progress; other resources are not yet imported.", FutureResources: []string{"releases", "issue events"}}
+	return &model.ActivityStatus{Synchronized: false, Message: "Activity import in progress; continuous reconciliation is not yet complete.", FutureResources: []string{}}
 }
 
 func rfc3339(t *time.Time) *string {
@@ -97,16 +97,35 @@ func (r *Resolver) attachMetadataStatus(ctx context.Context, userID int64, nodes
 
 // attachEvidenceStatus derives child completeness only after every relevant parent traversal has caught up.
 func (r *Resolver) attachEvidenceStatus(ctx context.Context, id int64, a *model.ActivityStatus) error {
-	var boundary time.Time
-	var phase string
-	var watermark, success, next *time.Time
-	var code *string
-	var state string
-	err := r.RepoAccess.Pool.QueryRow(ctx, `SELECT a.boundary,a.phase,a.watermark,a.last_success_at,a.last_error_code,COALESCE(j.state,'not-scheduled'),CASE WHEN j.state='queued' THEN j.run_at END FROM activity_resources a LEFT JOIN jobs j ON j.kind='activity_pull_requests' AND j.key='repo:'||a.repository_id::text WHERE a.repository_id=$1 AND a.resource='pull_requests'`, id).Scan(&boundary, &phase, &watermark, &success, &code, &state, &next)
-	if err == nil {
-		a.PullRequests = &model.ActivityResourceStatus{Phase: phase, Boundary: stamp(boundary), CatchupThrough: rfc3339(watermark), LastSuccessAt: rfc3339(success), FailureCode: safeActivityCode(code), JobState: state, NextAttemptAt: rfc3339(next)}
-	} else if !errors.Is(err, pgx.ErrNoRows) {
+	resourceStatus := func(resource, kind string) (*model.ActivityResourceStatus, error) {
+		var boundary time.Time
+		var phase, state string
+		var watermark, success, next *time.Time
+		var code *string
+		err := r.RepoAccess.Pool.QueryRow(ctx, `SELECT a.boundary,a.phase,a.watermark,a.last_success_at,a.last_error_code,COALESCE(j.state,'not-scheduled'),CASE WHEN j.state='queued' THEN j.run_at END FROM activity_resources a LEFT JOIN jobs j ON j.kind=$3 AND j.key='repo:'||a.repository_id::text WHERE a.repository_id=$1 AND a.resource=$2`, id, resource, kind).Scan(&boundary, &phase, &watermark, &success, &code, &state, &next)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return &model.ActivityResourceStatus{Phase: phase, Boundary: stamp(boundary), CatchupThrough: rfc3339(watermark), LastSuccessAt: rfc3339(success), FailureCode: safeActivityCode(code), JobState: state, NextAttemptAt: rfc3339(next)}, nil
+	}
+	var err error
+	if a.PullRequests, err = resourceStatus("pull_requests", "activity_pull_requests"); err != nil {
 		return err
+	}
+	if a.Releases, err = resourceStatus("releases", "activity_releases"); err != nil {
+		return err
+	}
+	traversal, err := resourceStatus("issue_events", "activity_issue_events")
+	if err != nil {
+		return err
+	}
+	if traversal != nil {
+		// GitHub retains issue events for a limited window and never emits an "opened" event, so history
+		// before the retained window is a permanent gap that traversal cannot close.
+		a.IssueEvents = &model.IssueEventStatus{Traversal: traversal, HistoricalGap: true}
 	}
 	parentComplete := func(s *model.ActivityResourceStatus) bool {
 		return s != nil && s.Phase == "current" && s.CatchupThrough != nil

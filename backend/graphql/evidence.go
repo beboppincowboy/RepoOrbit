@@ -220,3 +220,97 @@ func (r *queryResolver) comments(ctx context.Context, ids []string, first int, a
 	}
 	return out, nil
 }
+
+func (r *queryResolver) releases(ctx context.Context, ids []string, first int, after *string) (*model.ReleaseEvidenceConnection, error) {
+	ctx, cancel := platform.WithRequestDeadline(ctx)
+	defer cancel()
+	p, err := r.evidenceAccess(ctx, ids, first, after)
+	if err != nil {
+		return nil, err
+	}
+	out := &model.ReleaseEvidenceConnection{Nodes: []*model.ReleaseEvidence{}, Withheld: p.withheld, RetryAt: p.retry}
+	if len(p.ids) == 0 {
+		return out, nil
+	}
+	rows, err := r.RepoAccess.Pool.Query(ctx, `SELECT source_id,repository_id,name,tag_name,body,html_url,created_at,updated_at,published_at,observed_at,prerelease,author_id,author_login,author_type FROM activity_releases WHERE repository_id=ANY($1) AND source_id>$2 ORDER BY source_id LIMIT $3`, p.ids, p.after, p.n+1)
+	if err != nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, repo int64
+		var name, tag, body, url string
+		var created, published, observed time.Time
+		var updated *time.Time
+		var prerelease bool
+		var aid *int64
+		var login, kind *string
+		if rows.Scan(&id, &repo, &name, &tag, &body, &url, &created, &updated, &published, &observed, &prerelease, &aid, &login, &kind) != nil {
+			return nil, fmt.Errorf("database unavailable")
+		}
+		if len(out.Nodes) == p.n {
+			out.HasNextPage = true
+			break
+		}
+		cursor := strconv.FormatInt(id, 10)
+		out.EndCursor = &cursor
+		out.Nodes = append(out.Nodes, &model.ReleaseEvidence{ID: cursor, RepositoryID: strconv.FormatInt(repo, 10), Name: name, TagName: tag, Body: body, URL: url, CreatedAt: stamp(created), UpdatedAt: rfc3339(updated), PublishedAt: stamp(published), ObservedAt: stamp(observed), Prerelease: prerelease, Author: actor(aid, login, kind)})
+	}
+	if rows.Err() != nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+	rows.Close()
+	if !r.evidenceCurrent(ctx, p) {
+		out.Nodes = []*model.ReleaseEvidence{}
+		out.EndCursor = nil
+		out.HasNextPage = false
+		out.Withheld += len(p.ids)
+	}
+	return out, nil
+}
+
+func (r *queryResolver) issueEvents(ctx context.Context, ids []string, first int, after *string) (*model.IssueEventEvidenceConnection, error) {
+	ctx, cancel := platform.WithRequestDeadline(ctx)
+	defer cancel()
+	p, err := r.evidenceAccess(ctx, ids, first, after)
+	if err != nil {
+		return nil, err
+	}
+	out := &model.IssueEventEvidenceConnection{Nodes: []*model.IssueEventEvidence{}, Withheld: p.withheld, RetryAt: p.retry}
+	if len(p.ids) == 0 {
+		return out, nil
+	}
+	rows, err := r.RepoAccess.Pool.Query(ctx, `SELECT source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at,actor_id,actor_login,actor_type,assignee_id,assignee_login,assignee_type,label FROM activity_issue_events WHERE repository_id=ANY($1) AND source_id>$2 ORDER BY source_id LIMIT $3`, p.ids, p.after, p.n+1)
+	if err != nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, repo, issue, num int64
+		var event, url string
+		var created, observed time.Time
+		var aid, sid *int64
+		var login, kind, slogin, skind, label *string
+		if rows.Scan(&id, &repo, &issue, &num, &event, &url, &created, &observed, &aid, &login, &kind, &sid, &slogin, &skind, &label) != nil {
+			return nil, fmt.Errorf("database unavailable")
+		}
+		if len(out.Nodes) == p.n {
+			out.HasNextPage = true
+			break
+		}
+		cursor := strconv.FormatInt(id, 10)
+		out.EndCursor = &cursor
+		out.Nodes = append(out.Nodes, &model.IssueEventEvidence{ID: cursor, RepositoryID: strconv.FormatInt(repo, 10), IssueID: strconv.FormatInt(issue, 10), IssueNumber: int(num), Event: event, URL: url, CreatedAt: stamp(created), ObservedAt: stamp(observed), Actor: actor(aid, login, kind), Assignee: actor(sid, slogin, skind), Label: label})
+	}
+	if rows.Err() != nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+	rows.Close()
+	if !r.evidenceCurrent(ctx, p) {
+		out.Nodes = []*model.IssueEventEvidence{}
+		out.EndCursor = nil
+		out.HasNextPage = false
+		out.Withheld += len(p.ids)
+	}
+	return out, nil
+}

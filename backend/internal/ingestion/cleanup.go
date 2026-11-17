@@ -100,6 +100,11 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 			if _, err = tx.Exec(ctx, `DELETE FROM activity_comments WHERE repository_id=$1`, repoID); err != nil {
 				return err
 			}
+			for _, table := range []string{"activity_releases", "activity_issue_events"} {
+				if _, err = tx.Exec(ctx, `DELETE FROM `+table+` WHERE repository_id=$1`, repoID); err != nil {
+					return err
+				}
+			}
 			if _, err = tx.Exec(ctx, `DELETE FROM activity_pull_requests WHERE repository_id=$1`, repoID); err != nil {
 				return err
 			}

@@ -183,3 +183,73 @@ func (c *Client) activityPage(ctx context.Context, token, fullName, suffix, curs
 	}
 	return next, nil
 }
+
+// Release is source evidence from the repository releases endpoint.
+type Release struct {
+	ID          int64      `json:"id"`
+	Author      *IssueUser `json:"author"`
+	Name        string     `json:"name"`
+	TagName     string     `json:"tag_name"`
+	Body        string     `json:"body"`
+	HTMLURL     string     `json:"html_url"`
+	PublishedAt *time.Time `json:"published_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	Draft       bool       `json:"draft"`
+	Prerelease  bool       `json:"prerelease"`
+}
+
+type EventIssue struct {
+	ID     int64 `json:"id"`
+	Number int64 `json:"number"`
+}
+type EventLabel struct {
+	Name string `json:"name"`
+}
+
+// IssueEvent is source evidence from the repository-wide issue events endpoint.
+type IssueEvent struct {
+	ID        int64       `json:"id"`
+	Actor     *IssueUser  `json:"actor"`
+	Event     string      `json:"event"`
+	CreatedAt time.Time   `json:"created_at"`
+	URL       string      `json:"url"`
+	Issue     *EventIssue `json:"issue"`
+	Assignee  *IssueUser  `json:"assignee"`
+	Label     *EventLabel `json:"label"`
+}
+
+func (c *Client) FetchReleasesCursor(ctx context.Context, token, fullName, cursor string) ([]Release, string, error) {
+	var raw []json.RawMessage
+	next, err := c.activityPage(ctx, token, fullName, "/releases", cursor, false, &raw)
+	if err != nil {
+		return nil, "", err
+	}
+	items := make([]Release, 0, len(raw))
+	for _, data := range raw {
+		var v Release
+		var required struct {
+			Draft      *bool `json:"draft"`
+			Prerelease *bool `json:"prerelease"`
+		}
+		if json.Unmarshal(data, &v) != nil || json.Unmarshal(data, &required) != nil || required.Draft == nil || required.Prerelease == nil || v.ID <= 0 || v.TagName == "" || v.HTMLURL == "" || v.CreatedAt.IsZero() || (v.PublishedAt != nil && v.PublishedAt.IsZero()) || (!v.Draft && v.PublishedAt == nil) || !validActivityUser(v.Author) {
+			return nil, "", fmt.Errorf("github: invalid release listing")
+		}
+		items = append(items, v)
+	}
+	return items, next, nil
+}
+
+func (c *Client) FetchIssueEventsCursor(ctx context.Context, token, fullName, cursor string) ([]IssueEvent, string, error) {
+	var items []IssueEvent
+	next, err := c.activityPage(ctx, token, fullName, "/issues/events", cursor, false, &items)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, v := range items {
+		if v.ID <= 0 || v.Event == "" || v.URL == "" || v.CreatedAt.IsZero() || v.Issue == nil || v.Issue.ID <= 0 || v.Issue.Number <= 0 || !validActivityUser(v.Actor) || !validActivityUser(v.Assignee) || (v.Label != nil && v.Label.Name == "") {
+			return nil, "", fmt.Errorf("github: invalid issue event listing")
+		}
+	}
+	return items, next, nil
+}
