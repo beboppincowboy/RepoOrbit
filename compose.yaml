@@ -20,10 +20,13 @@ services:
       # Leave the GitHub values empty for Demo mode. Setting one without the other stops startup.
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_PRIVATE_KEY_FILE:-}
       TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
       GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
       APP_URL: ${APP_URL:-http://localhost:3000}
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+    volumes: &app-secrets
+      - ${GITHUB_APP_KEY_DIR:-./secrets}:/run/repoorbit-secrets:ro
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       db: { condition: service_healthy }
@@ -36,6 +39,7 @@ services:
     build: ./backend
     command: ["/app/worker"]
     environment: *app-env
+    volumes: *app-secrets
     depends_on:
       db: { condition: service_healthy }
     healthcheck:

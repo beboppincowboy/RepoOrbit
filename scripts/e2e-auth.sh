@@ -10,7 +10,9 @@ BIN=$(mktemp -d)
 PIDS=()
 trap 'kill "${PIDS[@]}" 2>/dev/null || true; rm -rf "$BIN"; docker compose exec -T db psql -U repoorbit -d postgres -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" >/dev/null || true' EXIT
 export GITHUB_CLIENT_ID=e2e-id GITHUB_CLIENT_SECRET=e2e-secret GITHUB_APP_SLUG=app
-export TOKEN_ENCRYPTION_KEY=$(openssl rand -base64 32)
+export TOKEN_ENCRYPTION_KEY=$(openssl rand -base64 32) WEBHOOK_SECRET=e2e-webhook
+export GITHUB_APP_PRIVATE_KEY_FILE="$BIN/app.pem"
+openssl genrsa -out "$GITHUB_APP_PRIVATE_KEY_FILE" 2048 2>/dev/null
 export APP_URL=http://127.0.0.1:3100 GITHUB_URL=http://127.0.0.1:9090 GITHUB_API_URL=http://127.0.0.1:9090
 export DATABASE_URL="postgres://repoorbit:repoorbit@localhost:54329/$DB?sslmode=disable"
 (cd backend && go build -o "$BIN/api" ./cmd/api && go build -o "$BIN/fakegithub" ./cmd/fakegithub)
