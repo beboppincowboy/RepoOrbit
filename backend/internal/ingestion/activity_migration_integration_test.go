@@ -12,7 +12,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
 
-// Rolling back 00012 must restore the 00011 "unknown author" sentinel (0,'','') instead of failing on
+// Rolling back 00012 must restore the 00011 "unknown author" sentinel (0,”,”) instead of failing on
 // the NOT NULL constraint, and migrating forward again must turn it back into NULL.
 func TestReviewEvidenceRollbackRestoresUnknownAuthorSentinel(t *testing.T) {
 	ctx := context.Background()

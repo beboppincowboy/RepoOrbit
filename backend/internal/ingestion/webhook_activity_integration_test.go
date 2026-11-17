@@ -105,6 +105,31 @@ func TestSignedDeletionTombstonesAndBlocksResurrection(t *testing.T) {
 	}
 }
 
+// Deselecting leaves the stored evidence behind, so a signed deletion must still remove it and tombstone the id;
+// otherwise reselecting would serve a copy GitHub no longer has.
+func TestSignedDeletionAppliesToDeselectedRepositoryWithStoredEvidence(t *testing.T) {
+	_, pool := testutil.Database(t)
+	ctx := context.Background()
+	selectedRepo(t, pool, 42)
+	if _, err := pool.Exec(ctx, `INSERT INTO activity_releases(source_id,repository_id,name,tag_name,body,html_url,created_at,published_at,observed_at,prerelease) VALUES (7,42,'n','v1','','u',now(),now(),now(),false);
+UPDATE selections SET deselected_at=now() WHERE repository_id=42`); err != nil {
+		t.Fatal(err)
+	}
+	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
+	if w := post(h, testSecret, "release", "del-ds", `{"action":"deleted","repository":{"id":42},"release":{"id":7}}`, ""); w.Code != 200 {
+		t.Fatalf("status %d", w.Code)
+	}
+	if n := count(t, pool, "activity_releases"); n != 0 {
+		t.Fatalf("%d releases remain for a deselected repository", n)
+	}
+	if n := count(t, pool, "activity_tombstones WHERE repository_id=42"); n != 1 {
+		t.Fatalf("%d tombstones, want 1", n)
+	}
+	if n := count(t, pool, "jobs WHERE key='repo:42' AND kind LIKE 'activity_%'"); n != 0 {
+		t.Fatalf("deselected repository scheduled %d activity jobs", n)
+	}
+}
+
 // Deleting an issue removes its comments, events and child-history work, and the issue cannot be re-imported.
 func TestSignedIssueDeletionRemovesDependents(t *testing.T) {
 	_, pool := testutil.Database(t)
