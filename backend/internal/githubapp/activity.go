@@ -1,0 +1,185 @@
+package githubapp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type PullRequest struct {
+	ID        int64      `json:"id"`
+	Number    int64      `json:"number"`
+	Title     string     `json:"title"`
+	State     string     `json:"state"`
+	HTMLURL   string     `json:"html_url"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ClosedAt  *time.Time `json:"closed_at"`
+	MergedAt  *time.Time `json:"merged_at"`
+	User      *IssueUser `json:"user"`
+}
+
+type Review struct {
+	ID          int64      `json:"id"`
+	User        *IssueUser `json:"user"`
+	State       string     `json:"state"`
+	Body        string     `json:"body"`
+	HTMLURL     string     `json:"html_url"`
+	SubmittedAt *time.Time `json:"submitted_at"`
+}
+
+type IssueComment struct {
+	ID        int64      `json:"id"`
+	User      *IssueUser `json:"user"`
+	Body      string     `json:"body"`
+	HTMLURL   string     `json:"html_url"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+}
+
+func (c *Client) FetchPullRequestsCursor(ctx context.Context, token, fullName, cursor string) ([]PullRequest, string, error) {
+	var items []PullRequest
+	next, err := c.activityPage(ctx, token, fullName, "/pulls", cursor, true, &items)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, v := range items {
+		if v.ID <= 0 || v.Number <= 0 || v.Title == "" || (v.State != "open" && v.State != "closed") || v.HTMLURL == "" || v.CreatedAt.IsZero() || v.UpdatedAt.IsZero() || !validActivityUser(v.User) {
+			return nil, "", fmt.Errorf("github: invalid pull request listing")
+		}
+	}
+	return items, next, nil
+}
+
+func (c *Client) FetchReviewsCursor(ctx context.Context, token, fullName string, number int64, cursor string) ([]Review, string, error) {
+	if number <= 0 {
+		return nil, "", fmt.Errorf("github: invalid pull request number")
+	}
+	var items []Review
+	next, err := c.activityPage(ctx, token, fullName, "/pulls/"+strconv.FormatInt(number, 10)+"/reviews", cursor, false, &items)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, v := range items {
+		if v.ID <= 0 || !validActivityUser(v.User) || v.State == "" || v.HTMLURL == "" || (v.SubmittedAt == nil && !strings.EqualFold(v.State, "PENDING")) || (v.SubmittedAt != nil && v.SubmittedAt.IsZero()) {
+			return nil, "", fmt.Errorf("github: invalid review listing")
+		}
+	}
+	return items, next, nil
+}
+
+func (c *Client) FetchIssueCommentsCursor(ctx context.Context, token, fullName string, number int64, cursor string) ([]IssueComment, string, error) {
+	if number <= 0 {
+		return nil, "", fmt.Errorf("github: invalid issue number")
+	}
+	var items []IssueComment
+	next, err := c.activityPage(ctx, token, fullName, "/issues/"+strconv.FormatInt(number, 10)+"/comments", cursor, false, &items)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, v := range items {
+		if v.ID <= 0 || !validActivityUser(v.User) || v.HTMLURL == "" || v.CreatedAt.IsZero() || v.UpdatedAt.IsZero() {
+			return nil, "", fmt.Errorf("github: invalid comment listing")
+		}
+	}
+	return items, next, nil
+}
+
+func validActivityUser(u *IssueUser) bool {
+	return u == nil || (u.ID > 0 && u.Login != "" && u.Type != "")
+}
+
+// activityPage stores only the query as a cursor, retaining repository identity across renames.
+func (c *Client) activityPage(ctx context.Context, token, fullName, suffix, cursor string, all bool, out any) (string, error) {
+	parts := strings.Split(fullName, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("github: invalid repository")
+	}
+	endpoint, err := url.Parse(c.APIURL + "/repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + suffix)
+	if err != nil {
+		return "", fmt.Errorf("github: invalid activity endpoint")
+	}
+	if cursor == "" {
+		cursor = "per_page=100"
+		if all {
+			cursor = "state=all&per_page=100"
+		}
+	}
+	validQuery := func(q string) bool {
+		p, e := url.ParseQuery(q)
+		return e == nil && q != "" && !strings.ContainsAny(q, "#\r\n") && (!all || p.Get("state") == "all")
+	}
+	if !validQuery(cursor) {
+		return "", fmt.Errorf("github: invalid activity cursor")
+	}
+	requestURL := *endpoint
+	requestURL.RawQuery = cursor
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("github: invalid activity request")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("github: activity request failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", apiError(resp)
+	}
+	// Decode through RawMessage so JSON null and trailing or truncated content cannot claim a complete page.
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
+	if err != nil || len(data) > 8<<20 || len(strings.TrimSpace(string(data))) == 0 || strings.TrimSpace(string(data)) == "null" || json.Unmarshal(data, out) != nil {
+		return "", fmt.Errorf("github: invalid activity listing")
+	}
+	next := ""
+	for _, link := range strings.Split(resp.Header.Get("Link"), ",") {
+		fields := strings.Split(link, ";")
+		if strings.TrimSpace(link) == "" {
+			continue
+		}
+		if len(fields) < 2 {
+			return "", fmt.Errorf("github: invalid activity pagination")
+		}
+		isNext, hasRel := false, false
+		for _, field := range fields[1:] {
+			key, value, ok := strings.Cut(strings.TrimSpace(field), "=")
+			if ok && strings.EqualFold(strings.TrimSpace(key), "rel") {
+				hasRel = true
+				for _, relation := range strings.Fields(strings.Trim(strings.TrimSpace(value), `"`)) {
+					if relation == "next" {
+						isNext = true
+					}
+				}
+			}
+		}
+		if !hasRel {
+			return "", fmt.Errorf("github: invalid activity pagination")
+		}
+		if !isNext {
+			continue
+		}
+		raw := strings.TrimSpace(fields[0])
+		if len(raw) < 2 || raw[0] != '<' || raw[len(raw)-1] != '>' {
+			return "", fmt.Errorf("github: invalid activity pagination")
+		}
+		target, err := url.Parse(raw[1 : len(raw)-1])
+		if err != nil {
+			return "", fmt.Errorf("github: invalid activity pagination")
+		}
+		target = requestURL.ResolveReference(target)
+		if target.Scheme != endpoint.Scheme || target.Host != endpoint.Host || target.Path != endpoint.Path || target.User != nil || target.Fragment != "" || !validQuery(target.RawQuery) || next != "" {
+			return "", fmt.Errorf("github: unsafe activity pagination")
+		}
+		next = target.RawQuery
+	}
+	return next, nil
+}

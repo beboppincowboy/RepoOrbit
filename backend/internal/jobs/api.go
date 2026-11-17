@@ -16,10 +16,13 @@ import (
 type Kind string
 
 const (
-	KindRepoMetadataRefresh Kind = "repo_metadata_refresh" // Key "repo:<repositories.id>"
-	KindActivityIssues      Kind = "activity_issues"
-	KindActivityCleanup     Kind = "activity_cleanup"
-	KindStarReconcile       Kind = "star_reconcile" // Key "user:<users.id>"
+	KindRepoMetadataRefresh  Kind = "repo_metadata_refresh" // Key "repo:<repositories.id>"
+	KindActivityIssues       Kind = "activity_issues"
+	KindActivityPullRequests Kind = "activity_pull_requests"
+	KindActivityReviews      Kind = "activity_reviews"
+	KindActivityComments     Kind = "activity_comments"
+	KindActivityCleanup      Kind = "activity_cleanup"
+	KindStarReconcile        Kind = "star_reconcile" // Key "user:<users.id>"
 )
 
 // Clock is injected everywhere timing matters.

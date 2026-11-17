@@ -17,6 +17,42 @@ type ActivityStatus struct {
 	Message         string                  `json:"message"`
 	Issues          *ActivityResourceStatus `json:"issues,omitempty"`
 	FutureResources []string                `json:"futureResources"`
+	PullRequests    *ActivityResourceStatus `json:"pullRequests,omitempty"`
+	Reviews         *ChildResourceStatus    `json:"reviews,omitempty"`
+	Comments        *ChildResourceStatus    `json:"comments,omitempty"`
+}
+
+type ChildResourceStatus struct {
+	Complete        bool    `json:"complete"`
+	PendingChildren int     `json:"pendingChildren"`
+	LastSuccessAt   *string `json:"lastSuccessAt,omitempty"`
+	FailureCode     *string `json:"failureCode,omitempty"`
+	NextAttemptAt   *string `json:"nextAttemptAt,omitempty"`
+}
+
+type CommentEvidence struct {
+	ID           string         `json:"id"`
+	RepositoryID string         `json:"repositoryId"`
+	IssueNumber  int            `json:"issueNumber"`
+	Body         string         `json:"body"`
+	URL          string         `json:"url"`
+	CreatedAt    string         `json:"createdAt"`
+	UpdatedAt    string         `json:"updatedAt"`
+	Author       *EvidenceActor `json:"author,omitempty"`
+}
+
+type CommentEvidenceConnection struct {
+	Nodes       []*CommentEvidence `json:"nodes"`
+	EndCursor   *string            `json:"endCursor,omitempty"`
+	HasNextPage bool               `json:"hasNextPage"`
+	Withheld    int                `json:"withheld"`
+	RetryAt     *string            `json:"retryAt,omitempty"`
+}
+
+type EvidenceActor struct {
+	ID    string `json:"id"`
+	Login string `json:"login"`
+	Type  string `json:"type"`
 }
 
 type Issue struct {
@@ -43,6 +79,28 @@ type MetadataStatus struct {
 	FollowSuspended bool    `json:"followSuspended"`
 }
 
+type PullRequestEvidence struct {
+	ID           string         `json:"id"`
+	RepositoryID string         `json:"repositoryId"`
+	Number       int            `json:"number"`
+	Title        string         `json:"title"`
+	State        string         `json:"state"`
+	URL          string         `json:"url"`
+	CreatedAt    string         `json:"createdAt"`
+	UpdatedAt    string         `json:"updatedAt"`
+	ClosedAt     *string        `json:"closedAt,omitempty"`
+	MergedAt     *string        `json:"mergedAt,omitempty"`
+	Author       *EvidenceActor `json:"author,omitempty"`
+}
+
+type PullRequestEvidenceConnection struct {
+	Nodes       []*PullRequestEvidence `json:"nodes"`
+	EndCursor   *string                `json:"endCursor,omitempty"`
+	HasNextPage bool                   `json:"hasNextPage"`
+	Withheld    int                    `json:"withheld"`
+	RetryAt     *string                `json:"retryAt,omitempty"`
+}
+
 type Query struct {
 }
 
@@ -63,6 +121,25 @@ type RepositoryConnection struct {
 	HasNextPage bool          `json:"hasNextPage"`
 	Withheld    int           `json:"withheld"`
 	RetryAt     *string       `json:"retryAt,omitempty"`
+}
+
+type ReviewEvidence struct {
+	ID            string         `json:"id"`
+	RepositoryID  string         `json:"repositoryId"`
+	PullRequestID string         `json:"pullRequestId"`
+	State         string         `json:"state"`
+	Body          string         `json:"body"`
+	URL           string         `json:"url"`
+	SubmittedAt   string         `json:"submittedAt"`
+	Author        *EvidenceActor `json:"author,omitempty"`
+}
+
+type ReviewEvidenceConnection struct {
+	Nodes       []*ReviewEvidence `json:"nodes"`
+	EndCursor   *string           `json:"endCursor,omitempty"`
+	HasNextPage bool              `json:"hasNextPage"`
+	Withheld    int               `json:"withheld"`
+	RetryAt     *string           `json:"retryAt,omitempty"`
 }
 
 type Viewer struct {

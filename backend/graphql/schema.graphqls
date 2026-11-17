@@ -17,3 +17,14 @@ type IssueConnection { nodes: [Issue!]!, endCursor: ID, hasNextPage: Boolean!, w
 # Errors carry extensions.code: UNAUTHENTICATED (no real signed-in viewer) or ACCESS_UNVERIFIED (GitHub could not confirm access; extensions.retryAt is RFC 3339 when rate limited).
 # selectedRepositories lists only repositories the viewer has selected (not every accessible one). first is 1..100; repositoryIds holds at most 100 ids.
 type Query { viewer: Viewer, selectedRepositories(first: Int! = 20, after: ID): RepositoryConnection!, repository(id: ID!): Repository, issues(repositoryIds: [ID!]!, first: Int! = 20, after: ID): IssueConnection! }
+
+type EvidenceActor { id: ID!, login: String!, type: String! }
+type PullRequestEvidence { id: ID!, repositoryId: ID!, number: Int!, title: String!, state: String!, url: String!, createdAt: String!, updatedAt: String!, closedAt: String, mergedAt: String, author: EvidenceActor }
+type ReviewEvidence { id: ID!, repositoryId: ID!, pullRequestId: ID!, state: String!, body: String!, url: String!, submittedAt: String!, author: EvidenceActor }
+type CommentEvidence { id: ID!, repositoryId: ID!, issueNumber: Int!, body: String!, url: String!, createdAt: String!, updatedAt: String!, author: EvidenceActor }
+type PullRequestEvidenceConnection { nodes: [PullRequestEvidence!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
+type ReviewEvidenceConnection { nodes: [ReviewEvidence!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
+type CommentEvidenceConnection { nodes: [CommentEvidence!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
+type ChildResourceStatus { complete: Boolean!, pendingChildren: Int!, lastSuccessAt: String, failureCode: String, nextAttemptAt: String }
+extend type ActivityStatus { pullRequests: ActivityResourceStatus, reviews: ChildResourceStatus, comments: ChildResourceStatus }
+extend type Query { pullRequestEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): PullRequestEvidenceConnection!, reviewEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): ReviewEvidenceConnection!, commentEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): CommentEvidenceConnection! }
