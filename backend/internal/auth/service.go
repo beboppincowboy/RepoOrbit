@@ -146,6 +146,9 @@ func (s *Service) AccessToken(ctx context.Context, userID int64) (string, error)
 	if err != nil {
 		return "", err
 	}
+	if len(row.AccessTokenEnc) == 0 {
+		return "", ErrUnauthenticated // revoked
+	}
 	access, err := open(s.Key, row.AccessTokenEnc)
 	if err != nil {
 		return "", err
@@ -176,4 +179,22 @@ func (s *Service) AccessToken(ctx context.Context, userID int64) (string, error)
 		return "", err
 	}
 	return tokens.Access, tx.Commit(ctx)
+}
+
+// Revoke ends every session of a user and wipes their stored GitHub tokens. Call it when GitHub
+// reports the user's token is no longer valid.
+func (s *Service) Revoke(ctx context.Context, userID int64) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	q := s.Q.WithTx(tx)
+	if err = q.DeleteUserSessions(ctx, userID); err != nil {
+		return err
+	}
+	if err = q.ClearUserTokens(ctx, userID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

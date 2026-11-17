@@ -57,11 +57,14 @@ type ComplexityRoot struct {
 		EndCursor   func(childComplexity int) int
 		HasNextPage func(childComplexity int) int
 		Nodes       func(childComplexity int) int
+		RetryAt     func(childComplexity int) int
+		Withheld    func(childComplexity int) int
 	}
 
 	Query struct {
 		Issues       func(childComplexity int, repositoryIds []string, first int, after *string) int
 		Repositories func(childComplexity int, first int, after *string) int
+		Repository   func(childComplexity int, id string) int
 		Viewer       func(childComplexity int) int
 	}
 
@@ -69,12 +72,17 @@ type ComplexityRoot struct {
 		Description func(childComplexity int) int
 		ID          func(childComplexity int) int
 		Name        func(childComplexity int) int
+		Private     func(childComplexity int) int
+		Selected    func(childComplexity int) int
+		SyncState   func(childComplexity int) int
 	}
 
 	RepositoryConnection struct {
 		EndCursor   func(childComplexity int) int
 		HasNextPage func(childComplexity int) int
 		Nodes       func(childComplexity int) int
+		RetryAt     func(childComplexity int) int
+		Withheld    func(childComplexity int) int
 	}
 
 	Viewer struct {
@@ -86,6 +94,7 @@ type ComplexityRoot struct {
 type QueryResolver interface {
 	Viewer(ctx context.Context) (*model.Viewer, error)
 	Repositories(ctx context.Context, first int, after *string) (*model.RepositoryConnection, error)
+	Repository(ctx context.Context, id string) (*model.Repository, error)
 	Issues(ctx context.Context, repositoryIds []string, first int, after *string) (*model.IssueConnection, error)
 }
 
@@ -157,6 +166,20 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.IssueConnection.Nodes(childComplexity), true
 
+	case "IssueConnection.retryAt":
+		if e.complexity.IssueConnection.RetryAt == nil {
+			break
+		}
+
+		return e.complexity.IssueConnection.RetryAt(childComplexity), true
+
+	case "IssueConnection.withheld":
+		if e.complexity.IssueConnection.Withheld == nil {
+			break
+		}
+
+		return e.complexity.IssueConnection.Withheld(childComplexity), true
+
 	case "Query.issues":
 		if e.complexity.Query.Issues == nil {
 			break
@@ -180,6 +203,18 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Query.Repositories(childComplexity, args["first"].(int), args["after"].(*string)), true
+
+	case "Query.repository":
+		if e.complexity.Query.Repository == nil {
+			break
+		}
+
+		args, err := ec.field_Query_repository_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.Repository(childComplexity, args["id"].(string)), true
 
 	case "Query.viewer":
 		if e.complexity.Query.Viewer == nil {
@@ -209,6 +244,27 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.Repository.Name(childComplexity), true
 
+	case "Repository.private":
+		if e.complexity.Repository.Private == nil {
+			break
+		}
+
+		return e.complexity.Repository.Private(childComplexity), true
+
+	case "Repository.selected":
+		if e.complexity.Repository.Selected == nil {
+			break
+		}
+
+		return e.complexity.Repository.Selected(childComplexity), true
+
+	case "Repository.syncState":
+		if e.complexity.Repository.SyncState == nil {
+			break
+		}
+
+		return e.complexity.Repository.SyncState(childComplexity), true
+
 	case "RepositoryConnection.endCursor":
 		if e.complexity.RepositoryConnection.EndCursor == nil {
 			break
@@ -229,6 +285,20 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.RepositoryConnection.Nodes(childComplexity), true
+
+	case "RepositoryConnection.retryAt":
+		if e.complexity.RepositoryConnection.RetryAt == nil {
+			break
+		}
+
+		return e.complexity.RepositoryConnection.RetryAt(childComplexity), true
+
+	case "RepositoryConnection.withheld":
+		if e.complexity.RepositoryConnection.Withheld == nil {
+			break
+		}
+
+		return e.complexity.RepositoryConnection.Withheld(childComplexity), true
 
 	case "Viewer.demo":
 		if e.complexity.Viewer.Demo == nil {
@@ -502,6 +572,34 @@ func (ec *executionContext) field_Query_repositories_argsAfter(
 	}
 
 	var zeroVal *string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_repository_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_repository_argsID(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["id"] = arg0
+	return args, nil
+}
+func (ec *executionContext) field_Query_repository_argsID(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (string, error) {
+	if _, ok := rawArgs["id"]; !ok {
+		var zeroVal string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("id"))
+	if tmp, ok := rawArgs["id"]; ok {
+		return ec.unmarshalNID2string(ctx, tmp)
+	}
+
+	var zeroVal string
 	return zeroVal, nil
 }
 
@@ -940,6 +1038,91 @@ func (ec *executionContext) fieldContext_IssueConnection_hasNextPage(_ context.C
 	return fc, nil
 }
 
+func (ec *executionContext) _IssueConnection_withheld(ctx context.Context, field graphql.CollectedField, obj *model.IssueConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueConnection_withheld(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Withheld, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueConnection_withheld(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueConnection_retryAt(ctx context.Context, field graphql.CollectedField, obj *model.IssueConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueConnection_retryAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RetryAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueConnection_retryAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Query_viewer(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Query_viewer(ctx, field)
 	if err != nil {
@@ -1032,6 +1215,10 @@ func (ec *executionContext) fieldContext_Query_repositories(ctx context.Context,
 				return ec.fieldContext_RepositoryConnection_endCursor(ctx, field)
 			case "hasNextPage":
 				return ec.fieldContext_RepositoryConnection_hasNextPage(ctx, field)
+			case "withheld":
+				return ec.fieldContext_RepositoryConnection_withheld(ctx, field)
+			case "retryAt":
+				return ec.fieldContext_RepositoryConnection_retryAt(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type RepositoryConnection", field.Name)
 		},
@@ -1044,6 +1231,72 @@ func (ec *executionContext) fieldContext_Query_repositories(ctx context.Context,
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
 	if fc.Args, err = ec.field_Query_repositories_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_repository(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_repository(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().Repository(rctx, fc.Args["id"].(string))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.Repository)
+	fc.Result = res
+	return ec.marshalORepository2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐRepository(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_repository(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_Repository_id(ctx, field)
+			case "name":
+				return ec.fieldContext_Repository_name(ctx, field)
+			case "description":
+				return ec.fieldContext_Repository_description(ctx, field)
+			case "private":
+				return ec.fieldContext_Repository_private(ctx, field)
+			case "selected":
+				return ec.fieldContext_Repository_selected(ctx, field)
+			case "syncState":
+				return ec.fieldContext_Repository_syncState(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type Repository", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_repository_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -1095,6 +1348,10 @@ func (ec *executionContext) fieldContext_Query_issues(ctx context.Context, field
 				return ec.fieldContext_IssueConnection_endCursor(ctx, field)
 			case "hasNextPage":
 				return ec.fieldContext_IssueConnection_hasNextPage(ctx, field)
+			case "withheld":
+				return ec.fieldContext_IssueConnection_withheld(ctx, field)
+			case "retryAt":
+				return ec.fieldContext_IssueConnection_retryAt(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type IssueConnection", field.Name)
 		},
@@ -1376,6 +1633,138 @@ func (ec *executionContext) fieldContext_Repository_description(_ context.Contex
 	return fc, nil
 }
 
+func (ec *executionContext) _Repository_private(ctx context.Context, field graphql.CollectedField, obj *model.Repository) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Repository_private(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Private, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Repository_private(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Repository",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Repository_selected(ctx context.Context, field graphql.CollectedField, obj *model.Repository) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Repository_selected(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Selected, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Repository_selected(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Repository",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Repository_syncState(ctx context.Context, field graphql.CollectedField, obj *model.Repository) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Repository_syncState(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.SyncState, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Repository_syncState(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Repository",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _RepositoryConnection_nodes(ctx context.Context, field graphql.CollectedField, obj *model.RepositoryConnection) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_RepositoryConnection_nodes(ctx, field)
 	if err != nil {
@@ -1421,6 +1810,12 @@ func (ec *executionContext) fieldContext_RepositoryConnection_nodes(_ context.Co
 				return ec.fieldContext_Repository_name(ctx, field)
 			case "description":
 				return ec.fieldContext_Repository_description(ctx, field)
+			case "private":
+				return ec.fieldContext_Repository_private(ctx, field)
+			case "selected":
+				return ec.fieldContext_Repository_selected(ctx, field)
+			case "syncState":
+				return ec.fieldContext_Repository_syncState(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type Repository", field.Name)
 		},
@@ -1508,6 +1903,91 @@ func (ec *executionContext) fieldContext_RepositoryConnection_hasNextPage(_ cont
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _RepositoryConnection_withheld(ctx context.Context, field graphql.CollectedField, obj *model.RepositoryConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_RepositoryConnection_withheld(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Withheld, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_RepositoryConnection_withheld(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "RepositoryConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _RepositoryConnection_retryAt(ctx context.Context, field graphql.CollectedField, obj *model.RepositoryConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_RepositoryConnection_retryAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RetryAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_RepositoryConnection_retryAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "RepositoryConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -3637,6 +4117,13 @@ func (ec *executionContext) _IssueConnection(ctx context.Context, sel ast.Select
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
+		case "withheld":
+			out.Values[i] = ec._IssueConnection_withheld(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "retryAt":
+			out.Values[i] = ec._IssueConnection_retryAt(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -3711,6 +4198,25 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "repository":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_repository(ctx, field)
 				return res
 			}
 
@@ -3799,6 +4305,21 @@ func (ec *executionContext) _Repository(ctx context.Context, sel ast.SelectionSe
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
+		case "private":
+			out.Values[i] = ec._Repository_private(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "selected":
+			out.Values[i] = ec._Repository_selected(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "syncState":
+			out.Values[i] = ec._Repository_syncState(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -3845,6 +4366,13 @@ func (ec *executionContext) _RepositoryConnection(ctx context.Context, sel ast.S
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
+		case "withheld":
+			out.Values[i] = ec._RepositoryConnection_withheld(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "retryAt":
+			out.Values[i] = ec._RepositoryConnection_retryAt(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -4776,6 +5304,13 @@ func (ec *executionContext) marshalOID2ᚖstring(ctx context.Context, sel ast.Se
 	_ = ctx
 	res := graphql.MarshalID(*v)
 	return res
+}
+
+func (ec *executionContext) marshalORepository2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐRepository(ctx context.Context, sel ast.SelectionSet, v *model.Repository) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._Repository(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalOString2ᚖstring(ctx context.Context, v any) (*string, error) {

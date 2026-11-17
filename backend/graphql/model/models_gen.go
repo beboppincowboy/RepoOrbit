@@ -13,6 +13,8 @@ type IssueConnection struct {
 	Nodes       []*Issue `json:"nodes"`
 	EndCursor   *string  `json:"endCursor,omitempty"`
 	HasNextPage bool     `json:"hasNextPage"`
+	Withheld    int      `json:"withheld"`
+	RetryAt     *string  `json:"retryAt,omitempty"`
 }
 
 type Query struct {
@@ -22,12 +24,17 @@ type Repository struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Private     bool   `json:"private"`
+	Selected    bool   `json:"selected"`
+	SyncState   string `json:"syncState"`
 }
 
 type RepositoryConnection struct {
 	Nodes       []*Repository `json:"nodes"`
 	EndCursor   *string       `json:"endCursor,omitempty"`
 	HasNextPage bool          `json:"hasNextPage"`
+	Withheld    int           `json:"withheld"`
+	RetryAt     *string       `json:"retryAt,omitempty"`
 }
 
 type Viewer struct {

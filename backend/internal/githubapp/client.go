@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -98,4 +99,105 @@ func (c *Client) User(ctx context.Context, accessToken string) (User, error) {
 		return User{}, fmt.Errorf("github user lookup: bad response")
 	}
 	return u, nil
+}
+
+// APIError is a non-2xx GitHub response. RetryAt is set only when GitHub asked us to wait (rate limits).
+type APIError struct {
+	Status  int
+	RetryAt time.Time
+}
+
+func (e *APIError) Error() string { return fmt.Sprintf("github: status %d", e.Status) }
+
+func (e *APIError) Unauthorized() bool { return e.Status == http.StatusUnauthorized }
+func (e *APIError) NotFound() bool     { return e.Status == http.StatusNotFound }
+func (e *APIError) RateLimited() bool  { return !e.RetryAt.IsZero() }
+
+func apiError(resp *http.Response) *APIError {
+	e := &APIError{Status: resp.StatusCode}
+	h := resp.Header
+	if resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode == http.StatusForbidden && (h.Get("X-RateLimit-Remaining") == "0" || h.Get("Retry-After") != "")) {
+		e.RetryAt = time.Now().Add(time.Minute) // GitHub gave no usable time
+		if secs, err := strconv.Atoi(h.Get("Retry-After")); err == nil && secs > 0 {
+			e.RetryAt = time.Now().Add(time.Duration(secs) * time.Second)
+		} else if reset, err := strconv.ParseInt(h.Get("X-RateLimit-Reset"), 10, 64); err == nil && reset > 0 {
+			e.RetryAt = time.Unix(reset, 0)
+		}
+	}
+	return e
+}
+
+type Repo struct {
+	ID          int64  `json:"id"`
+	FullName    string `json:"full_name"`
+	Description string `json:"description"` // GitHub sends null for none
+	Private     bool   `json:"private"`
+	Owner       struct {
+		ID    int64  `json:"id"`
+		Login string `json:"login"`
+		Type  string `json:"type"`
+	} `json:"owner"`
+}
+
+type Installation struct {
+	ID      int64 `json:"id"`
+	Account struct {
+		Login string `json:"login"`
+	} `json:"account"`
+}
+
+// get decodes one JSON response into out and reports whether GitHub advertises another page.
+func (c *Client) get(ctx context.Context, token, path string, out any) (hasNext bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.APIURL+path, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, apiError(resp)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(out); err != nil {
+		return false, fmt.Errorf("github %s: bad response", path)
+	}
+	return strings.Contains(resp.Header.Get("Link"), `rel="next"`), nil
+}
+
+// OwnedRepos lists one page of repositories the user owns. With a user-to-server token GitHub returns
+// only those the app can also reach (the intersection of user access and installations).
+func (c *Client) OwnedRepos(ctx context.Context, token string, page, perPage int) ([]Repo, bool, error) {
+	var out []Repo
+	next, err := c.get(ctx, token, fmt.Sprintf("/user/repos?affiliation=owner&sort=full_name&per_page=%d&page=%d", perPage, page), &out)
+	return out, next, err
+}
+
+// Installations lists one page of app installations the user can access.
+func (c *Client) Installations(ctx context.Context, token string, page int) ([]Installation, bool, error) {
+	var out struct {
+		Installations []Installation `json:"installations"`
+	}
+	next, err := c.get(ctx, token, fmt.Sprintf("/user/installations?per_page=100&page=%d", page), &out)
+	return out.Installations, next, err
+}
+
+// InstallationRepos lists one page of repositories the user can reach through an installation.
+func (c *Client) InstallationRepos(ctx context.Context, token string, installationID int64, page int) ([]Repo, bool, error) {
+	var out struct {
+		Repositories []Repo `json:"repositories"`
+	}
+	next, err := c.get(ctx, token, fmt.Sprintf("/user/installations/%d/repositories?per_page=100&page=%d", installationID, page), &out)
+	return out.Repositories, next, err
+}
+
+// Repo fetches one repository by ID; a 404 means the token cannot read it.
+func (c *Client) Repo(ctx context.Context, token string, id int64) (Repo, error) {
+	var out Repo
+	_, err := c.get(ctx, token, fmt.Sprintf("/repositories/%d", id), &out)
+	return out, err
 }

@@ -117,11 +117,15 @@ func TestModesSeeOnlyTheirOwnRows(t *testing.T) {
 	if strings.Contains(got, "real/") || strings.Contains(got, "real issue") || !strings.Contains(got, "orbit/example") {
 		t.Fatalf("demo mode: %s", got)
 	}
+	// Real mode is scoped to the signed-in user's selections (U2b), so a call with no viewer, or an unselected
+	// real row, returns nothing: neither demo rows nor other people's real rows leak.
 	got = run(false, q)
-	if strings.Contains(got, "orbit/") || strings.Contains(got, "onboarding") || strings.Contains(got, "Document the release") {
-		t.Fatalf("real mode shows demo rows: %s", got)
+	for _, leaked := range []string{"orbit/", "onboarding", "Document the release", "real/private-thing", "real issue"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("real mode leaked %q: %s", leaked, got)
+		}
 	}
-	if !strings.Contains(got, "real/private-thing") || !strings.Contains(got, "real issue") {
-		t.Fatalf("real mode lost real rows: %s", got)
+	if !strings.Contains(got, "sign in required") {
+		t.Fatalf("real mode served a request with no viewer: %s", got)
 	}
 }
