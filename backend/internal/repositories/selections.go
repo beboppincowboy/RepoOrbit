@@ -71,6 +71,11 @@ func (s *Service) storeSelection(ctx context.Context, userID int64, repo githuba
 			return err
 		}
 	}
+	if s.OnEligibilityChange != nil { // a reselect may be what unblocks paused work (never dead work)
+		if err := s.OnEligibilityChange(ctx, tx, userID); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }
 

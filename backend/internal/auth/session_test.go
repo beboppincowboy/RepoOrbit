@@ -5,6 +5,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp/fake"
@@ -355,4 +357,39 @@ func TestSessionLookupDatabaseErrorIs503(t *testing.T) {
 	if got := e.do("GET", "/auth/me", nil).StatusCode; got != 503 {
 		t.Fatalf("me during outage: %d", got)
 	}
+}
+
+// Signing in runs OnSignIn in the same transaction as the user upsert and session, so work paused for a missing
+// credential resumes with the sign-in; a failing hook means no sign-in at all (no user, no session).
+func TestSignInRunsEligibilityHookInItsTransaction(t *testing.T) {
+	e := setup(t)
+	var seen []int64
+	e.h.Service.OnSignIn = func(ctx context.Context, tx pgx.Tx, userID int64) error {
+		var n int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE user_id = $1`, userID).Scan(&n); err != nil || n != 1 {
+			t.Errorf("hook ran outside the sign-in transaction: sessions=%d err=%v", n, err)
+		}
+		seen = append(seen, userID)
+		return nil
+	}
+	e.signIn("octocat")
+	if len(seen) != 1 {
+		t.Fatalf("hook calls: %v", seen)
+	}
+	e.h.Service.OnSignIn = func(context.Context, pgx.Tx, int64) error { return errors.New("boom") }
+	pre := countRows(t, e, "sessions")
+	if resp := e.do("GET", e.authorize("hubot"), nil); resp.Header.Get("Location") == appURL+"/" {
+		t.Fatal("sign-in succeeded despite a failing hook")
+	}
+	if countRows(t, e, "sessions") != pre || countRows(t, e, "users WHERE login = 'hubot'") != 0 {
+		t.Fatal("a failed sign-in left a user or session behind")
+	}
+}
+
+func countRows(t *testing.T, e *env, from string) (n int) {
+	t.Helper()
+	if err := e.h.Service.Pool.QueryRow(context.Background(), "SELECT count(*) FROM "+from).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

@@ -56,6 +56,7 @@ func main() {
 		repos.OnEligibilityChange = func(ctx context.Context, tx pgx.Tx, userID int64) error {
 			return ingestion.RecheckEligibility(ctx, tx, userID, time.Now())
 		}
+		authHandler.Service.OnSignIn = repos.OnEligibilityChange
 		webhooks = ingestion.WebhookHandler(ingestion.WebhookDeps{Pool: pool, Secret: cfg.WebhookSecret, Clock: jobs.SystemClock{}})
 		if cfg.AppSlug != "" {
 			repos.InstallURL = cfg.GitHubURL + "/apps/" + cfg.AppSlug + "/installations/new"

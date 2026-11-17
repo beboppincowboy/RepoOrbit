@@ -133,7 +133,7 @@ func (s *Service) Installed(w http.ResponseWriter, r *http.Request) {
 	})
 	for _, in := range installs {
 		if in.ID == id {
-			if err := s.Queries.UpsertInstallation(r.Context(), db.UpsertInstallationParams{UserID: userID, InstallationID: in.ID, AccountLogin: in.Account.Login}); err != nil {
+			if err := s.storeInstallation(r.Context(), userID, in); err != nil {
 				log.Printf("repositories: store installation: %v", err)
 				return
 			}
@@ -145,4 +145,23 @@ func (s *Service) Installed(w http.ResponseWriter, r *http.Request) {
 	if err == nil && complete {
 		result = "rejected"
 	}
+}
+
+// storeInstallation saves a connected installation and runs OnEligibilityChange in one transaction, so work paused
+// for lack of access resumes with it.
+func (s *Service) storeInstallation(ctx context.Context, userID int64, in githubapp.Installation) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := s.Queries.WithTx(tx).UpsertInstallation(ctx, db.UpsertInstallationParams{UserID: userID, InstallationID: in.ID, AccountLogin: in.Account.Login}); err != nil {
+		return err
+	}
+	if s.OnEligibilityChange != nil {
+		if err := s.OnEligibilityChange(ctx, tx, userID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
