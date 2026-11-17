@@ -4,6 +4,7 @@ package ingestion
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -66,7 +67,7 @@ func RequestActivity(ctx context.Context, tx pgx.Tx, repoID int64, now time.Time
 			return err
 		}
 	}
-	for _, kind := range []jobs.Kind{jobs.KindActivityReleases, jobs.KindActivityIssueEvents} {
+	for _, kind := range eventStreamKinds {
 		if err := jobs.Enqueue(ctx, tx, kind, repoKey(repoID), now); err != nil {
 			return err
 		}
@@ -146,3 +147,31 @@ func SignalActivity(ctx context.Context, tx pgx.Tx, repoID int64, now time.Time)
 	}
 	return ActivityAccepted, nil
 }
+
+// activityFailureCode maps a job error to the safe code stored in last_error_code. ok is false for a lost claim or an
+// internal "continue" deferral, which are not failures. Unknown reasons are recorded as CodeUpstream.
+func activityFailureCode(result error) (code string, ok bool) {
+	if result == nil || errors.Is(result, jobs.ErrLostClaim) {
+		return "", false
+	}
+	code = CodeUpstream
+	var deferred *jobs.Defer
+	var paused *jobs.Pause
+	if errors.As(result, &deferred) {
+		if deferred.Reason == "continue" {
+			return "", false
+		}
+		code = deferred.Reason
+	}
+	if errors.As(result, &paused) {
+		code = paused.Reason
+	}
+	switch code {
+	case CodeNoCredential, CodeRateLimited, CodeUnverified, CodeAccessMoved, CodeUpstream:
+		return code, true
+	}
+	return CodeUpstream, true
+}
+
+// eventStreamKinds are the streams added after issues and pull requests.
+var eventStreamKinds = []jobs.Kind{jobs.KindActivityReleases, jobs.KindActivityIssueEvents}

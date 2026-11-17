@@ -8,19 +8,22 @@ const when = (iso: string) => new Date(iso).toLocaleString();
 const knownCodes = new Set(["no_credential", "rate_limited", "access_unverified", "access_changed", "upstream_error", "unknown"]);
 const safe = (code: string) => (knownCodes.has(code) ? code : "unknown").replace(/_/g, " ");
 
+const failNote = (code: string | null) => (code ? ` Last attempt failed (${safe(code)}).` : "");
+const nextNote = (at: string | null) => (at ? ` Next attempt ${when(at)}.` : "");
+
 function stream(name: string, r: ActivityResourceStatus): string {
-  const fail = r.failureCode ? ` Last attempt failed (${safe(r.failureCode)}).` : "";
+  const fail = failNote(r.failureCode);
   if (r.jobState === "dead") return `${name}: stopped after repeated failures; an operator must requeue it.${fail}`;
   if (r.jobState === "paused") return `${name}: paused pending authorization.${fail}`;
-  const next = r.nextAttemptAt && r.jobState === "queued" ? ` Next attempt ${when(r.nextAttemptAt)}.` : "";
+  const next = r.jobState === "queued" ? nextNote(r.nextAttemptAt) : "";
   if (r.phase === "current") return `${name}: synchronized${r.lastSuccessAt ? ` as of ${when(r.lastSuccessAt)}` : ""}.${fail}${next}`;
   const through = r.catchupThrough ? ` through ${when(r.catchupThrough)}` : "";
   return `${name}: importing (${r.phase === "backfill" || r.phase === "catchup" ? r.phase : "in progress"}${through}).${fail}${next}`;
 }
 
 function child(name: string, r: ChildResourceStatus): string {
-  const fail = r.failureCode ? ` Last attempt failed (${safe(r.failureCode)}).` : "";
-  const next = r.nextAttemptAt ? ` Next attempt ${when(r.nextAttemptAt)}.` : "";
+  const fail = failNote(r.failureCode);
+  const next = nextNote(r.nextAttemptAt);
   if (r.complete && !r.pendingChildren) return `${name}: complete${r.lastSuccessAt ? ` as of ${when(r.lastSuccessAt)}` : ""}.${fail}`;
   return `${name}: incomplete, ${r.pendingChildren} pull request${r.pendingChildren === 1 ? "" : "s"} pending.${fail}${next}`;
 }

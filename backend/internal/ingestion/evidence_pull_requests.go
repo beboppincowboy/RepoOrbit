@@ -25,25 +25,9 @@ func (d *Deps) SyncPullRequests(ctx context.Context, job jobs.Job, fence jobs.Cl
 		return jobs.Permanent(err)
 	}
 	defer func() {
-		if result == nil || errors.Is(result, jobs.ErrLostClaim) {
+		code, ok := activityFailureCode(result)
+		if !ok {
 			return
-		}
-		code := CodeUpstream
-		var de *jobs.Defer
-		var pause *jobs.Pause
-		if errors.As(result, &de) {
-			if de.Reason == "continue" {
-				return
-			}
-			code = de.Reason
-		}
-		if errors.As(result, &pause) {
-			code = pause.Reason
-		}
-		switch code {
-		case CodeNoCredential, CodeRateLimited, CodeUnverified, CodeAccessMoved, CodeUpstream:
-		default:
-			code = CodeUpstream
 		}
 		_ = fence.Commit(ctx, func(tx pgx.Tx) error {
 			_, err := tx.Exec(ctx, `UPDATE activity_resources SET last_error_code=$2 WHERE repository_id=$1 AND resource='pull_requests'`, repoID, code)

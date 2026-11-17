@@ -20,25 +20,9 @@ type issueFetcher interface {
 // SyncIssues imports one page and its checkpoint under the claim, selection and access fences.
 func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) (result error) {
 	defer func() {
-		if result == nil || errors.Is(result, jobs.ErrLostClaim) {
+		code, ok := activityFailureCode(result)
+		if !ok {
 			return
-		}
-		code := CodeUpstream
-		var deferred *jobs.Defer
-		var paused *jobs.Pause
-		if errors.As(result, &deferred) {
-			if deferred.Reason == "continue" {
-				return
-			}
-			code = deferred.Reason
-		}
-		if errors.As(result, &paused) {
-			code = paused.Reason
-		}
-		switch code {
-		case CodeNoCredential, CodeRateLimited, CodeUnverified, CodeAccessMoved, CodeUpstream:
-		default:
-			code = CodeUpstream
 		}
 		repoID, err := parseRepoKey(job.Key)
 		if err != nil {
