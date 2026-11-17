@@ -193,6 +193,13 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 					continue
 				}
 				ids = append(ids, issue.ID)
+				var tombstoned bool
+				if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM activity_tombstones WHERE resource='issues' AND source_id=$1)`, issue.ID).Scan(&tombstoned); err != nil {
+					return err
+				}
+				if tombstoned {
+					continue
+				}
 				if err := registerChild(ctx, tx, repoID, "comments", issue.Number, issue.Number, now); err != nil {
 					return err
 				}

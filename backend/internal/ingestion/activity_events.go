@@ -106,7 +106,7 @@ func (d *Deps) syncEventResource(ctx context.Context, job jobs.Job, fence jobs.C
 				if !v.UpdatedAt.IsZero() {
 					updated = v.UpdatedAt
 				}
-				_, err = tx.Exec(ctx, `INSERT INTO activity_releases(source_id,repository_id,name,tag_name,body,html_url,created_at,updated_at,published_at,observed_at,prerelease,author_id,author_login,author_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(source_id) DO UPDATE SET name=EXCLUDED.name,tag_name=EXCLUDED.tag_name,body=EXCLUDED.body,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,published_at=EXCLUDED.published_at,observed_at=EXCLUDED.observed_at,prerelease=EXCLUDED.prerelease,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_releases.repository_id=EXCLUDED.repository_id AND activity_releases.updated_at IS NOT NULL AND EXCLUDED.updated_at IS NOT NULL AND activity_releases.updated_at<EXCLUDED.updated_at`, v.ID, repoID, v.Name, v.TagName, v.Body, v.HTMLURL, v.CreatedAt, updated, v.PublishedAt, started, v.Prerelease, aid, login, kind)
+				_, err = tx.Exec(ctx, `INSERT INTO activity_releases(source_id,repository_id,name,tag_name,body,html_url,created_at,updated_at,published_at,observed_at,prerelease,author_id,author_login,author_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(source_id) DO UPDATE SET name=EXCLUDED.name,tag_name=EXCLUDED.tag_name,body=EXCLUDED.body,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,published_at=EXCLUDED.published_at,observed_at=EXCLUDED.observed_at,prerelease=EXCLUDED.prerelease,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_releases.repository_id=EXCLUDED.repository_id AND (activity_releases.updated_at IS NULL OR EXCLUDED.updated_at IS NULL OR activity_releases.updated_at<EXCLUDED.updated_at)`, v.ID, repoID, v.Name, v.TagName, v.Body, v.HTMLURL, v.CreatedAt, updated, v.PublishedAt, started, v.Prerelease, aid, login, kind)
 				if err != nil {
 					return err
 				}
@@ -132,7 +132,7 @@ func (d *Deps) syncEventResource(ctx context.Context, job jobs.Job, fence jobs.C
 					label = v.Label.Name
 				}
 				ids = append(ids, v.ID)
-				_, err = tx.Exec(ctx, `INSERT INTO activity_issue_events(source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at,actor_id,actor_login,actor_type,assignee_id,assignee_login,assignee_type,label) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(source_id) DO NOTHING`, v.ID, repoID, v.Issue.ID, v.Issue.Number, v.Event, v.URL, v.CreatedAt, started, aid, login, kind, sid, slogin, skind, label)
+				_, err = tx.Exec(ctx, `INSERT INTO activity_issue_events(source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at,actor_id,actor_login,actor_type,assignee_id,assignee_login,assignee_type,label) SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15 WHERE NOT EXISTS (SELECT 1 FROM activity_tombstones WHERE resource='issues' AND source_id=$3) ON CONFLICT(source_id) DO NOTHING`, v.ID, repoID, v.Issue.ID, v.Issue.Number, v.Event, v.URL, v.CreatedAt, started, aid, login, kind, sid, slogin, skind, label)
 				if err != nil {
 					return err
 				}

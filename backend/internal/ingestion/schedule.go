@@ -133,14 +133,15 @@ func SignalActivity(ctx context.Context, tx pgx.Tx, repoID int64, now time.Time)
 	if err = tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state IN ('queued','running')), count(*) FILTER (WHERE state='dead') FROM jobs WHERE key=$1 AND kind = ANY($2)`, repoKey(repoID), activityParentKinds).Scan(&busy, &dead); err != nil {
 		return "", err
 	}
-	if dead > 0 {
-		return ActivityDead, nil
-	}
-	if _, err = tx.Exec(ctx, `UPDATE activity_resources SET phase='catchup',page=1,cursor='',scan_started_at=NULL,current_scan='{}',previous_scan=NULL,generation=generation+1 WHERE repository_id=$1 AND phase='current'`, repoID); err != nil {
+	// A dead stream is skipped, not a reason to stop the others from reconciling.
+	if _, err = tx.Exec(ctx, `UPDATE activity_resources r SET phase='catchup',page=1,cursor='',scan_started_at=NULL,current_scan='{}',previous_scan=NULL,generation=generation+1 WHERE repository_id=$1 AND phase='current' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.key=$2 AND j.kind='activity_'||r.resource AND j.state='dead')`, repoID, repoKey(repoID)); err != nil {
 		return "", err
 	}
 	if err = RequestActivity(ctx, tx, repoID, now); err != nil {
 		return "", err
+	}
+	if dead > 0 {
+		return ActivityDead, nil
 	}
 	if busy > 0 {
 		return ActivityCoalesced, nil
