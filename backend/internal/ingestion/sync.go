@@ -92,17 +92,7 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 			if repo.IsPrivate {
 				return nil
 			}
-			return fence.Commit(ctx, func(tx pgx.Tx) error {
-				if current, err := snap.StillCurrent(ctx, tx); err != nil {
-					return err
-				} else if !current {
-					return errRace
-				}
-				if err := db.New(tx).MarkRepositoryPrivate(ctx, repoID); err != nil {
-					return err
-				}
-				return accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeRepository, repoID)
-			})
+			return tightenToPrivate(ctx, fence, repoID)
 		}
 		before := d.Access.CheckOne(ctx, uid, repoID, true)
 		if before.Unverified {

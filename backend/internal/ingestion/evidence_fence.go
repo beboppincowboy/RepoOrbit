@@ -50,19 +50,7 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 			if repo.IsPrivate {
 				return nil
 			}
-			return fence.Commit(ctx, func(tx pgx.Tx) error {
-				current, err := snap.StillCurrent(ctx, tx)
-				if err != nil {
-					return err
-				}
-				if !current {
-					return errRace
-				}
-				if err := db.New(tx).MarkRepositoryPrivate(ctx, repoID); err != nil {
-					return err
-				}
-				return accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeRepository, repoID)
-			})
+			return tightenToPrivate(ctx, fence, repoID)
 		}
 		before := d.Access.CheckOne(ctx, uid, repoID, true)
 		if before.Unverified {
@@ -153,4 +141,17 @@ func evidenceActor(u *githubapp.IssueUser) (any, any, any, error) {
 		return nil, nil, nil, errors.New("invalid activity actor")
 	}
 	return u.ID, u.Login, u.Type, nil
+}
+
+// tightenToPrivate records that repoID turned private: it marks the repository private and bumps its access epoch
+// inside one fenced commit. It takes no snapshot check: tightening can only withhold data, so a stale snapshot is no
+// reason to skip it, and sharing the global fence row first would turn the bump into a lock upgrade that two
+// concurrent tightenings deadlock on.
+func tightenToPrivate(ctx context.Context, fence jobs.ClaimFence, repoID int64) error {
+	return fence.Commit(ctx, func(tx pgx.Tx) error {
+		if err := db.New(tx).MarkRepositoryPrivate(ctx, repoID); err != nil {
+			return err
+		}
+		return accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeRepository, repoID)
+	})
 }
