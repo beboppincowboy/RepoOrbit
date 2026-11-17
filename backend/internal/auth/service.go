@@ -40,6 +40,9 @@ type Service struct {
 	GitHub  *githubapp.Client
 	Key     []byte
 	Now     func() time.Time
+	// OnSignIn runs inside the sign-in transaction after the user and session rows are written, so work paused for a
+	// missing credential (ingestion.RecheckEligibility) resumes with it. An error fails the whole sign-in. Nil does nothing.
+	OnSignIn func(ctx context.Context, tx pgx.Tx, userID int64) error
 }
 
 func (s *Service) now() time.Time {
@@ -99,16 +102,32 @@ func (s *Service) CompleteLogin(ctx context.Context, queryState, cookieState, co
 			return "", err
 		}
 	}
-	userID, err := s.Queries.UpsertUser(ctx, db.UpsertUserParams{GithubID: gh.ID, Login: gh.Login, AccessTokenEnc: access, RefreshTokenEnc: refresh, AccessExpiresAt: timestamptz(tokens.AccessExpiresAt), RefreshExpiresAt: timestamptz(tokens.RefreshExpiresAt)})
-	if err != nil {
-		return "", err
-	}
 	token, err := randomToken()
 	if err != nil {
 		return "", err
 	}
+	// The user, the session and the sign-in hook commit together: no half sign-in, and work paused for a missing
+	// credential resumes with the credential that just arrived.
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	q := s.Queries.WithTx(tx)
+	userID, err := q.UpsertUser(ctx, db.UpsertUserParams{GithubID: gh.ID, Login: gh.Login, AccessTokenEnc: access, RefreshTokenEnc: refresh, AccessExpiresAt: timestamptz(tokens.AccessExpiresAt), RefreshExpiresAt: timestamptz(tokens.RefreshExpiresAt)})
+	if err != nil {
+		return "", err
+	}
 	now := s.now()
-	if err = s.Queries.CreateSession(ctx, db.CreateSessionParams{TokenHash: sha256Digest(token), UserID: userID, CreatedAt: timestamptz(now), ExpiresAt: timestamptz(now.Add(SessionLifetime))}); err != nil {
+	if err = q.CreateSession(ctx, db.CreateSessionParams{TokenHash: sha256Digest(token), UserID: userID, CreatedAt: timestamptz(now), ExpiresAt: timestamptz(now.Add(SessionLifetime))}); err != nil {
+		return "", err
+	}
+	if s.OnSignIn != nil {
+		if err = s.OnSignIn(ctx, tx, userID); err != nil {
+			return "", err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
 		return "", err
 	}
 	return token, nil
