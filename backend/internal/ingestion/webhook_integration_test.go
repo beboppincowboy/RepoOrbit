@@ -275,3 +275,77 @@ func TestRealRefreshOnlyForSelectedRepositories(t *testing.T) {
 		t.Fatalf("%d jobs for an unselected repository", n)
 	}
 }
+
+func revocationFixture(t *testing.T) (pool *pgxpool.Pool, uid int64) {
+	t.Helper()
+	_, pool = testutil.Database(t)
+	ctx := context.Background()
+	if err := pool.QueryRow(ctx, `INSERT INTO users (github_id, login, access_token_enc, refresh_token_enc) VALUES (555, 'octo', '\x0102', '\x0304') RETURNING id`).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES ('\x01', $1, now(), now() + interval '1 day')`, uid); err != nil {
+		t.Fatal(err)
+	}
+	return pool, uid
+}
+
+func tokenAndSessionState(t *testing.T, pool *pgxpool.Pool, uid int64) (tokenLen, sessions int) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pool.QueryRow(ctx, `SELECT octet_length(access_token_enc) FROM users WHERE id = $1`, uid).Scan(&tokenLen); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM sessions WHERE user_id = $1`, uid).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	return
+}
+
+// A signed revocation ends the user's credential and sessions, not only their cached reads, in the same transaction
+// as the fence bump; redelivery changes nothing and an unknown sender is acknowledged with no effect.
+func TestAuthorizationRevocationClearsCredentialAndSessions(t *testing.T) {
+	pool, uid := revocationFixture(t)
+	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
+	body := `{"action":"revoked","sender":{"id":555}}`
+	if w := post(h, testSecret, "github_app_authorization", "rev-1", body, ""); w.Code != 200 {
+		t.Fatalf("status %d %s", w.Code, w.Body.String())
+	}
+	if tok, sess := tokenAndSessionState(t, pool, uid); tok != 0 || sess != 0 {
+		t.Fatalf("token bytes %d, sessions %d; want both cleared", tok, sess)
+	}
+	var epoch int64
+	if err := pool.QueryRow(context.Background(), `SELECT epoch FROM access_fences WHERE scope = 'user' AND subject_id = $1`, uid).Scan(&epoch); err != nil || epoch != 1 {
+		t.Fatalf("user epoch %d err %v", epoch, err)
+	}
+	if w := post(h, testSecret, "github_app_authorization", "rev-1", body, ""); w.Code != 200 {
+		t.Fatalf("redelivery status %d", w.Code)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT epoch FROM access_fences WHERE scope = 'user' AND subject_id = $1`, uid).Scan(&epoch); err != nil || epoch != 1 {
+		t.Fatalf("redelivery bumped again: epoch %d", epoch)
+	}
+	if w := post(h, testSecret, "github_app_authorization", "rev-2", `{"action":"revoked","sender":{"id":999999}}`, ""); w.Code != 200 {
+		t.Fatalf("unknown sender status %d", w.Code)
+	}
+}
+
+// A failing cleanup rolls the whole delivery back: no bump without cleanup, no delivery row, so GitHub can redeliver.
+func TestAuthorizationRevocationCleanupFailureRollsBack(t *testing.T) {
+	pool, uid := revocationFixture(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE FUNCTION fail_clear() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'boom'; END $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE TRIGGER fail_clear BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION fail_clear()`); err != nil {
+		t.Fatal(err)
+	}
+	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
+	if w := post(h, testSecret, "github_app_authorization", "rev-fail", `{"action":"revoked","sender":{"id":555}}`, ""); w.Code != 500 {
+		t.Fatalf("status %d, want 500 so GitHub redelivers", w.Code)
+	}
+	if tok, sess := tokenAndSessionState(t, pool, uid); tok == 0 || sess != 1 {
+		t.Fatalf("cleanup partly landed: token bytes %d, sessions %d", tok, sess)
+	}
+	if n := count(t, pool, "webhook_deliveries") + count(t, pool, "access_fences"); n != 0 {
+		t.Fatalf("bump or delivery row survived the rollback (%d rows)", n)
+	}
+}
