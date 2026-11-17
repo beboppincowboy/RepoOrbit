@@ -19,6 +19,7 @@ func TestLoadConfigModes(t *testing.T) {
 		{"only secret", map[string]string{"GITHUB_CLIENT_SECRET": "x"}, "both", false},
 		{"real without key", map[string]string{"GITHUB_CLIENT_ID": "x", "GITHUB_CLIENT_SECRET": "y"}, "TOKEN_ENCRYPTION_KEY", false},
 		{"real short key", map[string]string{"GITHUB_CLIENT_ID": "x", "GITHUB_CLIENT_SECRET": "y", "TOKEN_ENCRYPTION_KEY": "c2hvcnQ="}, "TOKEN_ENCRYPTION_KEY", false},
+		{"real bad app url", map[string]string{"GITHUB_CLIENT_ID": "x", "GITHUB_CLIENT_SECRET": "y", "TOKEN_ENCRYPTION_KEY": key, "APP_URL": "localhost:3000/app"}, "APP_URL", false},
 		{"real", map[string]string{"GITHUB_CLIENT_ID": "x", "GITHUB_CLIENT_SECRET": "y", "TOKEN_ENCRYPTION_KEY": key}, "", false},
 	}
 	for _, tc := range cases {
@@ -27,6 +28,7 @@ func TestLoadConfigModes(t *testing.T) {
 				t.Setenv(k, tc.env[k])
 			}
 			t.Setenv("DATABASE_URL", "postgres://x")
+			t.Setenv("APP_URL", tc.env["APP_URL"])
 			cfg, err := LoadConfig()
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {

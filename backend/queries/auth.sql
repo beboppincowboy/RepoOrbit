@@ -26,3 +26,7 @@ INSERT INTO oauth_states (state_hash, code_verifier, expires_at) VALUES ($1, $2,
 
 -- name: ConsumeOAuthState :one
 DELETE FROM oauth_states WHERE state_hash = $1 AND expires_at > sqlc.arg(now)::timestamptz RETURNING code_verifier;
+
+-- name: DeleteExpiredAuthRows :exec
+WITH s AS (DELETE FROM sessions WHERE expires_at <= sqlc.arg(now)::timestamptz)
+DELETE FROM oauth_states WHERE expires_at <= sqlc.arg(now)::timestamptz;

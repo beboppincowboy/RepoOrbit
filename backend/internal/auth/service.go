@@ -56,6 +56,10 @@ func (s *Service) BeginLogin(ctx context.Context) (authURL, state string, err er
 	if state, err = randomToken(); err != nil {
 		return "", "", err
 	}
+	// Opportunistic cleanup: nothing else removes abandoned states or expired sessions.
+	if err = s.Q.DeleteExpiredAuthRows(ctx, ts(s.now())); err != nil {
+		return "", "", err
+	}
 	verifier := oauth2.GenerateVerifier()
 	if err = s.Q.CreateOAuthState(ctx, db.CreateOAuthStateParams{StateHash: hash(state), CodeVerifier: verifier, ExpiresAt: ts(s.now().Add(stateLifetime))}); err != nil {
 		return "", "", err

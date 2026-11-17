@@ -5,6 +5,7 @@ package auth
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -248,5 +249,110 @@ func TestConcurrentRefreshesDoNotLoseTheToken(t *testing.T) {
 	}
 	if _, err := e.h.Service.GitHub.User(ctx, tokens[0]); err != nil {
 		t.Fatalf("new token rejected: %v", err)
+	}
+}
+
+func TestMeAndCookieAttributes(t *testing.T) {
+	e := setup(t)
+	body := func() string {
+		resp, err := e.client.Get(e.srv.URL + "/auth/me")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+	if got := body(); !strings.Contains(got, `"user":null`) {
+		t.Fatalf("signed out: %s", got)
+	}
+	resp := e.signIn("octocat")
+	var session *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == sessionCookie {
+			session = c
+		}
+	}
+	if session == nil || !session.HttpOnly || session.SameSite != http.SameSiteLaxMode || session.MaxAge != int(SessionLifetime.Seconds()) || session.Secure {
+		t.Fatalf("session cookie %+v (Secure must be off for an http AppURL)", session)
+	}
+	if got := body(); !strings.Contains(got, `"login":"octocat"`) || strings.Contains(got, `"csrfToken":null`) {
+		t.Fatalf("signed in: %s", got)
+	}
+	if (&Handler{AppURL: "https://app.test"}).secure() != true {
+		t.Fatal("https AppURL must set Secure cookies")
+	}
+}
+
+func TestSecondUserIsolationAndReLogin(t *testing.T) {
+	e := setup(t)
+	e.signIn("octocat")
+	first := e.sessionCookie()
+	e.client.Jar, _ = cookiejar.New(nil)
+	e.signIn("octocat") // same GitHub user again: one users row, a new session
+	var users int
+	_ = e.h.Service.Pool.QueryRow(context.Background(), "SELECT count(*) FROM users").Scan(&users)
+	if users != 1 || e.sessionCookie() == first {
+		t.Fatalf("users=%d same session=%v", users, e.sessionCookie() == first)
+	}
+	e.client.Jar, _ = cookiejar.New(nil)
+	e.signIn("hubot")
+	if e.h.Service.CSRFToken(first) == e.h.Service.CSRFToken(e.sessionCookie()) {
+		t.Fatal("sessions share a CSRF token")
+	}
+	// The first user's CSRF token must not authorize the second user's session.
+	if got := e.do("POST", "/auth/logout", map[string]string{"Origin": appURL, "X-CSRF-Token": e.h.Service.CSRFToken(first)}).StatusCode; got != 403 {
+		t.Fatalf("cross-user csrf accepted: %d", got)
+	}
+}
+
+func TestLoginPurgesExpiredRows(t *testing.T) {
+	e := setup(t)
+	e.signIn("octocat")
+	e.now = e.now.Add(SessionLifetime + time.Hour)
+	e.authorize("octocat") // BeginLogin sweeps expired sessions and states
+	var sessions, states int
+	_ = e.h.Service.Pool.QueryRow(context.Background(), "SELECT (SELECT count(*) FROM sessions), (SELECT count(*) FROM oauth_states)").Scan(&sessions, &states)
+	if sessions != 0 || states != 1 {
+		t.Fatalf("sessions=%d states=%d, want 0 and 1 (the new state)", sessions, states)
+	}
+}
+
+func TestRefreshFailuresKeepStoredTokens(t *testing.T) {
+	e := setup(t)
+	e.signIn("octocat")
+	ctx := context.Background()
+	v, _ := e.h.Service.Viewer(ctx, e.sessionCookie())
+	pool := e.h.Service.Pool
+	var before []byte
+	_ = pool.QueryRow(ctx, "SELECT access_token_enc FROM users").Scan(&before)
+	expire := "UPDATE users SET access_expires_at = now() - interval '1 hour'"
+	// No refresh token stored: the user must sign in again.
+	_, _ = pool.Exec(ctx, expire+", refresh_token_enc = NULL")
+	if _, err := e.h.Service.AccessToken(ctx, v.UserID); err != ErrUnauthenticated {
+		t.Fatalf("no refresh token: %v", err)
+	}
+	// A refresh GitHub rejects errors out and leaves the stored token untouched.
+	sealed, _ := seal(e.h.Service.Key, "ghr_unknown")
+	_, _ = pool.Exec(ctx, "UPDATE users SET refresh_token_enc = $1", sealed)
+	if _, err := e.h.Service.AccessToken(ctx, v.UserID); err == nil {
+		t.Fatal("rejected refresh succeeded")
+	}
+	var after []byte
+	_ = pool.QueryRow(ctx, "SELECT access_token_enc FROM users").Scan(&after)
+	if !bytes.Equal(before, after) {
+		t.Fatal("failed refresh changed the stored access token")
+	}
+}
+
+func TestSessionLookupDatabaseErrorIs503(t *testing.T) {
+	e := setup(t)
+	e.signIn("octocat")
+	e.h.Service.Pool.Close() // simulate a database outage
+	if got := e.do("GET", "/protected", nil).StatusCode; got != 503 {
+		t.Fatalf("protected during outage: %d", got)
+	}
+	if got := e.do("GET", "/auth/me", nil).StatusCode; got != 503 {
+		t.Fatalf("me during outage: %d", got)
 	}
 }
