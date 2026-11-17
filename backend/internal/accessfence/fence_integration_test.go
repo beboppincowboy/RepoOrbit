@@ -38,13 +38,11 @@ func inTx(t *testing.T, pool *pgxpool.Pool, fn func(tx pgx.Tx)) {
 	}
 }
 
-func take(t *testing.T, pool *pgxpool.Pool, user, repo int64) (s accessfence.Snapshot) {
-	inTx(t, pool, func(tx pgx.Tx) {
-		var err error
-		if s, err = accessfence.TakeSnapshot(context.Background(), tx, user, repo); err != nil {
-			t.Fatal(err)
-		}
-	})
+func take(t *testing.T, pool *pgxpool.Pool, user, repo int64) accessfence.Snapshot {
+	s, err := accessfence.Take(context.Background(), pool, user, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return s
 }
 

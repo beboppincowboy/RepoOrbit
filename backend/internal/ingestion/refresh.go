@@ -122,7 +122,7 @@ func (d *Deps) RefreshMetadata(ctx context.Context, job jobs.Job, fence jobs.Cla
 		}
 		var snap accessfence.Snapshot
 		if repo.IsPrivate {
-			if snap, err = d.takeFence(ctx, uid, repoID); err != nil {
+			if snap, err = accessfence.Take(ctx, d.Pool, uid, repoID); err != nil {
 				return err
 			}
 			switch dec := d.Access.CheckOne(ctx, uid, repoID, true); {
@@ -171,20 +171,6 @@ func (d *Deps) RefreshMetadata(ctx context.Context, job jobs.Job, fence jobs.Cla
 func (d *Deps) deferred(ctx context.Context, fence jobs.ClaimFence, repoID int64, until time.Time) error {
 	d.record(ctx, fence, repoID, CodeRateLimited)
 	return &jobs.Defer{RetryAt: until, Reason: CodeRateLimited}
-}
-
-// takeFence snapshots authorization epochs before any private remote read.
-func (d *Deps) takeFence(ctx context.Context, userID, repoID int64) (accessfence.Snapshot, error) {
-	tx, err := d.Pool.Begin(ctx)
-	if err != nil {
-		return accessfence.Snapshot{}, err
-	}
-	defer tx.Rollback(ctx)
-	snap, err := accessfence.TakeSnapshot(ctx, tx, userID, repoID)
-	if err != nil {
-		return accessfence.Snapshot{}, err
-	}
-	return snap, tx.Commit(ctx)
 }
 
 // record stores a safe status code through the fence. Best effort: a lost claim just means someone else owns the job.
