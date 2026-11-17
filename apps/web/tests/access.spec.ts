@@ -33,3 +33,25 @@ test('connect an owned repository, then install the app to reveal a private one'
   await page.getByRole('link', { name: 'Overview', exact: true }).click();
   await expect(page.getByText('No repositories connected yet.')).toBeVisible();
 });
+
+test('follow a public starred repository without installing the app', async ({ page }) => {
+  await page.context().addCookies([{ name: 'fake_as', value: 'ada', url: 'http://127.0.0.1:9090' }]);
+  await page.goto(`${base}/login`);
+  await page.getByRole('link', { name: 'Sign in with GitHub' }).click();
+  await expect(page.getByText('Signed in as')).toBeVisible();
+  await page.getByRole('link', { name: 'Starred', exact: true }).click();
+
+  await expect(page.getByRole('heading', { name: 'grace/compiler' })).toBeVisible();
+  await expect(page.getByText('Not following')).toBeVisible();
+  await page.getByRole('button', { name: 'Follow grace/compiler', exact: true }).click();
+  await expect(page.getByText('Following, awaiting sync')).toBeVisible();
+
+  await page.getByRole('link', { name: 'Overview', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'grace/compiler' })).toBeVisible();
+  await expect(page.getByText('Selected, awaiting sync — no activity data yet.')).toBeVisible();
+
+  await page.getByRole('link', { name: 'Starred', exact: true }).click();
+  await page.getByRole('button', { name: 'Unfollow grace/compiler', exact: true }).click();
+  await page.getByRole('link', { name: 'Overview', exact: true }).click();
+  await expect(page.getByText('No repositories connected yet.')).toBeVisible();
+});

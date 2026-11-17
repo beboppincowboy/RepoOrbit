@@ -25,21 +25,21 @@ func (r *queryResolver) Viewer(ctx context.Context) (*model.Viewer, error) {
 	return &model.Viewer{Login: v.Login, Demo: v.Demo}, nil
 }
 
-// Repositories is the resolver for the repositories field.
-func (r *queryResolver) Repositories(ctx context.Context, first int, after *string) (*model.RepositoryConnection, error) {
+// SelectedRepositories is the resolver for the selectedRepositories field.
+func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, after *string) (*model.RepositoryConnection, error) {
 	n, err := pageLimit(first)
 	if err != nil {
 		return nil, err
 	}
-	id, err := cursor(after)
+	id, err := parsePositiveID(after)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := platform.Deadline(ctx)
+	ctx, cancel := platform.WithRequestDeadline(ctx)
 	defer cancel()
 	result := &model.RepositoryConnection{Nodes: []*model.Repository{}}
 	if r.Demo {
-		rows, err := r.Queries.ListRepositories(ctx, db.ListRepositoriesParams{Demo: true, After: id, PageSize: int32(n + 1)})
+		rows, err := r.Queries.ListDemoRepositories(ctx, db.ListDemoRepositoriesParams{After: id, PageSize: int32(n + 1)})
 		if err != nil {
 			return nil, fmt.Errorf("database unavailable")
 		}
@@ -47,7 +47,7 @@ func (r *queryResolver) Repositories(ctx context.Context, first int, after *stri
 		rows = rows[:min(len(rows), n)]
 		for _, row := range rows {
 			id := strconv.FormatInt(row.ID, 10)
-			result.Nodes = append(result.Nodes, &model.Repository{ID: id, Name: row.Name, Description: row.Description, Selected: true, SyncState: "demo"})
+			result.Nodes = append(result.Nodes, &model.Repository{ID: id, FullName: row.Name, Description: row.Description, Selected: true, SyncState: string(repositories.SyncStateDemo)})
 			result.EndCursor = &id
 		}
 		return result, nil
@@ -68,7 +68,7 @@ func (r *queryResolver) Repositories(ctx context.Context, first int, after *stri
 	for i, row := range rows {
 		ids[i] = row.ID
 	}
-	checks := r.Access.Check(ctx, userID, ids, false)
+	checks := r.RepoAccess.Check(ctx, userID, ids, false)
 	for _, row := range rows {
 		cursorID := strconv.FormatInt(row.ID, 10)
 		result.EndCursor = &cursorID
@@ -78,7 +78,7 @@ func (r *queryResolver) Repositories(ctx context.Context, first int, after *stri
 			result.RetryAt = laterRetry(result.RetryAt, d.RetryAt)
 		}
 		if d.Allowed { // current GitHub metadata, not the stored copy
-			result.Nodes = append(result.Nodes, &model.Repository{ID: cursorID, Name: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: true, SyncState: repositories.SyncState(true)})
+			result.Nodes = append(result.Nodes, &model.Repository{ID: cursorID, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: true, SyncState: string(repositories.SyncStateFor(true))})
 		}
 	}
 	return result, nil
@@ -87,27 +87,27 @@ func (r *queryResolver) Repositories(ctx context.Context, first int, after *stri
 // Repository is the resolver for the repository field. A repository the user can access but has not selected
 // opens to its metadata with a not-synchronized state.
 func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repository, error) {
-	repoID, err := cursor(&id)
+	repoID, err := parsePositiveID(&id)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := platform.Deadline(ctx)
+	ctx, cancel := platform.WithRequestDeadline(ctx)
 	defer cancel()
 	if r.Demo {
-		rows, err := r.Queries.ListRepositories(ctx, db.ListRepositoriesParams{Demo: true, After: repoID - 1, PageSize: 1})
+		rows, err := r.Queries.ListDemoRepositories(ctx, db.ListDemoRepositoriesParams{After: repoID - 1, PageSize: 1})
 		if err != nil {
 			return nil, fmt.Errorf("database unavailable")
 		}
 		if len(rows) == 0 || rows[0].ID != repoID {
 			return nil, nil
 		}
-		return &model.Repository{ID: id, Name: rows[0].Name, Description: rows[0].Description, Selected: true, SyncState: "demo"}, nil
+		return &model.Repository{ID: id, FullName: rows[0].Name, Description: rows[0].Description, Selected: true, SyncState: string(repositories.SyncStateDemo)}, nil
 	}
 	userID, err := r.userID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	d := r.Access.CheckOne(ctx, userID, repoID, false)
+	d := r.RepoAccess.CheckOne(ctx, userID, repoID, false)
 	if d.Unverified {
 		return nil, unverifiedError(d.RetryAt)
 	}
@@ -118,7 +118,7 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
-	return &model.Repository{ID: id, Name: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: len(selected) == 1, SyncState: repositories.SyncState(len(selected) == 1)}, nil
+	return &model.Repository{ID: id, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: len(selected) == 1, SyncState: string(repositories.SyncStateFor(len(selected) == 1))}, nil
 }
 
 // Issues is the resolver for the issues field.
@@ -127,22 +127,22 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 	if err != nil {
 		return nil, err
 	}
-	id, err := cursor(after)
+	id, err := parsePositiveID(after)
 	if err != nil {
 		return nil, err
 	}
-	if len(repositoryIds) > 100 {
-		return nil, fmt.Errorf("at most 100 repositories")
+	if len(repositoryIds) > maxRepositoryIDs {
+		return nil, fmt.Errorf("at most %d repositories", maxRepositoryIDs)
 	}
 	ids := make([]int64, 0, len(repositoryIds))
 	for _, raw := range repositoryIds {
-		v, err := cursor(&raw)
+		v, err := parsePositiveID(&raw)
 		if err != nil {
 			return nil, err
 		}
 		ids = append(ids, v)
 	}
-	ctx, cancel := platform.Deadline(ctx)
+	ctx, cancel := platform.WithRequestDeadline(ctx)
 	defer cancel()
 	result := &model.IssueConnection{Nodes: []*model.Issue{}}
 	if !r.Demo {
@@ -155,7 +155,7 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 			return nil, fmt.Errorf("database unavailable")
 		}
 		allowed := ids[:0:0]
-		for repoID, d := range r.Access.Check(ctx, userID, ids, false) {
+		for repoID, d := range r.RepoAccess.Check(ctx, userID, ids, false) {
 			if d.Allowed {
 				allowed = append(allowed, repoID)
 			}

@@ -1,5 +1,5 @@
--- name: ListRepositories :many
-SELECT id, name, description FROM repositories WHERE is_demo = sqlc.arg(demo)::boolean AND id > sqlc.arg(after)::bigint ORDER BY id LIMIT sqlc.arg(page_size)::int;
+-- name: ListDemoRepositories :many
+SELECT id, name, description FROM repositories WHERE is_demo = true AND id > sqlc.arg(after)::bigint ORDER BY id LIMIT sqlc.arg(page_size)::int;
 
 -- name: ListIssues :many
 SELECT i.id, i.repository_id, i.title, i.state FROM issues i JOIN repositories r ON r.id = i.repository_id

@@ -21,7 +21,7 @@ export function AuthShell({ children }: { children: ReactNode }) {
   if (!session || needsLogin) return <p role="status" className="p-6">Loading…</p>;
   return <Session.Provider value={session}>
     <nav aria-label="Account" className="flex items-center justify-end gap-3 border-b border-slate-200 bg-white px-5 py-2 text-sm">
-      {session.mode === "real" && session.user && <span className="mr-auto flex gap-4"><Link className="underline" href="/">Overview</Link><Link className="underline" href="/repositories">Repositories</Link></span>}
+      {session.mode === "real" && session.user && <span className="mr-auto flex gap-4"><Link className="underline" href="/">Overview</Link><Link className="underline" href="/repositories">Repositories</Link><Link className="underline" href="/starred">Starred</Link></span>}
       {session.mode === "demo" && <span className="rounded bg-amber-100 px-2 py-0.5 font-semibold text-amber-900">Demo mode</span>}
       {session.user && <span>{session.mode === "demo" ? "Demo identity" : "Signed in as"} <strong>{session.user.login}</strong></span>}
       {session.mode === "real" && session.user && <button className="underline" onClick={signOut}>Sign out</button>}

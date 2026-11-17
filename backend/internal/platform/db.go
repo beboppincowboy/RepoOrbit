@@ -12,6 +12,7 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
+// OpenDB opens a connection pool and pings it; the caller closes the pool.
 func OpenDB(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, url)
 	if err != nil {
@@ -40,7 +41,8 @@ func Migrate(ctx context.Context, url string) error {
 	return nil
 }
 
-// SeedDemo loads the labeled demo rows. Only Demo mode calls it, so real mode never sees them.
+// SeedDemo loads the labeled demo rows from ./testdata/demo.sql (relative to the working directory, like
+// Migrate's ./migrations). Only Demo mode calls it, so real mode never sees them.
 func SeedDemo(ctx context.Context, url string) error {
 	conn, err := sql.Open("pgx", url)
 	if err != nil {
@@ -55,6 +57,7 @@ func SeedDemo(ctx context.Context, url string) error {
 	return err
 }
 
-func Deadline(ctx context.Context) (context.Context, context.CancelFunc) {
+// WithRequestDeadline bounds one request's database work to 3 seconds. Callers must call the returned cancel.
+func WithRequestDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, 3*time.Second)
 }

@@ -51,6 +51,19 @@ type Session struct {
 	ExpiresAt pgtype.Timestamptz
 }
 
+type Star struct {
+	UserID       int64
+	RepositoryID int64
+	FullName     string
+	Description  string
+	IsPrivate    bool
+}
+
+type StarSnapshot struct {
+	UserID      int64
+	RefreshedAt pgtype.Timestamptz
+}
+
 type User struct {
 	ID               int64
 	GithubID         int64

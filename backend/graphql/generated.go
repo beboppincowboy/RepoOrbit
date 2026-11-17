@@ -62,16 +62,16 @@ type ComplexityRoot struct {
 	}
 
 	Query struct {
-		Issues       func(childComplexity int, repositoryIds []string, first int, after *string) int
-		Repositories func(childComplexity int, first int, after *string) int
-		Repository   func(childComplexity int, id string) int
-		Viewer       func(childComplexity int) int
+		Issues               func(childComplexity int, repositoryIds []string, first int, after *string) int
+		Repository           func(childComplexity int, id string) int
+		SelectedRepositories func(childComplexity int, first int, after *string) int
+		Viewer               func(childComplexity int) int
 	}
 
 	Repository struct {
 		Description func(childComplexity int) int
+		FullName    func(childComplexity int) int
 		ID          func(childComplexity int) int
-		Name        func(childComplexity int) int
 		Private     func(childComplexity int) int
 		Selected    func(childComplexity int) int
 		SyncState   func(childComplexity int) int
@@ -93,7 +93,7 @@ type ComplexityRoot struct {
 
 type QueryResolver interface {
 	Viewer(ctx context.Context) (*model.Viewer, error)
-	Repositories(ctx context.Context, first int, after *string) (*model.RepositoryConnection, error)
+	SelectedRepositories(ctx context.Context, first int, after *string) (*model.RepositoryConnection, error)
 	Repository(ctx context.Context, id string) (*model.Repository, error)
 	Issues(ctx context.Context, repositoryIds []string, first int, after *string) (*model.IssueConnection, error)
 }
@@ -192,18 +192,6 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.Query.Issues(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string)), true
 
-	case "Query.repositories":
-		if e.complexity.Query.Repositories == nil {
-			break
-		}
-
-		args, err := ec.field_Query_repositories_args(ctx, rawArgs)
-		if err != nil {
-			return 0, false
-		}
-
-		return e.complexity.Query.Repositories(childComplexity, args["first"].(int), args["after"].(*string)), true
-
 	case "Query.repository":
 		if e.complexity.Query.Repository == nil {
 			break
@@ -215,6 +203,18 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Query.Repository(childComplexity, args["id"].(string)), true
+
+	case "Query.selectedRepositories":
+		if e.complexity.Query.SelectedRepositories == nil {
+			break
+		}
+
+		args, err := ec.field_Query_selectedRepositories_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.SelectedRepositories(childComplexity, args["first"].(int), args["after"].(*string)), true
 
 	case "Query.viewer":
 		if e.complexity.Query.Viewer == nil {
@@ -230,19 +230,19 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.Repository.Description(childComplexity), true
 
+	case "Repository.fullName":
+		if e.complexity.Repository.FullName == nil {
+			break
+		}
+
+		return e.complexity.Repository.FullName(childComplexity), true
+
 	case "Repository.id":
 		if e.complexity.Repository.ID == nil {
 			break
 		}
 
 		return e.complexity.Repository.ID(childComplexity), true
-
-	case "Repository.name":
-		if e.complexity.Repository.Name == nil {
-			break
-		}
-
-		return e.complexity.Repository.Name(childComplexity), true
 
 	case "Repository.private":
 		if e.complexity.Repository.Private == nil {
@@ -524,57 +524,6 @@ func (ec *executionContext) field_Query_issues_argsAfter(
 	return zeroVal, nil
 }
 
-func (ec *executionContext) field_Query_repositories_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
-	var err error
-	args := map[string]any{}
-	arg0, err := ec.field_Query_repositories_argsFirst(ctx, rawArgs)
-	if err != nil {
-		return nil, err
-	}
-	args["first"] = arg0
-	arg1, err := ec.field_Query_repositories_argsAfter(ctx, rawArgs)
-	if err != nil {
-		return nil, err
-	}
-	args["after"] = arg1
-	return args, nil
-}
-func (ec *executionContext) field_Query_repositories_argsFirst(
-	ctx context.Context,
-	rawArgs map[string]any,
-) (int, error) {
-	if _, ok := rawArgs["first"]; !ok {
-		var zeroVal int
-		return zeroVal, nil
-	}
-
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("first"))
-	if tmp, ok := rawArgs["first"]; ok {
-		return ec.unmarshalNInt2int(ctx, tmp)
-	}
-
-	var zeroVal int
-	return zeroVal, nil
-}
-
-func (ec *executionContext) field_Query_repositories_argsAfter(
-	ctx context.Context,
-	rawArgs map[string]any,
-) (*string, error) {
-	if _, ok := rawArgs["after"]; !ok {
-		var zeroVal *string
-		return zeroVal, nil
-	}
-
-	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("after"))
-	if tmp, ok := rawArgs["after"]; ok {
-		return ec.unmarshalOID2ᚖstring(ctx, tmp)
-	}
-
-	var zeroVal *string
-	return zeroVal, nil
-}
-
 func (ec *executionContext) field_Query_repository_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
@@ -600,6 +549,57 @@ func (ec *executionContext) field_Query_repository_argsID(
 	}
 
 	var zeroVal string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_selectedRepositories_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_selectedRepositories_argsFirst(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["first"] = arg0
+	arg1, err := ec.field_Query_selectedRepositories_argsAfter(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["after"] = arg1
+	return args, nil
+}
+func (ec *executionContext) field_Query_selectedRepositories_argsFirst(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (int, error) {
+	if _, ok := rawArgs["first"]; !ok {
+		var zeroVal int
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("first"))
+	if tmp, ok := rawArgs["first"]; ok {
+		return ec.unmarshalNInt2int(ctx, tmp)
+	}
+
+	var zeroVal int
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_selectedRepositories_argsAfter(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*string, error) {
+	if _, ok := rawArgs["after"]; !ok {
+		var zeroVal *string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("after"))
+	if tmp, ok := rawArgs["after"]; ok {
+		return ec.unmarshalOID2ᚖstring(ctx, tmp)
+	}
+
+	var zeroVal *string
 	return zeroVal, nil
 }
 
@@ -1170,8 +1170,8 @@ func (ec *executionContext) fieldContext_Query_viewer(_ context.Context, field g
 	return fc, nil
 }
 
-func (ec *executionContext) _Query_repositories(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Query_repositories(ctx, field)
+func (ec *executionContext) _Query_selectedRepositories(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_selectedRepositories(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -1184,7 +1184,7 @@ func (ec *executionContext) _Query_repositories(ctx context.Context, field graph
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().Repositories(rctx, fc.Args["first"].(int), fc.Args["after"].(*string))
+		return ec.resolvers.Query().SelectedRepositories(rctx, fc.Args["first"].(int), fc.Args["after"].(*string))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -1201,7 +1201,7 @@ func (ec *executionContext) _Query_repositories(ctx context.Context, field graph
 	return ec.marshalNRepositoryConnection2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐRepositoryConnection(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_Query_repositories(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_Query_selectedRepositories(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "Query",
 		Field:      field,
@@ -1230,7 +1230,7 @@ func (ec *executionContext) fieldContext_Query_repositories(ctx context.Context,
 		}
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
-	if fc.Args, err = ec.field_Query_repositories_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+	if fc.Args, err = ec.field_Query_selectedRepositories_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -1275,8 +1275,8 @@ func (ec *executionContext) fieldContext_Query_repository(ctx context.Context, f
 			switch field.Name {
 			case "id":
 				return ec.fieldContext_Repository_id(ctx, field)
-			case "name":
-				return ec.fieldContext_Repository_name(ctx, field)
+			case "fullName":
+				return ec.fieldContext_Repository_fullName(ctx, field)
 			case "description":
 				return ec.fieldContext_Repository_description(ctx, field)
 			case "private":
@@ -1545,8 +1545,8 @@ func (ec *executionContext) fieldContext_Repository_id(_ context.Context, field 
 	return fc, nil
 }
 
-func (ec *executionContext) _Repository_name(ctx context.Context, field graphql.CollectedField, obj *model.Repository) (ret graphql.Marshaler) {
-	fc, err := ec.fieldContext_Repository_name(ctx, field)
+func (ec *executionContext) _Repository_fullName(ctx context.Context, field graphql.CollectedField, obj *model.Repository) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Repository_fullName(ctx, field)
 	if err != nil {
 		return graphql.Null
 	}
@@ -1559,7 +1559,7 @@ func (ec *executionContext) _Repository_name(ctx context.Context, field graphql.
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return obj.Name, nil
+		return obj.FullName, nil
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -1576,7 +1576,7 @@ func (ec *executionContext) _Repository_name(ctx context.Context, field graphql.
 	return ec.marshalNString2string(ctx, field.Selections, res)
 }
 
-func (ec *executionContext) fieldContext_Repository_name(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+func (ec *executionContext) fieldContext_Repository_fullName(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "Repository",
 		Field:      field,
@@ -1806,8 +1806,8 @@ func (ec *executionContext) fieldContext_RepositoryConnection_nodes(_ context.Co
 			switch field.Name {
 			case "id":
 				return ec.fieldContext_Repository_id(ctx, field)
-			case "name":
-				return ec.fieldContext_Repository_name(ctx, field)
+			case "fullName":
+				return ec.fieldContext_Repository_fullName(ctx, field)
 			case "description":
 				return ec.fieldContext_Repository_description(ctx, field)
 			case "private":
@@ -4185,7 +4185,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
-		case "repositories":
+		case "selectedRepositories":
 			field := field
 
 			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
@@ -4194,7 +4194,7 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 						ec.Error(ctx, ec.Recover(ctx, r))
 					}
 				}()
-				res = ec._Query_repositories(ctx, field)
+				res = ec._Query_selectedRepositories(ctx, field)
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
@@ -4295,8 +4295,8 @@ func (ec *executionContext) _Repository(ctx context.Context, sel ast.SelectionSe
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
-		case "name":
-			out.Values[i] = ec._Repository_name(ctx, field, obj)
+		case "fullName":
+			out.Values[i] = ec._Repository_fullName(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}

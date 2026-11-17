@@ -38,7 +38,7 @@ func setup(t *testing.T) *env {
 	e := &env{t: t, now: time.Now(), gh: fake.New("cid", "secret")}
 	ghSrv := httptest.NewServer(e.gh.Handler())
 	t.Cleanup(ghSrv.Close)
-	svc := &Service{Pool: pool, Q: db.New(pool), Key: bytes.Repeat([]byte{1}, 32), Now: func() time.Time { return e.now },
+	svc := &Service{Pool: pool, Queries: db.New(pool), Key: bytes.Repeat([]byte{1}, 32), Now: func() time.Time { return e.now },
 		GitHub: githubapp.New("cid", "secret", ghSrv.URL, ghSrv.URL, appURL+"/auth/github/callback")}
 	e.h = &Handler{Service: svc, AppURL: appURL}
 	mux := http.NewServeMux()
@@ -116,7 +116,7 @@ func TestSignInAndOut(t *testing.T) {
 		t.Fatalf("signed in: %d", got)
 	}
 	token := e.sessionCookie()
-	v, err := e.h.Service.Viewer(context.Background(), token)
+	v, err := e.h.Service.ViewerForSession(context.Background(), token)
 	if err != nil || v.Login != "octocat" {
 		t.Fatalf("viewer %+v %v", v, err)
 	}
@@ -135,7 +135,7 @@ func TestSignInAndOut(t *testing.T) {
 		t.Fatalf("logout: %d", got)
 	}
 	// Logout invalidates the session immediately, even if the old cookie is replayed.
-	if _, err := e.h.Service.Viewer(context.Background(), token); err != ErrUnauthenticated {
+	if _, err := e.h.Service.ViewerForSession(context.Background(), token); err != ErrUnauthenticated {
 		t.Fatalf("revoked session accepted: %v", err)
 	}
 	req, _ := http.NewRequest("GET", e.srv.URL+"/protected", nil)
@@ -192,12 +192,12 @@ func TestSessionFixedSevenDayLifetime(t *testing.T) {
 	// Use the session daily; use must not extend it.
 	for day := 1; day < 7; day++ {
 		e.now = e.now.Add(24 * time.Hour)
-		if _, err := e.h.Service.Viewer(context.Background(), token); err != nil {
+		if _, err := e.h.Service.ViewerForSession(context.Background(), token); err != nil {
 			t.Fatalf("day %d: %v", day, err)
 		}
 	}
 	e.now = e.now.Add(24*time.Hour + time.Second)
-	if _, err := e.h.Service.Viewer(context.Background(), token); err != ErrUnauthenticated {
+	if _, err := e.h.Service.ViewerForSession(context.Background(), token); err != ErrUnauthenticated {
 		t.Fatalf("session older than 7 days accepted: %v", err)
 	}
 }
@@ -216,7 +216,7 @@ func TestConcurrentRefreshesDoNotLoseTheToken(t *testing.T) {
 	e.gh.RefreshDelay = 150 * time.Millisecond
 	e.signIn("octocat")
 	ctx := context.Background()
-	v, _ := e.h.Service.Viewer(ctx, e.sessionCookie())
+	v, _ := e.h.Service.ViewerForSession(ctx, e.sessionCookie())
 	// Age the stored access token past its lifetime.
 	if _, err := e.h.Service.Pool.Exec(ctx, "UPDATE users SET access_expires_at = now() - interval '1 hour'"); err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func TestConcurrentRefreshesDoNotLoseTheToken(t *testing.T) {
 	if tok, err := e.h.Service.AccessToken(ctx, v.UserID); err != nil || tok != tokens[0] || e.gh.Refreshes() != 1 {
 		t.Fatalf("stored token: %q %v refreshes=%d", tok, err, e.gh.Refreshes())
 	}
-	if _, err := e.h.Service.GitHub.User(ctx, tokens[0]); err != nil {
+	if _, err := e.h.Service.GitHub.FetchUser(ctx, tokens[0]); err != nil {
 		t.Fatalf("new token rejected: %v", err)
 	}
 }
@@ -322,7 +322,7 @@ func TestRefreshFailuresKeepStoredTokens(t *testing.T) {
 	e := setup(t)
 	e.signIn("octocat")
 	ctx := context.Background()
-	v, _ := e.h.Service.Viewer(ctx, e.sessionCookie())
+	v, _ := e.h.Service.ViewerForSession(ctx, e.sessionCookie())
 	pool := e.h.Service.Pool
 	var before []byte
 	_ = pool.QueryRow(ctx, "SELECT access_token_enc FROM users").Scan(&before)

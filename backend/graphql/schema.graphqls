@@ -1,8 +1,11 @@
 type Viewer { login: String!, demo: Boolean! }
-# syncState is "demo", "awaiting-sync" (selected), or "not-synchronized" (accessible but not selected).
-type Repository { id: ID!, name: String!, description: String!, private: Boolean!, selected: Boolean!, syncState: String! }
+# fullName is "owner/name". syncState is "demo", "awaiting-sync" (selected), or "not-synchronized" (accessible but not selected).
+type Repository { id: ID!, fullName: String!, description: String!, private: Boolean!, selected: Boolean!, syncState: String! }
 type Issue { id: ID!, repositoryId: ID!, title: String!, state: String! }
+# endCursor is the id of the last stored row scanned (even if access filtering hid it), so pass it as `after` to continue; null when the page held no rows.
 # withheld counts items hidden because access could not be verified; retryAt (RFC 3339) is set when that is a rate limit.
 type RepositoryConnection { nodes: [Repository!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
 type IssueConnection { nodes: [Issue!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
-type Query { viewer: Viewer, repositories(first: Int! = 20, after: ID): RepositoryConnection!, repository(id: ID!): Repository, issues(repositoryIds: [ID!]!, first: Int! = 20, after: ID): IssueConnection! }
+# Errors carry extensions.code: UNAUTHENTICATED (no real signed-in viewer) or ACCESS_UNVERIFIED (GitHub could not confirm access; extensions.retryAt is RFC 3339 when rate limited).
+# selectedRepositories lists only repositories the viewer has selected (not every accessible one). first is 1..100; repositoryIds holds at most 100 ids.
+type Query { viewer: Viewer, selectedRepositories(first: Int! = 20, after: ID): RepositoryConnection!, repository(id: ID!): Repository, issues(repositoryIds: [ID!]!, first: Int! = 20, after: ID): IssueConnection! }

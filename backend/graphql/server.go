@@ -19,7 +19,7 @@ func (depthLimit) Validate(graphql.ExecutableSchema) error { return nil }
 func (depthLimit) MutateOperationContext(_ context.Context, op *graphql.OperationContext) *gqlerror.Error {
 	var depth func(ast.SelectionSet, int) bool
 	depth = func(set ast.SelectionSet, level int) bool {
-		if level > 6 {
+		if level > maxQueryDepth {
 			return false
 		}
 		for _, s := range set {
@@ -45,17 +45,20 @@ func (depthLimit) MutateOperationContext(_ context.Context, op *graphql.Operatio
 	}
 	return nil
 }
+
+// Server serves POST /graphql with depth, complexity and body-size (1 MiB) limits and no-store caching.
+// Mount it behind auth.Handler.Protect.
 func Server(resolver *Resolver) http.Handler {
 	cfg := Config{Resolvers: resolver}
 	weight := func(child, first int) int {
-		if first < 1 || first > 100 {
+		if first < 1 || first > maxPageSize {
 			return 100000
 		}
 		return 1 + first*child
 	}
-	cfg.Complexity.Query.Repositories = func(child, first int, _ *string) int { return weight(child, first) }
+	cfg.Complexity.Query.SelectedRepositories = func(child, first int, _ *string) int { return weight(child, first) }
 	cfg.Complexity.Query.Issues = func(child int, ids []string, first int, _ *string) int {
-		if len(ids) > 100 {
+		if len(ids) > maxRepositoryIDs {
 			return 100000
 		}
 		return weight(child, first)
@@ -63,7 +66,7 @@ func Server(resolver *Resolver) http.Handler {
 	srv := handler.New(NewExecutableSchema(cfg))
 	srv.AddTransport(transport.POST{})
 	srv.Use(depthLimit{})
-	srv.Use(extension.FixedComplexityLimit(1000))
+	srv.Use(extension.FixedComplexityLimit(maxQueryComplexity))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)

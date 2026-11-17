@@ -20,9 +20,11 @@ func main() {
 	if app := strings.TrimRight(os.Getenv("APP_URL"), "/"); app != "" {
 		s.SetupURL = app + "/auth/github/installed"
 	}
-	// Seed for scripts/e2e-auth.sh: ada owns a public repository and a private one the app is not yet installed on.
+	// Seed for scripts/e2e-auth.sh: ada owns a public repository and a private one the app is not yet installed on, and stars grace's public repository.
 	s.AddRepo("ada", "notes", false)
 	s.AddRepo("ada", "secret", true)
+	// ...and has starred a public repository she does not own.
+	s.Star("ada", s.AddRepo("grace", "compiler", false))
 	srv := &http.Server{Addr: addr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
 }

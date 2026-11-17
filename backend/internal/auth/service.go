@@ -34,11 +34,11 @@ type Viewer struct {
 var DemoViewer = Viewer{Login: "demo-user", Demo: true}
 
 type Service struct {
-	Pool   *pgxpool.Pool
-	Q      *db.Queries
-	GitHub *githubapp.Client
-	Key    []byte
-	Now    func() time.Time
+	Pool    *pgxpool.Pool
+	Queries *db.Queries
+	GitHub  *githubapp.Client
+	Key     []byte
+	Now     func() time.Time
 }
 
 func (s *Service) now() time.Time {
@@ -48,7 +48,10 @@ func (s *Service) now() time.Time {
 	return time.Now()
 }
 
-func ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: !t.IsZero()} }
+// timestamptz converts t to a database timestamp; the zero time becomes NULL.
+func timestamptz(t time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: t, Valid: !t.IsZero()}
+}
 
 // BeginLogin stores a single-use state with its PKCE verifier and returns the GitHub URL plus the state
 // that must also be set in the browser's cookie.
@@ -57,11 +60,11 @@ func (s *Service) BeginLogin(ctx context.Context) (authURL, state string, err er
 		return "", "", err
 	}
 	// Opportunistic cleanup: nothing else removes abandoned states or expired sessions.
-	if err = s.Q.DeleteExpiredAuthRows(ctx, ts(s.now())); err != nil {
+	if err = s.Queries.DeleteExpiredAuthRows(ctx, timestamptz(s.now())); err != nil {
 		return "", "", err
 	}
 	verifier := oauth2.GenerateVerifier()
-	if err = s.Q.CreateOAuthState(ctx, db.CreateOAuthStateParams{StateHash: hash(state), CodeVerifier: verifier, ExpiresAt: ts(s.now().Add(stateLifetime))}); err != nil {
+	if err = s.Queries.CreateOAuthState(ctx, db.CreateOAuthStateParams{StateHash: sha256Digest(state), CodeVerifier: verifier, ExpiresAt: timestamptz(s.now().Add(stateLifetime))}); err != nil {
 		return "", "", err
 	}
 	return s.GitHub.AuthURL(state, verifier), state, nil
@@ -73,7 +76,7 @@ func (s *Service) CompleteLogin(ctx context.Context, queryState, cookieState, co
 	if queryState == "" || code == "" || subtle.ConstantTimeCompare([]byte(queryState), []byte(cookieState)) != 1 {
 		return "", errors.New("state mismatch")
 	}
-	verifier, err := s.Q.ConsumeOAuthState(ctx, db.ConsumeOAuthStateParams{StateHash: hash(queryState), Now: ts(s.now())})
+	verifier, err := s.Queries.ConsumeOAuthState(ctx, db.ConsumeOAuthStateParams{StateHash: sha256Digest(queryState), Now: timestamptz(s.now())})
 	if err != nil {
 		return "", errors.New("unknown or reused state")
 	}
@@ -81,21 +84,21 @@ func (s *Service) CompleteLogin(ctx context.Context, queryState, cookieState, co
 	if err != nil {
 		return "", fmt.Errorf("token exchange: %w", err)
 	}
-	gh, err := s.GitHub.User(ctx, tokens.Access)
+	gh, err := s.GitHub.FetchUser(ctx, tokens.AccessToken)
 	if err != nil {
 		return "", err
 	}
-	access, err := seal(s.Key, tokens.Access)
+	access, err := seal(s.Key, tokens.AccessToken)
 	if err != nil {
 		return "", err
 	}
 	var refresh []byte
-	if tokens.Refresh != "" {
-		if refresh, err = seal(s.Key, tokens.Refresh); err != nil {
+	if tokens.RefreshToken != "" {
+		if refresh, err = seal(s.Key, tokens.RefreshToken); err != nil {
 			return "", err
 		}
 	}
-	userID, err := s.Q.UpsertUser(ctx, db.UpsertUserParams{GithubID: gh.ID, Login: gh.Login, AccessTokenEnc: access, RefreshTokenEnc: refresh, AccessExpiresAt: ts(tokens.AccessExpires), RefreshExpiresAt: ts(tokens.RefreshExpires)})
+	userID, err := s.Queries.UpsertUser(ctx, db.UpsertUserParams{GithubID: gh.ID, Login: gh.Login, AccessTokenEnc: access, RefreshTokenEnc: refresh, AccessExpiresAt: timestamptz(tokens.AccessExpiresAt), RefreshExpiresAt: timestamptz(tokens.RefreshExpiresAt)})
 	if err != nil {
 		return "", err
 	}
@@ -104,18 +107,18 @@ func (s *Service) CompleteLogin(ctx context.Context, queryState, cookieState, co
 		return "", err
 	}
 	now := s.now()
-	if err = s.Q.CreateSession(ctx, db.CreateSessionParams{TokenHash: hash(token), UserID: userID, CreatedAt: ts(now), ExpiresAt: ts(now.Add(SessionLifetime))}); err != nil {
+	if err = s.Queries.CreateSession(ctx, db.CreateSessionParams{TokenHash: sha256Digest(token), UserID: userID, CreatedAt: timestamptz(now), ExpiresAt: timestamptz(now.Add(SessionLifetime))}); err != nil {
 		return "", err
 	}
 	return token, nil
 }
 
-// Viewer resolves a session token. Expired, revoked, and unknown tokens are all ErrUnauthenticated.
-func (s *Service) Viewer(ctx context.Context, token string) (Viewer, error) {
-	if token == "" {
+// ViewerForSession resolves a session token (the cookie value, not a GitHub token). Expired, revoked, and unknown tokens are all ErrUnauthenticated.
+func (s *Service) ViewerForSession(ctx context.Context, sessionToken string) (Viewer, error) {
+	if sessionToken == "" {
 		return Viewer{}, ErrUnauthenticated
 	}
-	row, err := s.Q.GetSession(ctx, db.GetSessionParams{TokenHash: hash(token), Now: ts(s.now())})
+	row, err := s.Queries.GetSession(ctx, db.GetSessionParams{TokenHash: sha256Digest(sessionToken), Now: timestamptz(s.now())})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Viewer{}, ErrUnauthenticated
 	}
@@ -126,7 +129,7 @@ func (s *Service) Viewer(ctx context.Context, token string) (Viewer, error) {
 }
 
 func (s *Service) Logout(ctx context.Context, token string) error {
-	return s.Q.DeleteSession(ctx, hash(token))
+	return s.Queries.DeleteSession(ctx, sha256Digest(token))
 }
 
 func (s *Service) CSRFToken(sessionToken string) string { return csrfToken(s.Key, sessionToken) }
@@ -141,7 +144,7 @@ func (s *Service) AccessToken(ctx context.Context, userID int64) (string, error)
 		return "", err
 	}
 	defer tx.Rollback(ctx)
-	q := s.Q.WithTx(tx)
+	q := s.Queries.WithTx(tx)
 	row, err := q.LockUserTokens(ctx, userID)
 	if err != nil {
 		return "", err
@@ -167,18 +170,18 @@ func (s *Service) AccessToken(ctx context.Context, userID int64) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("refresh: %w", err)
 	}
-	newAccess, err := seal(s.Key, tokens.Access)
+	newAccess, err := seal(s.Key, tokens.AccessToken)
 	if err != nil {
 		return "", err
 	}
-	newRefresh, err := seal(s.Key, tokens.Refresh)
+	newRefresh, err := seal(s.Key, tokens.RefreshToken)
 	if err != nil {
 		return "", err
 	}
-	if err = q.UpdateUserTokens(ctx, db.UpdateUserTokensParams{ID: userID, AccessTokenEnc: newAccess, RefreshTokenEnc: newRefresh, AccessExpiresAt: ts(tokens.AccessExpires), RefreshExpiresAt: ts(tokens.RefreshExpires)}); err != nil {
+	if err = q.UpdateUserTokens(ctx, db.UpdateUserTokensParams{ID: userID, AccessTokenEnc: newAccess, RefreshTokenEnc: newRefresh, AccessExpiresAt: timestamptz(tokens.AccessExpiresAt), RefreshExpiresAt: timestamptz(tokens.RefreshExpiresAt)}); err != nil {
 		return "", err
 	}
-	return tokens.Access, tx.Commit(ctx)
+	return tokens.AccessToken, tx.Commit(ctx)
 }
 
 // Revoke ends every session of a user and wipes their stored GitHub tokens. Call it when GitHub
@@ -189,7 +192,7 @@ func (s *Service) Revoke(ctx context.Context, userID int64) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	q := s.Q.WithTx(tx)
+	q := s.Queries.WithTx(tx)
 	if err = q.DeleteUserSessions(ctx, userID); err != nil {
 		return err
 	}
