@@ -506,3 +506,29 @@ func TestRunProcessesQueuedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A refresh requested while the job runs is not lost when the job then pauses: it is queued again (no attempt
+// spent) so it re-evaluates with the new request; with nothing pending the job pauses as before.
+func TestPauseKeepsRequestThatArrivedDuringTheRun(t *testing.T) {
+	e := setup(t)
+	arrive := false
+	e.w.Register(kind, func(ctx context.Context, _ Job, _ ClaimFence) error {
+		if arrive {
+			e.enqueue("p") // a selection or webhook lands while this run is in flight
+		}
+		return &Pause{Reason: "no credential"}
+	})
+	e.enqueue("p")
+	e.runOnce()
+	e.want("p", "paused", 0)
+	e.resume("p")
+	arrive = true
+	e.runOnce()
+	r := e.want("p", "queued", 0)
+	if r.Pending {
+		t.Fatal("pending flag survived the re-queue")
+	}
+	arrive = false
+	e.runOnce()
+	e.want("p", "paused", 0) // nothing pending this time
+}

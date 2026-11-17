@@ -196,23 +196,27 @@ func (q *Queries) KillJob(ctx context.Context, arg KillJobParams) (int64, error)
 }
 
 const pauseJob = `-- name: PauseJob :execrows
-UPDATE jobs SET state = 'paused', pending = false, lease_until = NULL, last_error = $3, updated_at = now()
-WHERE id = $1 AND generation = $2 AND state = 'running' AND lease_until > $4
+UPDATE jobs SET state = CASE WHEN pending THEN 'queued' ELSE 'paused' END,
+ run_at = CASE WHEN pending THEN $3 ELSE run_at END,
+ pending = false, lease_until = NULL, last_error = $4, updated_at = now()
+WHERE id = $1 AND generation = $2 AND state = 'running' AND lease_until > $3
 `
 
 type PauseJobParams struct {
 	ID         int64
 	Generation int64
-	Reason     string
 	Now        pgtype.Timestamptz
+	Reason     string
 }
 
+// A request that arrived while the job ran (pending) is not erased by the pause: the job goes back to queued, no attempt
+// spent, and re-evaluates with the new request. With nothing pending it parks until Resume.
 func (q *Queries) PauseJob(ctx context.Context, arg PauseJobParams) (int64, error) {
 	result, err := q.db.Exec(ctx, pauseJob,
 		arg.ID,
 		arg.Generation,
-		arg.Reason,
 		arg.Now,
+		arg.Reason,
 	)
 	if err != nil {
 		return 0, err
