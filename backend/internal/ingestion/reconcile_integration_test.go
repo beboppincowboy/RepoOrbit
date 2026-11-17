@@ -11,7 +11,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
+	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
 
@@ -160,7 +162,19 @@ func skipIfNoQueue(t *testing.T, err error) {
 	}
 }
 
-// Completed refresh: unstarred follow suspended, still-starred one kept, paused work for the user resumed.
+// realStore stores through the real repositories.Service (snapshot replacement, suspend/restore, eligibility hook),
+// with a fake fetch.
+type realStore struct {
+	fakeStars
+	svc *repositories.Service
+}
+
+func (r *realStore) StoreStars(ctx context.Context, tx pgx.Tx, userID int64, repos []githubapp.Repo) error {
+	return r.svc.StoreStars(ctx, tx, userID, repos)
+}
+
+// Completed refresh: unstarred follow suspended, still-starred one kept, paused work for the user resumed, all in the
+// one fenced commit; a lost claim leaves the snapshot, eligibility and paused work exactly as they were.
 func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -170,18 +184,41 @@ func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
 	f.selection(1, 10, "starred")
 	f.selection(1, 11, "starred")
 	f.star(1, 10)
+	f.star(1, 11)
 	now := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 	tx, _ := f.begin()
 	skipIfNoQueue(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(10), now))
 	skipIfNoQueue(t, tx.Commit(ctx))
 	f.exec(`UPDATE jobs SET state='paused'`)
-	err := StarReconcileHandler(&fakeStars{res: StarRefresh{Completed: true}}, &fakeClock{now: now})(ctx, jobs.Job{Key: "user:1"}, txFence{f.pool})
+	svc := &repositories.Service{Queries: f.q, Pool: f.pool, Now: func() time.Time { return now }}
+	svc.OnEligibilityChange = func(ctx context.Context, tx pgx.Tx, userID int64) error {
+		return RecheckEligibility(ctx, tx, userID, now)
+	}
+	stars := &realStore{fakeStars: fakeStars{res: StarFetch{Completed: true, Repos: []githubapp.Repo{{ID: 10, FullName: "o/r"}}}}, svc: svc}
+	// Lost claim after a successful fetch: nothing is written.
+	if err := StarReconcileHandler(stars, &fakeClock{now: now})(ctx, jobs.Job{Key: "user:1"}, onceFence{lost: true}); !errors.Is(err, jobs.ErrLostClaim) {
+		t.Fatalf("lost claim: %v", err)
+	}
+	if f.suspended(1, 11) || f.jobState(jobs.KindRepoMetadataRefresh, repoKey(10)) != "paused" {
+		t.Fatal("a lost claim changed eligibility or resumed work")
+	}
+	var n int
+	_ = f.pool.QueryRow(ctx, `SELECT count(*) FROM stars WHERE user_id = 1`).Scan(&n)
+	if n != 2 {
+		t.Fatalf("a lost claim replaced the snapshot (%d rows)", n)
+	}
+	// Held claim: snapshot replaced, unstarred follow suspended, paused work resumed.
+	err := StarReconcileHandler(stars, &fakeClock{now: now})(ctx, jobs.Job{Key: "user:1"}, txFence{f.pool})
 	skipIfNoQueue(t, err)
 	if f.suspended(1, 10) || !f.suspended(1, 11) {
 		t.Fatal("suspension wrong")
 	}
 	if got := f.jobState(jobs.KindRepoMetadataRefresh, repoKey(10)); got != "queued" {
 		t.Fatalf("paused job after recheck: %s", got)
+	}
+	_ = f.pool.QueryRow(ctx, `SELECT count(*) FROM stars WHERE user_id = 1`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("snapshot not replaced (%d rows)", n)
 	}
 }
 

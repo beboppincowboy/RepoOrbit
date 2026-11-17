@@ -53,7 +53,7 @@ func main() {
 			_, err := ingestion.RequestMetadataRefresh(ctx, tx, repoID)
 			return err
 		}
-		repos.OnStarsReplaced = func(ctx context.Context, tx pgx.Tx, userID int64) error {
+		repos.OnEligibilityChange = func(ctx context.Context, tx pgx.Tx, userID int64) error {
 			return ingestion.RecheckEligibility(ctx, tx, userID, time.Now())
 		}
 		webhooks = ingestion.WebhookHandler(ingestion.WebhookDeps{Pool: pool, Secret: cfg.WebhookSecret, Clock: jobs.SystemClock{}})

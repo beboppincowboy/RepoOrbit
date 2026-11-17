@@ -561,3 +561,80 @@ func TestOwnerDeselectionWithOtherFollowerStillWithholdsTheCommit(t *testing.T) 
 		t.Fatal("metadata committed under a credential whose owner stopped following")
 	}
 }
+
+// jobLockFence takes the job row lock first (as the real claim check does) before running the commit.
+type jobLockFence struct {
+	pool *pgxpool.Pool
+	key  string
+}
+
+func (f jobLockFence) Commit(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM jobs WHERE kind = $1 AND key = $2 FOR UPDATE`, string(jobs.KindRepoMetadataRefresh), f.key); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// Lock order is job row, then selection row. A writer that suspends a selection and then resumes the repository's
+// job (the star store) takes them in the other order; the refresh's NOWAIT selection lock means it can only fail and
+// retry, never wait, so the pair cannot deadlock however they interleave.
+func TestRefreshCommitAndStarStoreNeverDeadlock(t *testing.T) {
+	e := setup(t)
+	uid := e.signIn("alice")
+	id := e.gh.AddRepo("bob", "tool", false)
+	e.store(uid, id, false)
+	ctx := context.Background()
+	key := fmt.Sprintf("repo:%d", id)
+	tx, _ := e.pool.Begin(ctx)
+	if err := jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, key, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 25; i++ {
+		errs := make(chan error, 2)
+		go func() {
+			err := e.run(jobLockFence{e.pool, key}, id)
+			var d *jobs.Defer
+			if errors.As(err, &d) {
+				err = nil // a withheld commit is the expected, safe outcome
+			}
+			errs <- err
+		}()
+		go func() {
+			tx, err := e.pool.Begin(ctx)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer tx.Rollback(ctx)
+			if _, err = tx.Exec(ctx, `UPDATE selections SET follow_suspended_at = now() WHERE user_id = $1`, uid); err != nil {
+				errs <- err
+				return
+			}
+			time.Sleep(time.Duration(i%4) * time.Millisecond)
+			if err = jobs.Resume(ctx, tx, jobs.KindRepoMetadataRefresh, key, time.Now()); err != nil {
+				errs <- err
+				return
+			}
+			errs <- tx.Commit(ctx)
+		}()
+		for j := 0; j < 2; j++ {
+			if err := <-errs; err != nil {
+				t.Fatalf("iteration %d: %v", i, err)
+			}
+		}
+		if _, err := e.pool.Exec(ctx, `UPDATE selections SET follow_suspended_at = NULL`); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

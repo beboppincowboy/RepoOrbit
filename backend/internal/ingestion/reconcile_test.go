@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 )
 
@@ -62,14 +64,21 @@ func TestJitterStaysWithinTenPercent(t *testing.T) {
 }
 
 type fakeStars struct {
-	res   StarRefresh
-	err   error
-	calls int
+	res      StarFetch
+	err      error
+	calls    int
+	stored   int // StoreStars calls
+	storeErr error
 }
 
-func (f *fakeStars) RefreshStars(context.Context, int64) (StarRefresh, error) {
+func (f *fakeStars) FetchStars(context.Context, int64) (StarFetch, error) {
 	f.calls++
 	return f.res, f.err
+}
+
+func (f *fakeStars) StoreStars(context.Context, pgx.Tx, int64, []githubapp.Repo) error {
+	f.stored++
+	return f.storeErr
 }
 
 // A nil fence proves the handler never commits unless the refresh completed.
@@ -81,7 +90,7 @@ func TestStarHandlerFailurePathsCommitNothingAndSpendNoAttempt(t *testing.T) {
 		check func(error) bool
 	}{
 		{"no credential pauses", &fakeStars{err: ErrNoCredential}, func(err error) bool { var p *jobs.Pause; return errors.As(err, &p) }},
-		{"rate limit defers", &fakeStars{res: StarRefresh{RetryAt: &retry}}, func(err error) bool { var d *jobs.Defer; return errors.As(err, &d) && d.RetryAt.Equal(retry) }},
+		{"rate limit defers", &fakeStars{res: StarFetch{RetryAt: &retry}}, func(err error) bool { var d *jobs.Defer; return errors.As(err, &d) && d.RetryAt.Equal(retry) }},
 		{"failed refresh retries ordinarily", &fakeStars{}, func(err error) bool {
 			var p *jobs.Pause
 			var d *jobs.Defer
@@ -101,5 +110,43 @@ func TestStarHandlerFailurePathsCommitNothingAndSpendNoAttempt(t *testing.T) {
 	err := h(context.Background(), jobs.Job{Key: "repo:7"}, nil)
 	if err == nil || err.Error() != "bad star reconcile key \"repo:7\"" {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// onceFence is a jobs.ClaimFence that either runs the commit function or reports a lost claim without running it.
+type onceFence struct{ lost bool }
+
+func (f onceFence) Commit(_ context.Context, fn func(pgx.Tx) error) error {
+	if f.lost {
+		return jobs.ErrLostClaim
+	}
+	return fn(nil)
+}
+
+// The snapshot is stored only inside the claim-fenced commit: a worker that lost its claim after fetching stores nothing.
+func TestStarHandlerStoresOnlyInsideTheClaimFence(t *testing.T) {
+	stars := &fakeStars{res: StarFetch{Completed: true}}
+	h := StarReconcileHandler(stars, &fakeClock{})
+	if err := h(context.Background(), jobs.Job{Key: "user:7"}, onceFence{lost: true}); !errors.Is(err, jobs.ErrLostClaim) {
+		t.Fatalf("lost claim: %v", err)
+	}
+	if stars.calls != 1 || stars.stored != 0 {
+		t.Fatalf("fetched %d, stored %d; a lost claim must store nothing", stars.calls, stars.stored)
+	}
+	if err := h(context.Background(), jobs.Job{Key: "user:7"}, onceFence{}); err != nil || stars.stored != 1 {
+		t.Fatalf("held claim: err %v, stored %d", err, stars.stored)
+	}
+	stars.storeErr = errors.New("db")
+	if err := h(context.Background(), jobs.Job{Key: "user:7"}, onceFence{}); err == nil {
+		t.Fatal("a failing store must fail the job (backoff retry)")
+	}
+}
+
+// Fetching never stores: the handler gets nothing to write when the fetch is incomplete.
+func TestStarHandlerIncompleteFetchStoresNothing(t *testing.T) {
+	stars := &fakeStars{}
+	_ = StarReconcileHandler(stars, &fakeClock{})(context.Background(), jobs.Job{Key: "user:7"}, onceFence{})
+	if stars.stored != 0 {
+		t.Fatal("incomplete fetch reached the store")
 	}
 }
