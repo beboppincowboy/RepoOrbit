@@ -40,6 +40,9 @@ func applyDeletion(ctx context.Context, tx pgx.Tx, repoID int64, event, action s
 		_, err := tx.Exec(ctx, sql, args...)
 		return err
 	}
+	if err := lockCheckpoints(ctx, tx, repoID, resource, p.Issue.Number); err != nil {
+		return err
+	}
 	if err := exec(`INSERT INTO activity_tombstones(repository_id,resource,source_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, repoID, resource, id); err != nil {
 		return err
 	}
@@ -69,4 +72,30 @@ func applyDeletion(ctx context.Context, tx pgx.Tx, repoID int64, event, action s
 	default: // releases
 		return exec(`DELETE FROM activity_releases WHERE repository_id=$1 AND source_id=$2`, repoID, id)
 	}
+}
+
+// lockCheckpoints takes the checkpoint rows of every stream that can write the deleted item, before the tombstone is
+// written. Sync commits lock their checkpoint FOR UPDATE and only then look for a tombstone, so waiting here means
+// either their insert is committed (and the deletes below remove it) or they see the committed tombstone. Lock order
+// matches the sync side: stream rows sorted by resource, then the per-issue comment history row; callers must have
+// finished touching job rows first (jobs, then checkpoints).
+func lockCheckpoints(ctx context.Context, tx pgx.Tx, repoID int64, resource string, issueNumber int64) error {
+	var streams []string
+	switch resource {
+	case "issues":
+		streams = []string{"issues", "issue_events"}
+	case "releases":
+		streams = []string{"releases"}
+	}
+	if len(streams) > 0 {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM activity_resources WHERE repository_id=$1 AND resource = ANY($2) ORDER BY resource FOR UPDATE`, repoID, streams); err != nil {
+			return err
+		}
+	}
+	if (resource == "issues" || resource == "comments") && issueNumber > 0 {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM activity_children WHERE repository_id=$1 AND resource='comments' AND parent_id=$2 FOR UPDATE`, repoID, issueNumber); err != nil {
+			return err
+		}
+	}
+	return nil
 }

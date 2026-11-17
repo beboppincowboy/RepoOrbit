@@ -161,3 +161,77 @@ func TestSignedIssueDeletionRemovesDependents(t *testing.T) {
 		t.Fatal("deleted issue was resurrected")
 	}
 }
+
+// waitForLockWait blocks until some other backend is waiting on a lock, or the timeout passes.
+func waitForLockWait(t *testing.T, pool *pgxpool.Pool, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock'`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
+// A deletion that arrives while a sync commit is inserting the same release (checkpoint row locked, insert not yet
+// visible) must wait for that commit and then remove the row: otherwise the row survives next to its tombstone.
+func TestSignedDeletionSerializesWithInFlightSyncCommit(t *testing.T) {
+	cases := []struct {
+		name, resource, event, payload, insert string
+	}{
+		{"release", "releases", "release", `{"action":"deleted","repository":{"id":42},"release":{"id":7}}`,
+			`INSERT INTO activity_releases(source_id,repository_id,name,tag_name,body,html_url,created_at,published_at,observed_at,prerelease) VALUES (7,42,'n','v1','','u',now(),now(),now(),false)`},
+		{"issue event", "issue_events", "issues", `{"action":"deleted","repository":{"id":42},"issue":{"id":5,"number":3}}`,
+			`INSERT INTO activity_issue_events(source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at) VALUES (9,42,5,3,'closed','u',now(),now())`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, pool := testutil.Database(t)
+			ctx := context.Background()
+			selectedRepo(t, pool, 42)
+			tx, _ := pool.Begin(ctx)
+			if err := RequestActivity(ctx, tx, 42, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			tx.Commit(ctx)
+			// The sync side: checkpoint row locked FOR UPDATE, tombstone check (none yet), insert, commit pending.
+			sync, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sync.Rollback(ctx)
+			if _, err = sync.Exec(ctx, `SELECT 1 FROM activity_resources WHERE repository_id=42 AND resource=$1 FOR UPDATE`, tc.resource); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = sync.Exec(ctx, tc.insert); err != nil {
+				t.Fatal(err)
+			}
+			h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
+			done := make(chan int, 1)
+			go func() { done <- post(h, testSecret, tc.event, "del-race", tc.payload, "").Code }()
+			if !waitForLockWait(t, pool, 3*time.Second) {
+				t.Log("deletion did not wait for the in-flight sync commit")
+			}
+			if err = sync.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if code := <-done; code != 200 {
+				t.Fatalf("status %d", code)
+			}
+			if n := count(t, pool, "activity_tombstones WHERE repository_id=42"); n != 1 {
+				t.Fatalf("%d tombstones, want 1", n)
+			}
+			for _, table := range []string{"activity_releases", "activity_issue_events"} {
+				if n := count(t, pool, table); n != 0 {
+					t.Fatalf("%s has %d rows next to the tombstone", table, n)
+				}
+			}
+		})
+	}
+}
