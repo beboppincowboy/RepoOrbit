@@ -19,12 +19,13 @@ func TestLoadConfigModes(t *testing.T) {
 		{"only secret", map[string]string{"GITHUB_CLIENT_SECRET": "x"}, "both", false},
 		{"real without key", map[string]string{"GITHUB_CLIENT_ID": "x", "GITHUB_CLIENT_SECRET": "y"}, "TOKEN_ENCRYPTION_KEY", false},
 		{"real short key", map[string]string{"GITHUB_CLIENT_ID": "x", "GITHUB_CLIENT_SECRET": "y", "TOKEN_ENCRYPTION_KEY": "c2hvcnQ="}, "TOKEN_ENCRYPTION_KEY", false},
-		{"real bad app url", map[string]string{"GITHUB_CLIENT_ID": "x", "GITHUB_CLIENT_SECRET": "y", "TOKEN_ENCRYPTION_KEY": key, "APP_URL": "localhost:3000/app"}, "APP_URL", false},
-		{"real", map[string]string{"GITHUB_CLIENT_ID": "x", "GITHUB_CLIENT_SECRET": "y", "TOKEN_ENCRYPTION_KEY": key}, "", false},
+		{"real without webhook secret", map[string]string{"GITHUB_CLIENT_ID": "x", "GITHUB_CLIENT_SECRET": "y", "TOKEN_ENCRYPTION_KEY": key}, "WEBHOOK_SECRET", false},
+		{"real bad app url", map[string]string{"GITHUB_CLIENT_ID": "x", "GITHUB_CLIENT_SECRET": "y", "TOKEN_ENCRYPTION_KEY": key, "WEBHOOK_SECRET": "s", "APP_URL": "localhost:3000/app"}, "APP_URL", false},
+		{"real", map[string]string{"GITHUB_CLIENT_ID": "x", "GITHUB_CLIENT_SECRET": "y", "TOKEN_ENCRYPTION_KEY": key, "WEBHOOK_SECRET": "s"}, "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, k := range []string{"GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "TOKEN_ENCRYPTION_KEY"} {
+			for _, k := range []string{"GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET", "TOKEN_ENCRYPTION_KEY", "WEBHOOK_SECRET"} {
 				t.Setenv(k, tc.env[k])
 			}
 			t.Setenv("DATABASE_URL", "postgres://x")
