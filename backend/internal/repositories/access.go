@@ -48,6 +48,9 @@ type Service struct {
 	// snapshot, a selection, a connected installation), so paused work the change unblocks (ingestion.RecheckEligibility)
 	// resumes atomically with it. Nil does nothing.
 	OnEligibilityChange func(ctx context.Context, tx pgx.Tx, userID int64) error
+	// SignalActivity runs inside the refresh transaction and returns an ingestion.ActivityOutcome string
+	// ("accepted", "coalesced", "dead", "ineligible"). Nil makes the refresh route answer 404.
+	SignalActivity func(ctx context.Context, tx pgx.Tx, repoID int64) (string, error)
 
 	mu      sync.Mutex
 	entries map[int64]*entry

@@ -228,6 +228,7 @@ func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
 		defer close(done)
 		runDuties(ctx, d.Clock, d.Sleep, d.Rand, []*duty{
 			{name: "metadata poll", every: MetadataPollInterval, run: d.pollMetadata},
+			{name: "activity poll", every: MetadataPollInterval, run: d.pollActivity},
 			{name: "star", every: StarReconcileInterval, run: d.scheduleStars},
 		})
 	}()
@@ -276,4 +277,28 @@ func (d SchedulerDeps) enqueueAndResume(ctx context.Context, tx pgx.Tx, kind job
 
 func spread(interval time.Duration, rnd func() float64) time.Duration {
 	return time.Duration(rnd() * float64(interval) / enqueueSpreadDivisor)
+}
+
+// pollActivity repairs missed webhooks: every followed repository's caught-up streams are reopened for a catch-up
+// scan at a jittered time, and paused streams resume. Public and private repositories take the same path; access
+// is re-verified by the jobs themselves. Dead streams stay dead.
+func (d SchedulerDeps) pollActivity(ctx context.Context, now time.Time) error {
+	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
+		ids, err := db.New(tx).ListFollowedRepositoryIDs(ctx)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			at := now.Add(spread(MetadataPollInterval, d.Rand))
+			if _, err := SignalActivity(ctx, tx, id, at); err != nil {
+				return err
+			}
+			for _, kind := range activityParentKinds {
+				if err := jobs.Resume(ctx, tx, kind, repoKey(id), at); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }

@@ -149,7 +149,31 @@ func (r *Resolver) attachEvidenceStatus(ctx context.Context, id int64, a *model.
 			a.Comments = s
 		}
 	}
+	if err = r.RepoAccess.Pool.QueryRow(ctx, `SELECT archived FROM repositories WHERE id=$1`, id).Scan(&a.Archived); err != nil {
+		return err
+	}
+	if synchronized(a, time.Now()) {
+		a.Synchronized, a.Message = true, "All activity streams are synchronized."
+	}
 	return nil
+}
+
+// synchronized is true only when every stream is caught up, fresh, failure-free and every child history is complete.
+// The permanent issue-event gap is reported separately and does not block it. Any stale, failed, paused or dead
+// stream keeps the repository from claiming synchronization.
+func synchronized(a *model.ActivityStatus, now time.Time) bool {
+	fresh := func(s *model.ActivityResourceStatus) bool {
+		if s == nil || s.Phase != "current" || s.CatchupThrough == nil || s.LastSuccessAt == nil || s.FailureCode != nil || s.JobState == "dead" || s.JobState == "paused" {
+			return false
+		}
+		t, err := time.Parse(time.RFC3339, *s.LastSuccessAt)
+		return err == nil && now.Sub(t) <= 2*ingestion.MetadataPollInterval
+	}
+	child := func(c *model.ChildResourceStatus) bool { return c != nil && c.Complete && c.FailureCode == nil }
+	if a.IssueEvents == nil {
+		return false
+	}
+	return fresh(a.Issues) && fresh(a.PullRequests) && fresh(a.Releases) && fresh(a.IssueEvents.Traversal) && child(a.Reviews) && child(a.Comments)
 }
 
 func safeActivityCode(code *string) *string {

@@ -58,6 +58,10 @@ func main() {
 		repos.OnEligibilityChange = func(ctx context.Context, tx pgx.Tx, userID int64) error {
 			return ingestion.RecheckEligibility(ctx, tx, userID, time.Now())
 		}
+		repos.SignalActivity = func(ctx context.Context, tx pgx.Tx, repoID int64) (string, error) {
+			out, err := ingestion.SignalActivity(ctx, tx, repoID, time.Now())
+			return string(out), err
+		}
 		authHandler.Service.OnSignIn = repos.OnEligibilityChange
 		webhooks = ingestion.WebhookHandler(ingestion.WebhookDeps{Pool: pool, Secret: cfg.WebhookSecret, Clock: jobs.SystemClock{}})
 		if cfg.AppSlug != "" {

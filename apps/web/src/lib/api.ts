@@ -6,7 +6,8 @@ export type SyncState = "demo" | "awaiting-sync" | "not-synchronized";
 export type MetadataStatus = { state: "not-scheduled" | "queued" | "running" | "paused" | "dead"; lastSuccessAt: string | null; nextAttemptAt: string | null; paused: boolean; failureCode: string | null; followSuspended: boolean };
 // Activity coverage is separate from metadata: synchronized stays false until activity ingestion exists.
 export type ActivityResourceStatus = { phase: string; boundary: string; catchupThrough: string | null; lastSuccessAt: string | null; failureCode: string | null; jobState: string; nextAttemptAt: string | null };
-export type ActivityStatus = { synchronized: boolean; message: string; issues: ActivityResourceStatus | null; futureResources: string[] };
+export type ChildResourceStatus = { complete: boolean; pendingChildren: number; lastSuccessAt: string | null; failureCode: string | null; nextAttemptAt: string | null };
+export type ActivityStatus = { synchronized: boolean; message: string; issues: ActivityResourceStatus | null; pullRequests: ActivityResourceStatus | null; releases: ActivityResourceStatus | null; reviews: ChildResourceStatus | null; comments: ChildResourceStatus | null; issueEvents: { traversal: ActivityResourceStatus | null; historicalGap: boolean } | null; futureResources: string[] };
 // fullName is "owner/name".
 export type Repository = { id: string; fullName: string; description: string; syncState: SyncState; metadataStatus: MetadataStatus | null; activity: ActivityStatus; issues: { nodes: Issue[]; hasNextPage: boolean; withheld: number; retryAt: string | null } };
 // withheld counts selected repositories hidden because access could not be verified; retryAt is set when GitHub rate limited the check.
@@ -39,7 +40,7 @@ async function graphqlQuery(queryText: string, variables: Record<string, unknown
 // Loads one page of the viewer's SELECTED repositories (not every accessible one), then one extra GraphQL
 // request for each repository's first 5 issues. Pass the previous page's endCursor as `after`.
 export async function selectedRepositories(after: string | null = null): Promise<RepositoryConnection> {
-  const { selectedRepositories: connection } = await graphqlQuery(`query SelectedRepositories($after: ID) { selectedRepositories(first: 20, after: $after) { nodes { id fullName description syncState metadataStatus { state lastSuccessAt nextAttemptAt paused failureCode followSuspended } activity { synchronized message issues { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } futureResources } } endCursor hasNextPage withheld retryAt } }`, { after });
+  const { selectedRepositories: connection } = await graphqlQuery(`query SelectedRepositories($after: ID) { selectedRepositories(first: 20, after: $after) { nodes { id fullName description syncState metadataStatus { state lastSuccessAt nextAttemptAt paused failureCode followSuspended } activity { synchronized message issues { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } pullRequests { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } releases { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } reviews { complete pendingChildren lastSuccessAt failureCode nextAttemptAt } comments { complete pendingChildren lastSuccessAt failureCode nextAttemptAt } issueEvents { traversal { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } historicalGap } futureResources } } endCursor hasNextPage withheld retryAt } }`, { after });
   if (!connection.nodes.length) return connection;
   // One aliased issues field per repository so each repo gets its own page and hasNextPage.
   const ids: string[] = connection.nodes.map((repo: Repository) => repo.id);
@@ -71,4 +72,13 @@ export async function setFollowed(id: string, followed: boolean) {
   const response = await fetch(followed ? `${base}/follow` : `${base}/selection`, { method: followed ? "PUT" : "DELETE", headers: { "X-CSRF-Token": csrfToken ?? "" } });
   if (response.status === 503) throw new Error("GitHub could not verify access right now. Try again shortly.");
   if (!response.ok) throw new Error(followed ? "Could not follow this repository. Refresh your stars and try again." : "Could not unfollow this repository.");
+}
+// Requests an activity refresh. Returns "accepted" or "coalesced" (202); throws a user-facing Error otherwise.
+export async function refreshActivity(id: string): Promise<"accepted" | "coalesced"> {
+  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/activity/refresh`, { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
+  if (response.status === 202) return (await response.json().catch(() => null))?.state === "coalesced" ? "coalesced" : "accepted";
+  if (response.status === 409) throw new Error("Activity sync stopped after repeated failures; an operator must requeue it.");
+  if (response.status === 404) throw new Error("This repository is no longer eligible for activity sync.");
+  if (response.status === 503) throw new Error("GitHub could not verify access right now. Try again shortly.");
+  throw new Error("Could not request an activity refresh.");
 }

@@ -57,6 +57,7 @@ type ComplexityRoot struct {
 	}
 
 	ActivityStatus struct {
+		Archived        func(childComplexity int) int
 		Comments        func(childComplexity int) int
 		FutureResources func(childComplexity int) int
 		IssueEvents     func(childComplexity int) int
@@ -332,6 +333,13 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.ActivityResourceStatus.Phase(childComplexity), true
+
+	case "ActivityStatus.archived":
+		if e.complexity.ActivityStatus.Archived == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.Archived(childComplexity), true
 
 	case "ActivityStatus.comments":
 		if e.complexity.ActivityStatus.Comments == nil {
@@ -2830,6 +2838,50 @@ func (ec *executionContext) fieldContext_ActivityStatus_issueEvents(_ context.Co
 				return ec.fieldContext_IssueEventStatus_historicalGap(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type IssueEventStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_archived(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_archived(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Archived, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_archived(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
 		},
 	}
 	return fc, nil
@@ -7836,6 +7888,8 @@ func (ec *executionContext) fieldContext_Repository_activity(_ context.Context, 
 				return ec.fieldContext_ActivityStatus_releases(ctx, field)
 			case "issueEvents":
 				return ec.fieldContext_ActivityStatus_issueEvents(ctx, field)
+			case "archived":
+				return ec.fieldContext_ActivityStatus_archived(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type ActivityStatus", field.Name)
 		},
@@ -10806,6 +10860,11 @@ func (ec *executionContext) _ActivityStatus(ctx context.Context, sel ast.Selecti
 			out.Values[i] = ec._ActivityStatus_releases(ctx, field, obj)
 		case "issueEvents":
 			out.Values[i] = ec._ActivityStatus_issueEvents(ctx, field, obj)
+		case "archived":
+			out.Values[i] = ec._ActivityStatus_archived(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}

@@ -22,6 +22,7 @@ type ActivityStatus struct {
 	Comments        *ChildResourceStatus    `json:"comments,omitempty"`
 	Releases        *ActivityResourceStatus `json:"releases,omitempty"`
 	IssueEvents     *IssueEventStatus       `json:"issueEvents,omitempty"`
+	Archived        bool                    `json:"archived"`
 }
 
 type ChildResourceStatus struct {

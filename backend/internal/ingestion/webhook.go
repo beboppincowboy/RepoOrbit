@@ -36,6 +36,16 @@ type WebhookDeps struct {
 	bump    func(ctx context.Context, tx pgx.Tx, scope accessfence.Scope, subjectID int64) error
 }
 
+// signalsActivity reports whether a delivery is a reconciliation signal for activity streams. Payload content is
+// never stored; only a signed deletion adds a tombstone (see applyDeletion).
+func signalsActivity(event string) bool {
+	switch event {
+	case "issues", "issue_comment", "pull_request", "pull_request_review", "pull_request_review_comment", "release":
+		return true
+	}
+	return false
+}
+
 type webhookPayload struct {
 	Action     string `json:"action"`
 	Repository struct {
@@ -44,6 +54,16 @@ type webhookPayload struct {
 	Installation struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
+	Issue struct {
+		ID     int64 `json:"id"`
+		Number int64 `json:"number"`
+	} `json:"issue"`
+	Comment struct {
+		ID int64 `json:"id"`
+	} `json:"comment"`
+	Release struct {
+		ID int64 `json:"id"`
+	} `json:"release"`
 	Sender struct {
 		ID int64 `json:"id"`
 	} `json:"sender"`
@@ -122,12 +142,15 @@ const (
 	whUnsupported whKind = iota
 	whOrdinary           // refresh the repository if selected
 	whSecurity           // bump the fence (and refresh if the event names a repository)
+	whActivity           // activity reconciliation signal only: no metadata refresh
 )
 
 func classifyWebhook(event, action string) whKind {
 	switch event {
 	case "push", "issues", "pull_request":
 		return whOrdinary
+	case "issue_comment", "pull_request_review", "pull_request_review_comment", "release":
+		return whActivity
 	case "repository":
 		switch action {
 		case "edited", "renamed", "publicized", "archived", "unarchived":
@@ -157,11 +180,18 @@ func (d WebhookDeps) accept(ctx context.Context, id, event string, k whKind, p w
 			return nil
 		}
 		switch {
-		case k == whOrdinary:
+		case k == whOrdinary || k == whActivity:
 			if p.Repository.ID <= 0 {
 				return errWebhookPayload{}
 			}
-			_, err = d.refresh(ctx, tx, p.Repository.ID)
+			if k == whOrdinary {
+				_, err = d.refresh(ctx, tx, p.Repository.ID)
+			}
+			if err == nil && (signalsActivity(event) || event == "repository") {
+				if err = applyDeletion(ctx, tx, p.Repository.ID, event, p.Action, p); err == nil {
+					_, err = SignalActivity(ctx, tx, p.Repository.ID, now)
+				}
+			}
 		case event == "repository":
 			if p.Repository.ID <= 0 {
 				return errWebhookPayload{}

@@ -25,6 +25,7 @@ func (s *Service) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/repositories/{id}/selection", s.selection(true, s.Connect))
 	mux.HandleFunc("PUT /api/repositories/{id}/follow", s.selection(true, s.Follow))
 	mux.HandleFunc("DELETE /api/repositories/{id}/selection", s.selection(false, s.Deselect)) // also unfollows
+	mux.HandleFunc("POST /api/repositories/{id}/activity/refresh", s.refreshActivity)
 	return mux
 }
 
@@ -164,4 +165,61 @@ func (s *Service) storeInstallation(ctx context.Context, userID int64, in github
 		}
 		return nil
 	})
+}
+
+// refreshActivity queues an activity catch-up for a repository the viewer has selected. Selection and live
+// access are both checked first; every denial is the same 404 so ids cannot be probed.
+func (s *Service) refreshActivity(w http.ResponseWriter, r *http.Request) {
+	userID, ok := viewer(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 || s.SignalActivity == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if sel, err := s.Queries.ListSelectedIDs(r.Context(), db.ListSelectedIDsParams{UserID: userID, RepositoryIds: []int64{id}}); err != nil {
+		s.fail(w, err)
+		return
+	} else if len(sel) == 0 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if d := s.CheckOne(r.Context(), userID, id, true); d.Unverified {
+		s.fail(w, &UnverifiedError{RetryAt: d.RetryAt})
+		return
+	} else if !d.Allowed {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	outcome, err := s.signalActivity(r.Context(), id)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	status := http.StatusAccepted
+	switch outcome {
+	case "ineligible":
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	case "dead":
+		status = http.StatusConflict
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"state": outcome})
+}
+
+func (s *Service) signalActivity(ctx context.Context, repoID int64) (string, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	outcome, err := s.SignalActivity(ctx, tx, repoID)
+	if err != nil {
+		return "", err
+	}
+	return outcome, tx.Commit(ctx)
 }
