@@ -3,6 +3,7 @@ package platform
 import (
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -48,6 +49,9 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("TOKEN_ENCRYPTION_KEY must be 32 random bytes, base64-encoded")
 	}
 	cfg.TokenKey = key
+	if u, err := url.Parse(cfg.AppURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" {
+		return Config{}, fmt.Errorf("APP_URL must be an origin such as https://example.com")
+	}
 	return cfg, nil
 }
 

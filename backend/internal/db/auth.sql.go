@@ -63,6 +63,16 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) er
 	return err
 }
 
+const deleteExpiredAuthRows = `-- name: DeleteExpiredAuthRows :exec
+WITH s AS (DELETE FROM sessions WHERE expires_at <= $1::timestamptz)
+DELETE FROM oauth_states WHERE expires_at <= $1::timestamptz
+`
+
+func (q *Queries) DeleteExpiredAuthRows(ctx context.Context, now pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, deleteExpiredAuthRows, now)
+	return err
+}
+
 const deleteSession = `-- name: DeleteSession :exec
 DELETE FROM sessions WHERE token_hash = $1
 `

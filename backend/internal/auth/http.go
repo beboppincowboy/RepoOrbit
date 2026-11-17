@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -49,6 +51,10 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		out["mode"], out["user"] = "demo", map[string]any{"login": DemoViewer.Login, "demo": true}
 	} else if token, v, err := h.session(r); err == nil {
 		out["user"], out["csrfToken"] = map[string]any{"login": v.Login, "demo": false}, h.Service.CSRFToken(token)
+	} else if !errors.Is(err, ErrUnauthenticated) {
+		log.Printf("auth: session lookup failed: %v", err)
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
@@ -57,7 +63,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	authURL, state, err := h.Service.BeginLogin(r.Context())
 	if err != nil {
-		h.fail(w, r)
+		h.fail(w, r, err)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: state, Path: "/auth", MaxAge: int(stateLifetime.Seconds()), HttpOnly: true, Secure: h.secure(), SameSite: http.SameSiteLaxMode})
@@ -76,22 +82,27 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	token, err := h.Service.CompleteLogin(r.Context(), q.Get("state"), cookieState, q.Get("code"))
 	if err != nil {
-		h.fail(w, r)
+		h.fail(w, r, err)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, Path: "/", MaxAge: int(SessionLifetime.Seconds()), HttpOnly: true, Secure: h.secure(), SameSite: http.SameSiteLaxMode})
 	http.Redirect(w, r, h.AppURL+"/", http.StatusFound)
 }
 
-func (h *Handler) fail(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) fail(w http.ResponseWriter, r *http.Request, err error) {
+	log.Printf("auth: sign-in failed: %v", err) // never includes tokens or codes
 	http.Redirect(w, r, h.AppURL+"/login?error=signin", http.StatusFound)
 }
 
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		_ = h.Service.Logout(r.Context(), c.Value)
-	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: h.secure(), SameSite: http.SameSiteLaxMode})
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		if err := h.Service.Logout(r.Context(), c.Value); err != nil {
+			log.Printf("auth: logout failed: %v", err)
+			http.Error(w, "logout failed", http.StatusInternalServerError)
+			return
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -114,6 +125,11 @@ func (h *Handler) Protect(next http.Handler) http.Handler {
 		}
 		token, v, err := h.session(r)
 		if err != nil {
+			if !errors.Is(err, ErrUnauthenticated) {
+				log.Printf("auth: session lookup failed: %v", err)
+				http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			http.Error(w, "sign in required", http.StatusUnauthorized)
 			return
 		}
