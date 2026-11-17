@@ -29,25 +29,9 @@ func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFenc
 		return jobs.Permanent(errors.New("invalid child key"))
 	}
 	defer func() {
-		if result == nil || errors.Is(result, jobs.ErrLostClaim) {
+		code, ok := activityFailureCode(result)
+		if !ok {
 			return
-		}
-		code := CodeUpstream
-		var de *jobs.Defer
-		var pause *jobs.Pause
-		if errors.As(result, &de) {
-			if de.Reason == "continue" {
-				return
-			}
-			code = de.Reason
-		}
-		if errors.As(result, &pause) {
-			code = pause.Reason
-		}
-		switch code {
-		case CodeNoCredential, CodeRateLimited, CodeUnverified, CodeAccessMoved, CodeUpstream:
-		default:
-			code = CodeUpstream
 		}
 		_ = fence.Commit(ctx, func(tx pgx.Tx) error {
 			_, err := tx.Exec(ctx, `UPDATE activity_children SET last_error_code=$4 WHERE repository_id=$1 AND resource=$2 AND parent_id=$3`, repoID, resource, parentID, code)

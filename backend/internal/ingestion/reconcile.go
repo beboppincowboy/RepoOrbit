@@ -80,7 +80,7 @@ func RecheckEligibility(ctx context.Context, tx pgx.Tx, userID int64, now time.T
 		if err := jobs.Resume(ctx, tx, jobs.KindActivityPullRequests, repoKey(id), now); err != nil {
 			return err
 		}
-		for _, kind := range []jobs.Kind{jobs.KindActivityReleases, jobs.KindActivityIssueEvents} {
+		for _, kind := range eventStreamKinds {
 			if err := jobs.Resume(ctx, tx, kind, repoKey(id), now); err != nil {
 				return err
 			}
