@@ -33,55 +33,37 @@ func applyDeletion(ctx context.Context, tx pgx.Tx, repoID int64, event, action s
 	if ok, err := db.New(tx).HasEligibleSelection(ctx, repoID); err != nil || !ok {
 		return err
 	}
-	stmts := []struct {
-		sql  string
-		args []any
-	}{{`INSERT INTO activity_tombstones(repository_id,resource,source_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, []any{repoID, resource, id}}}
+	exec := func(sql string, args ...any) error {
+		_, err := tx.Exec(ctx, sql, args...)
+		return err
+	}
+	if err := exec(`INSERT INTO activity_tombstones(repository_id,resource,source_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, repoID, resource, id); err != nil {
+		return err
+	}
 	switch resource {
 	case "issues":
 		if p.Issue.Number <= 0 {
 			return errWebhookPayload{}
 		}
-		stmts = append(stmts,
-			struct {
-				sql  string
-				args []any
-			}{`DELETE FROM activity_issue_labels WHERE issue_id=$1`, []any{id}},
-			struct {
-				sql  string
-				args []any
-			}{`DELETE FROM activity_issue_assignees WHERE issue_id=$1`, []any{id}},
-			struct {
-				sql  string
-				args []any
-			}{`DELETE FROM activity_issue_events WHERE repository_id=$1 AND issue_id=$2`, []any{repoID, id}},
-			struct {
-				sql  string
-				args []any
-			}{`DELETE FROM activity_comments WHERE repository_id=$1 AND issue_number=$2`, []any{repoID, p.Issue.Number}},
-			struct {
-				sql  string
-				args []any
-			}{`DELETE FROM activity_children WHERE repository_id=$1 AND resource='comments' AND parent_id=$2`, []any{repoID, p.Issue.Number}},
-			struct {
-				sql  string
-				args []any
-			}{`DELETE FROM activity_issues WHERE repository_id=$1 AND source_id=$2`, []any{repoID, id}})
-	case "comments":
-		stmts = append(stmts, struct {
+		for _, stmt := range []struct {
 			sql  string
 			args []any
-		}{`DELETE FROM activity_comments WHERE repository_id=$1 AND source_id=$2`, []any{repoID, id}})
-	case "releases":
-		stmts = append(stmts, struct {
-			sql  string
-			args []any
-		}{`DELETE FROM activity_releases WHERE repository_id=$1 AND source_id=$2`, []any{repoID, id}})
-	}
-	for _, s := range stmts {
-		if _, err := tx.Exec(ctx, s.sql, s.args...); err != nil {
-			return err
+		}{
+			{`DELETE FROM activity_issue_labels WHERE issue_id=$1`, []any{id}},
+			{`DELETE FROM activity_issue_assignees WHERE issue_id=$1`, []any{id}},
+			{`DELETE FROM activity_issue_events WHERE repository_id=$1 AND issue_id=$2`, []any{repoID, id}},
+			{`DELETE FROM activity_comments WHERE repository_id=$1 AND issue_number=$2`, []any{repoID, p.Issue.Number}},
+			{`DELETE FROM activity_children WHERE repository_id=$1 AND resource='comments' AND parent_id=$2`, []any{repoID, p.Issue.Number}},
+			{`DELETE FROM activity_issues WHERE repository_id=$1 AND source_id=$2`, []any{repoID, id}},
+		} {
+			if err := exec(stmt.sql, stmt.args...); err != nil {
+				return err
+			}
 		}
+		return nil
+	case "comments":
+		return exec(`DELETE FROM activity_comments WHERE repository_id=$1 AND source_id=$2`, repoID, id)
+	default: // releases
+		return exec(`DELETE FROM activity_releases WHERE repository_id=$1 AND source_id=$2`, repoID, id)
 	}
-	return nil
 }

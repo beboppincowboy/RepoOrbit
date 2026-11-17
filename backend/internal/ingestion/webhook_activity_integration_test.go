@@ -91,3 +91,35 @@ func TestSignedDeletionTombstonesAndBlocksResurrection(t *testing.T) {
 		t.Fatalf("%d tombstones, want only the selected repository's", n)
 	}
 }
+
+// Deleting an issue removes its comments, events and child-history work, and the issue cannot be re-imported.
+func TestSignedIssueDeletionRemovesDependents(t *testing.T) {
+	_, pool := testutil.Database(t)
+	ctx := context.Background()
+	selectedRepo(t, pool, 42)
+	for _, q := range []string{
+		`INSERT INTO activity_issues(source_id,repository_id,number,title,state,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES (5,42,3,'t','open','u',now(),now(),1,'a','User')`,
+		`INSERT INTO activity_comments(source_id,repository_id,issue_number,body,html_url,created_at,updated_at) VALUES (6,42,3,'b','u',now(),now())`,
+		`INSERT INTO activity_issue_events(source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at) VALUES (7,42,5,3,'closed','u',now(),now())`,
+		`INSERT INTO activity_children(repository_id,resource,parent_id,parent_number) VALUES (42,'comments',3,3)`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
+	if w := post(h, testSecret, "issues", "del-i", `{"action":"deleted","repository":{"id":42},"issue":{"id":5,"number":3}}`, ""); w.Code != 200 {
+		t.Fatalf("status %d", w.Code)
+	}
+	for _, table := range []string{"activity_issues", "activity_comments", "activity_issue_events", "activity_children"} {
+		if n := count(t, pool, table); n != 0 {
+			t.Errorf("%s has %d rows", table, n)
+		}
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO activity_issues(source_id,repository_id,number,title,state,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES (5,42,3,'t','open','u',now(),now(),1,'a','User')`); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, pool, "activity_issues"); n != 0 {
+		t.Fatal("deleted issue was resurrected")
+	}
+}
