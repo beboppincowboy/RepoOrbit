@@ -65,4 +65,5 @@ DROP TABLE activity_comments;
 DROP TABLE activity_reviews;
 DROP TABLE activity_pull_requests;
 
+UPDATE activity_issues SET author_id=COALESCE(author_id,0), author_login=COALESCE(author_login,''), author_type=COALESCE(author_type,'') WHERE author_id IS NULL OR author_login IS NULL OR author_type IS NULL;
 ALTER TABLE activity_issues ALTER COLUMN author_id SET NOT NULL, ALTER COLUMN author_login SET NOT NULL, ALTER COLUMN author_type SET NOT NULL;

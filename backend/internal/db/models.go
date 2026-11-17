@@ -70,6 +70,24 @@ type ActivityIssueAssignee struct {
 	Type     string
 }
 
+type ActivityIssueEvent struct {
+	SourceID      int64
+	RepositoryID  int64
+	IssueID       int64
+	IssueNumber   int64
+	Event         string
+	Url           string
+	CreatedAt     pgtype.Timestamptz
+	ObservedAt    pgtype.Timestamptz
+	ActorID       pgtype.Int8
+	ActorLogin    pgtype.Text
+	ActorType     pgtype.Text
+	AssigneeID    pgtype.Int8
+	AssigneeLogin pgtype.Text
+	AssigneeType  pgtype.Text
+	Label         pgtype.Text
+}
+
 type ActivityIssueLabel struct {
 	IssueID  int64
 	SourceID int64
@@ -87,6 +105,23 @@ type ActivityPullRequest struct {
 	UpdatedAt    pgtype.Timestamptz
 	ClosedAt     pgtype.Timestamptz
 	MergedAt     pgtype.Timestamptz
+	AuthorID     pgtype.Int8
+	AuthorLogin  pgtype.Text
+	AuthorType   pgtype.Text
+}
+
+type ActivityRelease struct {
+	SourceID     int64
+	RepositoryID int64
+	Name         string
+	TagName      string
+	Body         string
+	HtmlUrl      string
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+	PublishedAt  pgtype.Timestamptz
+	ObservedAt   pgtype.Timestamptz
+	Prerelease   bool
 	AuthorID     pgtype.Int8
 	AuthorLogin  pgtype.Text
 	AuthorType   pgtype.Text
@@ -119,6 +154,13 @@ type ActivityReview struct {
 	AuthorID      pgtype.Int8
 	AuthorLogin   pgtype.Text
 	AuthorType    pgtype.Text
+}
+
+type ActivityTombstone struct {
+	RepositoryID int64
+	Resource     string
+	SourceID     int64
+	DeletedAt    pgtype.Timestamptz
 }
 
 type CredentialThrottle struct {
@@ -167,6 +209,7 @@ type Repository struct {
 	Description string
 	IsDemo      bool
 	IsPrivate   bool
+	Archived    bool
 }
 
 type RepositorySync struct {
