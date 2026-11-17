@@ -29,3 +29,8 @@ type RepositoryConnection struct {
 	EndCursor   *string       `json:"endCursor,omitempty"`
 	HasNextPage bool          `json:"hasNextPage"`
 }
+
+type Viewer struct {
+	Login string `json:"login"`
+	Demo  bool   `json:"demo"`
+}

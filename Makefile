@@ -1,5 +1,5 @@
 export GOTOOLCHAIN := go1.24.6
-.PHONY: check generate test test-integration test-e2e test-race
+.PHONY: check generate test test-integration test-e2e test-e2e-auth test-race
 
 generate:
 	cd backend && go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.29.0 generate && go tool gqlgen generate
@@ -11,6 +11,8 @@ test:
 	cd backend && go test ./...
 test-integration:
 	cd backend && DATABASE_URL=postgres://repoorbit:repoorbit@localhost:54329/repoorbit?sslmode=disable go test -tags=integration ./...
+test-e2e-auth:
+	./scripts/e2e-auth.sh
 test-e2e:
 	cd apps/web && npm run test:e2e
 test-race:

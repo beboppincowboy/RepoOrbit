@@ -4,6 +4,10 @@
 
 package db
 
+import (
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
 type Issue struct {
 	ID           int64
 	RepositoryID int64
@@ -11,8 +15,33 @@ type Issue struct {
 	State        string
 }
 
+type OauthState struct {
+	StateHash    []byte
+	CodeVerifier string
+	ExpiresAt    pgtype.Timestamptz
+}
+
 type Repository struct {
 	ID          int64
 	Name        string
 	Description string
+	IsDemo      bool
+}
+
+type Session struct {
+	TokenHash []byte
+	UserID    int64
+	CreatedAt pgtype.Timestamptz
+	ExpiresAt pgtype.Timestamptz
+}
+
+type User struct {
+	ID               int64
+	GithubID         int64
+	Login            string
+	AccessTokenEnc   []byte
+	RefreshTokenEnc  []byte
+	AccessExpiresAt  pgtype.Timestamptz
+	RefreshExpiresAt pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
 }

@@ -1,8 +1,20 @@
 export type Issue = { id: string; repositoryId: string; title: string; state: string };
 export type Repository = { id: string; name: string; description: string; issues: { nodes: Issue[]; hasNextPage: boolean } };
 export type RepositoryConnection = { nodes: Repository[]; endCursor: string | null; hasNextPage: boolean };
+export type Me = { mode: "demo" | "real"; user: { login: string; demo: boolean } | null; csrfToken: string | null };
+let csrfToken: string | null = null;
+export async function me(): Promise<Me> {
+  const response = await fetch("/auth/me", { cache: "no-store" });
+  if (!response.ok) throw new Error("Unable to load session");
+  const result: Me = await response.json();
+  csrfToken = result.csrfToken;
+  return result;
+}
+export async function logout() {
+  await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
+}
 async function query(query: string, variables: Record<string, unknown>) {
-  const response = await fetch("/graphql", { method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store", body: JSON.stringify({ query, variables }) });
+  const response = await fetch("/graphql", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "" }, cache: "no-store", body: JSON.stringify({ query, variables }) });
   if (!response.ok) throw new Error("Unable to load repositories");
   const result = await response.json();
   if (result.errors || !result.data) throw new Error("Unable to load repositories");
