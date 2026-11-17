@@ -111,6 +111,31 @@ func TestCleanupInventoryFencesAndPreservesBoundary(t *testing.T) {
 	}
 }
 
+// A review tagged with the purged repository must go even when its parent PR belongs to another
+// repository: the PR cascade alone would leave it behind, and the other repository's PR must survive.
+func TestCleanupPurgesReviewsTaggedWithRepositoryWhosePullRequestIsElsewhere(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO repositories(id,name,description,is_private) VALUES(70,'a/b','',true),(71,'a/c','',false);
+INSERT INTO activity_pull_requests(source_id,repository_id,number,title,state,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES(78,71,2,'pr','open','',now(),now(),1,'u','User');
+INSERT INTO activity_reviews(source_id,repository_id,pull_request_id,state,body,html_url,submitted_at,author_id,author_login,author_type) VALUES(79,70,78,'APPROVED','','',now(),1,'u','User');
+INSERT INTO activity_cleanup(repository_id) VALUES(70)`); err != nil {
+		t.Fatal(err)
+	}
+	e.deps.Inventory = &inventories{results: []map[int64][]int64{{}, {}}}
+	e.deps.AppKey = &rsa.PrivateKey{}
+	if err := e.deps.CleanupPrivate(ctx, jobs.Job{Key: "repo:70"}, txFence{pool: e.pool}); err != nil {
+		t.Fatal(err)
+	}
+	var reviews, prs int
+	if err := e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_reviews WHERE repository_id=70),(SELECT count(*) FROM activity_pull_requests WHERE repository_id=71)`).Scan(&reviews, &prs); err != nil {
+		t.Fatal(err)
+	}
+	if reviews != 0 || prs != 1 {
+		t.Fatalf("reviews tagged 70 = %d (want 0), repository 71 PRs = %d (want 1)", reviews, prs)
+	}
+}
+
 // A security event must leave a job that a new worker can process without a selector.
 func TestCleanupInvalidationSurvivesWorkerRestart(t *testing.T) {
 	for _, scope := range []accessfence.Scope{accessfence.ScopeUser, accessfence.ScopeInstallation} {
