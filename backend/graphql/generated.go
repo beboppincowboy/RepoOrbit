@@ -46,6 +46,11 @@ type DirectiveRoot struct {
 }
 
 type ComplexityRoot struct {
+	ActivityStatus struct {
+		Message      func(childComplexity int) int
+		Synchronized func(childComplexity int) int
+	}
+
 	Issue struct {
 		ID           func(childComplexity int) int
 		RepositoryID func(childComplexity int) int
@@ -61,6 +66,15 @@ type ComplexityRoot struct {
 		Withheld    func(childComplexity int) int
 	}
 
+	MetadataStatus struct {
+		FailureCode     func(childComplexity int) int
+		FollowSuspended func(childComplexity int) int
+		LastSuccessAt   func(childComplexity int) int
+		NextAttemptAt   func(childComplexity int) int
+		Paused          func(childComplexity int) int
+		State           func(childComplexity int) int
+	}
+
 	Query struct {
 		Issues               func(childComplexity int, repositoryIds []string, first int, after *string) int
 		Repository           func(childComplexity int, id string) int
@@ -69,12 +83,14 @@ type ComplexityRoot struct {
 	}
 
 	Repository struct {
-		Description func(childComplexity int) int
-		FullName    func(childComplexity int) int
-		ID          func(childComplexity int) int
-		Private     func(childComplexity int) int
-		Selected    func(childComplexity int) int
-		SyncState   func(childComplexity int) int
+		Activity       func(childComplexity int) int
+		Description    func(childComplexity int) int
+		FullName       func(childComplexity int) int
+		ID             func(childComplexity int) int
+		MetadataStatus func(childComplexity int) int
+		Private        func(childComplexity int) int
+		Selected       func(childComplexity int) int
+		SyncState      func(childComplexity int) int
 	}
 
 	RepositoryConnection struct {
@@ -116,6 +132,20 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 	ec := executionContext{nil, e, 0, 0, nil}
 	_ = ec
 	switch typeName + "." + field {
+
+	case "ActivityStatus.message":
+		if e.complexity.ActivityStatus.Message == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.Message(childComplexity), true
+
+	case "ActivityStatus.synchronized":
+		if e.complexity.ActivityStatus.Synchronized == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.Synchronized(childComplexity), true
 
 	case "Issue.id":
 		if e.complexity.Issue.ID == nil {
@@ -180,6 +210,48 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.IssueConnection.Withheld(childComplexity), true
 
+	case "MetadataStatus.failureCode":
+		if e.complexity.MetadataStatus.FailureCode == nil {
+			break
+		}
+
+		return e.complexity.MetadataStatus.FailureCode(childComplexity), true
+
+	case "MetadataStatus.followSuspended":
+		if e.complexity.MetadataStatus.FollowSuspended == nil {
+			break
+		}
+
+		return e.complexity.MetadataStatus.FollowSuspended(childComplexity), true
+
+	case "MetadataStatus.lastSuccessAt":
+		if e.complexity.MetadataStatus.LastSuccessAt == nil {
+			break
+		}
+
+		return e.complexity.MetadataStatus.LastSuccessAt(childComplexity), true
+
+	case "MetadataStatus.nextAttemptAt":
+		if e.complexity.MetadataStatus.NextAttemptAt == nil {
+			break
+		}
+
+		return e.complexity.MetadataStatus.NextAttemptAt(childComplexity), true
+
+	case "MetadataStatus.paused":
+		if e.complexity.MetadataStatus.Paused == nil {
+			break
+		}
+
+		return e.complexity.MetadataStatus.Paused(childComplexity), true
+
+	case "MetadataStatus.state":
+		if e.complexity.MetadataStatus.State == nil {
+			break
+		}
+
+		return e.complexity.MetadataStatus.State(childComplexity), true
+
 	case "Query.issues":
 		if e.complexity.Query.Issues == nil {
 			break
@@ -223,6 +295,13 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.Query.Viewer(childComplexity), true
 
+	case "Repository.activity":
+		if e.complexity.Repository.Activity == nil {
+			break
+		}
+
+		return e.complexity.Repository.Activity(childComplexity), true
+
 	case "Repository.description":
 		if e.complexity.Repository.Description == nil {
 			break
@@ -243,6 +322,13 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Repository.ID(childComplexity), true
+
+	case "Repository.metadataStatus":
+		if e.complexity.Repository.MetadataStatus == nil {
+			break
+		}
+
+		return e.complexity.Repository.MetadataStatus(childComplexity), true
 
 	case "Repository.private":
 		if e.complexity.Repository.Private == nil {
@@ -723,6 +809,94 @@ func (ec *executionContext) field___Type_fields_argsIncludeDeprecated(
 
 // region    **************************** field.gotpl *****************************
 
+func (ec *executionContext) _ActivityStatus_synchronized(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_synchronized(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Synchronized, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_synchronized(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_message(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_message(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Message, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_message(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Issue_id(ctx context.Context, field graphql.CollectedField, obj *model.Issue) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Issue_id(ctx, field)
 	if err != nil {
@@ -1123,6 +1297,261 @@ func (ec *executionContext) fieldContext_IssueConnection_retryAt(_ context.Conte
 	return fc, nil
 }
 
+func (ec *executionContext) _MetadataStatus_state(ctx context.Context, field graphql.CollectedField, obj *model.MetadataStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_MetadataStatus_state(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.State, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_MetadataStatus_state(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "MetadataStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _MetadataStatus_lastSuccessAt(ctx context.Context, field graphql.CollectedField, obj *model.MetadataStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_MetadataStatus_lastSuccessAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.LastSuccessAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_MetadataStatus_lastSuccessAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "MetadataStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _MetadataStatus_nextAttemptAt(ctx context.Context, field graphql.CollectedField, obj *model.MetadataStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_MetadataStatus_nextAttemptAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.NextAttemptAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_MetadataStatus_nextAttemptAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "MetadataStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _MetadataStatus_paused(ctx context.Context, field graphql.CollectedField, obj *model.MetadataStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_MetadataStatus_paused(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Paused, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_MetadataStatus_paused(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "MetadataStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _MetadataStatus_failureCode(ctx context.Context, field graphql.CollectedField, obj *model.MetadataStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_MetadataStatus_failureCode(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.FailureCode, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_MetadataStatus_failureCode(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "MetadataStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _MetadataStatus_followSuspended(ctx context.Context, field graphql.CollectedField, obj *model.MetadataStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_MetadataStatus_followSuspended(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.FollowSuspended, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_MetadataStatus_followSuspended(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "MetadataStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Query_viewer(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Query_viewer(ctx, field)
 	if err != nil {
@@ -1285,6 +1714,10 @@ func (ec *executionContext) fieldContext_Query_repository(ctx context.Context, f
 				return ec.fieldContext_Repository_selected(ctx, field)
 			case "syncState":
 				return ec.fieldContext_Repository_syncState(ctx, field)
+			case "metadataStatus":
+				return ec.fieldContext_Repository_metadataStatus(ctx, field)
+			case "activity":
+				return ec.fieldContext_Repository_activity(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type Repository", field.Name)
 		},
@@ -1765,6 +2198,111 @@ func (ec *executionContext) fieldContext_Repository_syncState(_ context.Context,
 	return fc, nil
 }
 
+func (ec *executionContext) _Repository_metadataStatus(ctx context.Context, field graphql.CollectedField, obj *model.Repository) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Repository_metadataStatus(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.MetadataStatus, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.MetadataStatus)
+	fc.Result = res
+	return ec.marshalOMetadataStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐMetadataStatus(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Repository_metadataStatus(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Repository",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "state":
+				return ec.fieldContext_MetadataStatus_state(ctx, field)
+			case "lastSuccessAt":
+				return ec.fieldContext_MetadataStatus_lastSuccessAt(ctx, field)
+			case "nextAttemptAt":
+				return ec.fieldContext_MetadataStatus_nextAttemptAt(ctx, field)
+			case "paused":
+				return ec.fieldContext_MetadataStatus_paused(ctx, field)
+			case "failureCode":
+				return ec.fieldContext_MetadataStatus_failureCode(ctx, field)
+			case "followSuspended":
+				return ec.fieldContext_MetadataStatus_followSuspended(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type MetadataStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Repository_activity(ctx context.Context, field graphql.CollectedField, obj *model.Repository) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Repository_activity(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Activity, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*model.ActivityStatus)
+	fc.Result = res
+	return ec.marshalNActivityStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐActivityStatus(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Repository_activity(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Repository",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "synchronized":
+				return ec.fieldContext_ActivityStatus_synchronized(ctx, field)
+			case "message":
+				return ec.fieldContext_ActivityStatus_message(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ActivityStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _RepositoryConnection_nodes(ctx context.Context, field graphql.CollectedField, obj *model.RepositoryConnection) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_RepositoryConnection_nodes(ctx, field)
 	if err != nil {
@@ -1816,6 +2354,10 @@ func (ec *executionContext) fieldContext_RepositoryConnection_nodes(_ context.Co
 				return ec.fieldContext_Repository_selected(ctx, field)
 			case "syncState":
 				return ec.fieldContext_Repository_syncState(ctx, field)
+			case "metadataStatus":
+				return ec.fieldContext_Repository_metadataStatus(ctx, field)
+			case "activity":
+				return ec.fieldContext_Repository_activity(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type Repository", field.Name)
 		},
@@ -4040,6 +4582,50 @@ func (ec *executionContext) fieldContext___Type_isOneOf(_ context.Context, field
 
 // region    **************************** object.gotpl ****************************
 
+var activityStatusImplementors = []string{"ActivityStatus"}
+
+func (ec *executionContext) _ActivityStatus(ctx context.Context, sel ast.SelectionSet, obj *model.ActivityStatus) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, activityStatusImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ActivityStatus")
+		case "synchronized":
+			out.Values[i] = ec._ActivityStatus_synchronized(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "message":
+			out.Values[i] = ec._ActivityStatus_message(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
 var issueImplementors = []string{"Issue"}
 
 func (ec *executionContext) _Issue(ctx context.Context, sel ast.SelectionSet, obj *model.Issue) graphql.Marshaler {
@@ -4124,6 +4710,61 @@ func (ec *executionContext) _IssueConnection(ctx context.Context, sel ast.Select
 			}
 		case "retryAt":
 			out.Values[i] = ec._IssueConnection_retryAt(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var metadataStatusImplementors = []string{"MetadataStatus"}
+
+func (ec *executionContext) _MetadataStatus(ctx context.Context, sel ast.SelectionSet, obj *model.MetadataStatus) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, metadataStatusImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("MetadataStatus")
+		case "state":
+			out.Values[i] = ec._MetadataStatus_state(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "lastSuccessAt":
+			out.Values[i] = ec._MetadataStatus_lastSuccessAt(ctx, field, obj)
+		case "nextAttemptAt":
+			out.Values[i] = ec._MetadataStatus_nextAttemptAt(ctx, field, obj)
+		case "paused":
+			out.Values[i] = ec._MetadataStatus_paused(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "failureCode":
+			out.Values[i] = ec._MetadataStatus_failureCode(ctx, field, obj)
+		case "followSuspended":
+			out.Values[i] = ec._MetadataStatus_followSuspended(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -4317,6 +4958,13 @@ func (ec *executionContext) _Repository(ctx context.Context, sel ast.SelectionSe
 			}
 		case "syncState":
 			out.Values[i] = ec._Repository_syncState(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "metadataStatus":
+			out.Values[i] = ec._Repository_metadataStatus(ctx, field, obj)
+		case "activity":
+			out.Values[i] = ec._Repository_activity(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
@@ -4774,6 +5422,16 @@ func (ec *executionContext) ___Type(ctx context.Context, sel ast.SelectionSet, o
 // endregion **************************** object.gotpl ****************************
 
 // region    ***************************** type.gotpl *****************************
+
+func (ec *executionContext) marshalNActivityStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐActivityStatus(ctx context.Context, sel ast.SelectionSet, v *model.ActivityStatus) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._ActivityStatus(ctx, sel, v)
+}
 
 func (ec *executionContext) unmarshalNBoolean2bool(ctx context.Context, v any) (bool, error) {
 	res, err := graphql.UnmarshalBoolean(v)
@@ -5304,6 +5962,13 @@ func (ec *executionContext) marshalOID2ᚖstring(ctx context.Context, sel ast.Se
 	_ = ctx
 	res := graphql.MarshalID(*v)
 	return res
+}
+
+func (ec *executionContext) marshalOMetadataStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐMetadataStatus(ctx context.Context, sel ast.SelectionSet, v *model.MetadataStatus) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._MetadataStatus(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalORepository2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐRepository(ctx context.Context, sel ast.SelectionSet, v *model.Repository) graphql.Marshaler {

@@ -47,7 +47,7 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 		rows = rows[:min(len(rows), n)]
 		for _, row := range rows {
 			id := strconv.FormatInt(row.ID, 10)
-			result.Nodes = append(result.Nodes, &model.Repository{ID: id, FullName: row.Name, Description: row.Description, Selected: true, SyncState: string(repositories.SyncStateDemo)})
+			result.Nodes = append(result.Nodes, &model.Repository{ID: id, FullName: row.Name, Description: row.Description, Selected: true, SyncState: string(repositories.SyncStateDemo), Activity: activityStatus(true, true)})
 			result.EndCursor = &id
 		}
 		return result, nil
@@ -78,8 +78,11 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 			result.RetryAt = laterRetry(result.RetryAt, d.RetryAt)
 		}
 		if d.Allowed { // current GitHub metadata, not the stored copy
-			result.Nodes = append(result.Nodes, &model.Repository{ID: cursorID, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: true, SyncState: string(repositories.SyncStateFor(true))})
+			result.Nodes = append(result.Nodes, &model.Repository{ID: cursorID, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: true, SyncState: string(repositories.SyncStateFor(true)), Activity: activityStatus(false, true)})
 		}
+	}
+	if err := r.attachMetadataStatus(ctx, userID, result.Nodes); err != nil {
+		return nil, fmt.Errorf("database unavailable")
 	}
 	return result, nil
 }
@@ -101,7 +104,7 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 		if len(rows) == 0 || rows[0].ID != repoID {
 			return nil, nil
 		}
-		return &model.Repository{ID: id, FullName: rows[0].Name, Description: rows[0].Description, Selected: true, SyncState: string(repositories.SyncStateDemo)}, nil
+		return &model.Repository{ID: id, FullName: rows[0].Name, Description: rows[0].Description, Selected: true, SyncState: string(repositories.SyncStateDemo), Activity: activityStatus(true, true)}, nil
 	}
 	userID, err := r.userID(ctx)
 	if err != nil {
@@ -118,7 +121,13 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
-	return &model.Repository{ID: id, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: len(selected) == 1, SyncState: string(repositories.SyncStateFor(len(selected) == 1))}, nil
+	repo := &model.Repository{ID: id, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: len(selected) == 1, SyncState: string(repositories.SyncStateFor(len(selected) == 1)), Activity: activityStatus(false, len(selected) == 1)}
+	if len(selected) == 1 {
+		if err := r.attachMetadataStatus(ctx, userID, []*model.Repository{repo}); err != nil {
+			return nil, fmt.Errorf("database unavailable")
+		}
+	}
+	return repo, nil
 }
 
 // Issues is the resolver for the issues field.

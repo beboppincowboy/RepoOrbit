@@ -1,8 +1,13 @@
 export type Issue = { id: string; repositoryId: string; title: string; state: string };
 // Wire values of the backend's repositories.SyncState; "demo" appears only in Demo mode.
 export type SyncState = "demo" | "awaiting-sync" | "not-synchronized";
+// Shared metadata refresh status (null when not selected, and in Demo mode). Times are RFC 3339; failureCode is a safe machine code.
+// "paused" means waiting for a usable GitHub credential; "dead" needs an operator requeue.
+export type MetadataStatus = { state: "not-scheduled" | "queued" | "running" | "paused" | "dead"; lastSuccessAt: string | null; nextAttemptAt: string | null; paused: boolean; failureCode: string | null; followSuspended: boolean };
+// Activity coverage is separate from metadata: synchronized stays false until activity ingestion exists.
+export type ActivityStatus = { synchronized: boolean; message: string };
 // fullName is "owner/name".
-export type Repository = { id: string; fullName: string; description: string; syncState: SyncState; issues: { nodes: Issue[]; hasNextPage: boolean } };
+export type Repository = { id: string; fullName: string; description: string; syncState: SyncState; metadataStatus: MetadataStatus | null; activity: ActivityStatus; issues: { nodes: Issue[]; hasNextPage: boolean } };
 // withheld counts selected repositories hidden because access could not be verified; retryAt is set when GitHub rate limited the check.
 export type RepositoryConnection = { nodes: Repository[]; endCursor: string | null; hasNextPage: boolean; withheld: number; retryAt: string | null };
 // One row of a REST repository list. `selected` means connected on the owned list and followed on the starred list.
@@ -33,7 +38,7 @@ async function graphqlQuery(queryText: string, variables: Record<string, unknown
 // Loads one page of the viewer's SELECTED repositories (not every accessible one), then one extra GraphQL
 // request for each repository's first 5 issues. Pass the previous page's endCursor as `after`.
 export async function selectedRepositories(after: string | null = null): Promise<RepositoryConnection> {
-  const { selectedRepositories: connection } = await graphqlQuery(`query SelectedRepositories($after: ID) { selectedRepositories(first: 20, after: $after) { nodes { id fullName description syncState } endCursor hasNextPage withheld retryAt } }`, { after });
+  const { selectedRepositories: connection } = await graphqlQuery(`query SelectedRepositories($after: ID) { selectedRepositories(first: 20, after: $after) { nodes { id fullName description syncState metadataStatus { state lastSuccessAt nextAttemptAt paused failureCode followSuspended } activity { synchronized message } } endCursor hasNextPage withheld retryAt } }`, { after });
   if (!connection.nodes.length) return connection;
   // One aliased issues field per repository so each repo gets its own page and hasNextPage.
   const ids: string[] = connection.nodes.map((repo: Repository) => repo.id);
