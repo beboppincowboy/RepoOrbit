@@ -536,3 +536,26 @@ func TestVisibleSetIsFetchedOncePerTTL(t *testing.T) {
 		t.Fatalf("installation listings across 60 checks: %d, want 1", got)
 	}
 }
+
+// A rate-limited GitHub is not re-hit by every read within the TTL.
+func TestRateLimitedListingIsNotRefetchedPerRequest(t *testing.T) {
+	e := setup(t, time.Minute)
+	repo := e.gh.AddRepo("alice", "secret", true)
+	e.gh.Install("alice", 1, repo)
+	alice := e.signIn("alice")
+	alice.selectRepo(repo)
+	var skew atomic.Int64
+	e.repos.Now = func() time.Time { return time.Now().Add(time.Duration(skew.Load())) }
+	skew.Store(int64(2 * time.Minute)) // drop the cache entry the write left behind
+	e.gh.LimitUntil(time.Now().Add(time.Hour))
+	baseline := e.gh.Hits("/user/repos")
+	for i := 0; i < 5; i++ {
+		data, _ := alice.gql(repoQuery)
+		if names, withheld, retry := repoNames(data); len(names) != 0 || withheld != 1 || retry == nil {
+			t.Fatalf("read %d: %v %d %v", i, names, withheld, retry)
+		}
+	}
+	if got := e.gh.Hits("/user/repos") - baseline; got != 1 {
+		t.Fatalf("GitHub was called %d times for 5 reads while rate limited, want 1", got)
+	}
+}

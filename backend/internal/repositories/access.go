@@ -112,7 +112,7 @@ func collect[T any](fetch func(page int) ([]T, bool, error)) (all []T, complete 
 	return all, false, nil
 }
 
-// visible returns the user's visible set. A TTL-cached copy serves reads; fresh forces a new fetch.
+// visible returns the user's visible set. A TTL-cached copy (complete or not) serves reads; fresh forces a new fetch.
 func (s *Service) visible(ctx context.Context, userID int64, token string, fresh bool) *visibleSet {
 	e := s.entry(userID)
 	e.mu.Lock()
@@ -121,10 +121,9 @@ func (s *Service) visible(ctx context.Context, userID int64, token string, fresh
 		return e.set
 	}
 	set := s.fetchVisible(ctx, userID, token)
-	e.set, e.at = nil, s.now()
-	if set.complete { // never reuse a failed or partial listing
-		e.set = set
-	}
+	// Incomplete listings are cached too (for the same TTL): they only withhold content, and re-fetching on every
+	// request would hammer a GitHub that is rate limiting or failing. Writes (fresh) always look again.
+	e.set, e.at = set, s.now()
 	return set
 }
 
@@ -222,6 +221,9 @@ func (s *Service) revoke(ctx context.Context, userID int64) {
 // missing from a complete set is denied; missing from an incomplete one is unverified. It never calls GitHub once per repo.
 func (s *Service) Check(ctx context.Context, userID int64, ids []int64, fresh bool) map[int64]Decision {
 	out := make(map[int64]Decision, len(ids))
+	if len(ids) == 0 {
+		return out // nothing to decide; do not spend GitHub calls
+	}
 	_, set, all := s.prepare(ctx, userID, fresh)
 	for _, id := range ids {
 		switch r, ok := set.lookup(id); {

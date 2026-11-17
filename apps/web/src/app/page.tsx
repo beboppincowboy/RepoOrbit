@@ -14,7 +14,7 @@ export default function Home() {
   async function more() {
     if (!data?.endCursor) return;
     setLoading(true);
-    try { const next = await repositories(data.endCursor); setData({ ...next, nodes: [...data.nodes, ...next.nodes] }); setError(false); } catch { setError(true); } finally { setLoading(false); }
+    try { const next = await repositories(data.endCursor); setData({ ...next, nodes: [...data.nodes, ...next.nodes], withheld: data.withheld + next.withheld, retryAt: next.retryAt ?? data.retryAt }); setError(false); } catch { setError(true); } finally { setLoading(false); }
   }
   return <main className="mx-auto max-w-5xl px-5 py-12">
     <header className="mb-8"><p className="text-sm font-semibold uppercase tracking-wider text-indigo-700">RepoOrbit{demo ? " · Demo" : ""}</p><h1 className="mt-2 text-3xl font-bold">Repository overview</h1><p className="mt-3 max-w-2xl text-slate-600">{demo ? "Sample data stored in the local database. This is not current GitHub data; synchronization and history are not available in this demo." : "Repositories you connect appear here. Synchronization and history are not available yet."}</p></header>
