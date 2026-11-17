@@ -28,7 +28,7 @@ func (s starRefresher) FetchStars(ctx context.Context, userID int64) (ingestion.
 	if errors.Is(err, repositories.ErrSignedOut) {
 		return ingestion.StarFetch{}, ingestion.ErrNoCredential
 	}
-	return ingestion.StarFetch{Repos: f.Repos, Completed: f.Complete, RetryAt: f.RetryAt}, err
+	return ingestion.StarFetch{Repos: f.Repos, Complete: f.Complete, RetryAt: f.RetryAt}, err
 }
 
 func (s starRefresher) StoreStars(ctx context.Context, tx pgx.Tx, userID int64, repos []githubapp.Repo) error {

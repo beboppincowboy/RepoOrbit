@@ -148,8 +148,9 @@ func userKeys(ctx context.Context, q DB, userID int64) ([]key, error) {
 	return ks, rows.Err()
 }
 
-// TakeSnapshot records current epochs for userID, repoID and every installation the user holds. It creates the
-// fence rows it tracks so that StillCurrent can wait on a concurrent InvalidateAccess.
+// TakeSnapshot records current epochs for userID, repoID, every installation the user holds, and the global
+// permissions version (so a bump of ANY subject, including an installation not yet saved locally, ends it). It creates
+// the fence rows it tracks so that StillCurrent can wait on a concurrent InvalidateAccess.
 func TakeSnapshot(ctx context.Context, q pgx.Tx, userID, repoID int64) (Snapshot, error) {
 	ks, err := userKeys(ctx, q, userID)
 	if err != nil {
@@ -201,8 +202,9 @@ func TakeSnapshotForUser(ctx context.Context, q DB, userID int64) (Snapshot, err
 	return s, nil
 }
 
-// StillCurrent reports, inside the commit transaction, that no tracked epoch moved since TakeSnapshot. It waits for any
-// in-flight InvalidateAccess. Private commits and cached private reads must check it; false means withhold the update.
+// StillCurrent reports, inside the commit transaction, that no tracked epoch (including the global permissions
+// version) moved since TakeSnapshot. It share-locks the global row first, then the rest, and so blocks behind any
+// in-flight InvalidateAccess (no lock timeout). Private commits and cached private reads must check it; false means withhold the update.
 func (s Snapshot) StillCurrent(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if _, tracked := s.epochs[ScopeGlobal]; tracked {
 		// Global row first, in its own statement: the order InvalidateAccess takes its locks, so the two cannot deadlock.
