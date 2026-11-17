@@ -44,9 +44,10 @@ type Service struct {
 	// OnSelect runs inside the selection transaction after the repository and selection rows are written, so
 	// durable scheduling (ingestion.RequestMetadataRefresh) commits or rolls back with the selection. Nil schedules nothing.
 	OnSelect func(ctx context.Context, tx pgx.Tx, repoID int64) error
-	// OnStarsReplaced runs inside the transaction that replaces a user's star snapshot, after follow eligibility is
-	// updated, so paused work the change unblocks (ingestion.RecheckEligibility) resumes atomically. Nil does nothing.
-	OnStarsReplaced func(ctx context.Context, tx pgx.Tx, userID int64) error
+	// OnEligibilityChange runs inside any transaction that can change what a user may follow or poll with (a replaced star
+	// snapshot, a selection, a connected installation), so paused work the change unblocks (ingestion.RecheckEligibility)
+	// resumes atomically with it. Nil does nothing.
+	OnEligibilityChange func(ctx context.Context, tx pgx.Tx, userID int64) error
 
 	mu      sync.Mutex
 	entries map[int64]*entry

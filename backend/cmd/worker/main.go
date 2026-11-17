@@ -20,19 +20,18 @@ import (
 )
 
 // starRefresher adapts repositories.Service to ingestion.StarRefresher (ingestion cannot import repositories).
-// It reads page 1 with refresh=true, which also live-checks page 1's private entries; a dedicated refresh method
-// on repositories.Service would avoid that extra GitHub traffic.
 type starRefresher struct{ repos *repositories.Service }
 
-func (s starRefresher) RefreshStars(ctx context.Context, userID int64) (ingestion.StarRefresh, error) {
-	page, err := s.repos.Starred(ctx, userID, 1, true)
+func (s starRefresher) FetchStars(ctx context.Context, userID int64) (ingestion.StarFetch, error) {
+	f, err := s.repos.FetchStars(ctx, userID)
 	if errors.Is(err, repositories.ErrSignedOut) {
-		return ingestion.StarRefresh{}, ingestion.ErrNoCredential
+		return ingestion.StarFetch{}, ingestion.ErrNoCredential
 	}
-	if err != nil {
-		return ingestion.StarRefresh{}, err
-	}
-	return ingestion.StarRefresh{Completed: !page.RefreshFailed, RetryAt: page.RetryAt}, nil
+	return ingestion.StarFetch{Repos: f.Repos, Completed: f.Complete, RetryAt: f.RetryAt}, err
+}
+
+func (s starRefresher) StoreStars(ctx context.Context, tx pgx.Tx, userID int64, repos []githubapp.Repo) error {
+	return s.repos.StoreStars(ctx, tx, userID, repos)
 }
 
 func main() {
@@ -56,7 +55,7 @@ func main() {
 		gh := githubapp.New(cfg.ClientID, cfg.ClientSecret, cfg.GitHubURL, cfg.GitHubAPIURL, cfg.AppURL+"/auth/github/callback")
 		authSvc := &auth.Service{Pool: pool, Queries: queries, GitHub: gh, Key: cfg.TokenKey}
 		repos := &repositories.Service{Queries: queries, Pool: pool, GitHub: gh, TokenSource: authSvc, AppURL: cfg.AppURL}
-		repos.OnStarsReplaced = func(ctx context.Context, tx pgx.Tx, userID int64) error {
+		repos.OnEligibilityChange = func(ctx context.Context, tx pgx.Tx, userID int64) error {
 			return ingestion.RecheckEligibility(ctx, tx, userID, time.Now())
 		}
 		clock := jobs.SystemClock{}

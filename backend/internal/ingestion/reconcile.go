@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 )
 
@@ -29,19 +29,22 @@ const (
 // no remote call is retried and no attempt is spent.
 var ErrNoCredential = errors.New("ingestion: no usable credential")
 
-// StarRefresh is the outcome of re-reading one user's stars from GitHub.
-type StarRefresh struct {
-	// Completed is true only when every page was read and the snapshot was replaced. A failed refresh keeps the previous snapshot.
+// StarFetch is the outcome of reading a user's stars from GitHub, without storing them.
+type StarFetch struct {
+	Repos []githubapp.Repo
+	// Completed is true only when every page was read. A failed fetch stores nothing and keeps the previous snapshot.
 	Completed bool
-	RetryAt   *time.Time // set when GitHub rate limited the refresh
+	RetryAt   *time.Time // set when GitHub rate limited the fetch
 }
 
-// StarRefresher re-reads a user's stars and replaces the snapshot only when complete (the existing
-// repositories.Service snapshot replacement). It returns ErrNoCredential when the user is signed out or revoked.
-// Makes GitHub calls. The worker wiring adapts repositories.Service to this; it lives outside this package
-// because repositories depends on ingestion.
+// StarRefresher splits re-reading stars from storing them so the job can commit the snapshot, follow eligibility and
+// resumed work in one claim-fenced transaction. The worker wiring adapts repositories.Service to it.
 type StarRefresher interface {
-	RefreshStars(ctx context.Context, userID int64) (StarRefresh, error)
+	// FetchStars makes GitHub calls and writes nothing. It returns ErrNoCredential when the user is signed out or revoked.
+	FetchStars(ctx context.Context, userID int64) (StarFetch, error)
+	// StoreStars replaces the snapshot with a completed fetch, updates follow eligibility and rechecks paused work, all
+	// through tx. The caller commits.
+	StoreStars(ctx context.Context, tx pgx.Tx, userID int64, repos []githubapp.Repo) error
 }
 
 // SchedulerDeps is everything StartScheduler needs. Sleep and Rand default to real time and math/rand.
@@ -73,16 +76,17 @@ func RecheckEligibility(ctx context.Context, tx pgx.Tx, userID int64, now time.T
 	return jobs.Resume(ctx, tx, jobs.KindStarReconcile, userKey(userID), now)
 }
 
-// StarReconcileHandler refreshes one user's stars. A completed refresh suspends the user's starred selections that
-// are no longer starred (the Selection stays) and restores ones that are again, then rechecks paused work. A failed
-// refresh changes nothing. No credential pauses without spending an attempt; a rate limit defers without one too.
+// StarReconcileHandler refreshes one user's stars. It fetches first (no write), then stores the completed snapshot,
+// suspends the user's starred selections that are no longer starred (the Selection stays), restores ones that are
+// again, and rechecks paused work, all inside one claim-fenced commit: a worker that lost its claim writes nothing.
+// A failed fetch changes nothing. No credential pauses without spending an attempt; a rate limit defers without one too.
 func StarReconcileHandler(stars StarRefresher, clock jobs.Clock) jobs.Handler {
 	return func(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) error {
 		userID, err := strconv.ParseInt(strings.TrimPrefix(job.Key, "user:"), 10, 64)
 		if err != nil || !strings.HasPrefix(job.Key, "user:") {
 			return jobs.Permanent(fmt.Errorf("bad star reconcile key %q", job.Key))
 		}
-		res, err := stars.RefreshStars(ctx, userID)
+		res, err := stars.FetchStars(ctx, userID)
 		switch {
 		case errors.Is(err, ErrNoCredential):
 			return &jobs.Pause{Reason: "no usable credential"}
@@ -93,17 +97,7 @@ func StarReconcileHandler(stars StarRefresher, clock jobs.Clock) jobs.Handler {
 		case !res.Completed:
 			return errors.New("star refresh incomplete") // backoff retry; the previous snapshot and eligibility stay
 		}
-		now := clock.Now()
-		return fence.Commit(ctx, func(tx pgx.Tx) error {
-			q := db.New(tx)
-			if err := q.SuspendUnstarredFollows(ctx, db.SuspendUnstarredFollowsParams{UserID: userID, Now: pgtype.Timestamptz{Time: now, Valid: true}}); err != nil {
-				return err
-			}
-			if err := q.RestoreStarredFollows(ctx, userID); err != nil {
-				return err
-			}
-			return RecheckEligibility(ctx, tx, userID, now)
-		})
+		return fence.Commit(ctx, func(tx pgx.Tx) error { return stars.StoreStars(ctx, tx, userID, res.Repos) })
 	}
 }
 

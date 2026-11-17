@@ -80,16 +80,26 @@ func (s *Service) Starred(ctx context.Context, userID int64, page int, refresh b
 	return out, nil
 }
 
-// refreshStars replaces the snapshot only when every page was read. Any failure keeps the old one.
-func (s *Service) refreshStars(ctx context.Context, userID int64, out *StarredPage) error {
+// StarFetch is the outcome of reading every page of a user's stars. Repos is meaningful only when Complete; an
+// incomplete fetch (transport failure, too many stars, rate limit) never replaces the stored snapshot.
+type StarFetch struct {
+	Repos    []githubapp.Repo
+	Complete bool
+	RetryAt  *time.Time // set when GitHub rate limited the read
+}
+
+// FetchStars reads all of a user's stars from GitHub. It makes GitHub calls and writes nothing: persisting the result
+// is StoreStars, so callers choose the transaction (and any claim fence) it commits under. Returns ErrSignedOut when
+// the user has no credential or GitHub rejects it (the user is then revoked); other failures come back as an
+// incomplete StarFetch, not an error.
+func (s *Service) FetchStars(ctx context.Context, userID int64) (StarFetch, error) {
 	token, err := s.TokenSource.AccessToken(ctx, userID)
 	if errors.Is(err, auth.ErrUnauthenticated) {
-		return ErrSignedOut
+		return StarFetch{}, ErrSignedOut
 	}
 	if err != nil {
 		log.Printf("repositories: token unavailable: %v", err)
-		out.RefreshFailed = true
-		return nil
+		return StarFetch{}, nil
 	}
 	var all []githubapp.Repo
 	for page := 1; ; page++ {
@@ -111,28 +121,48 @@ func (s *Service) refreshStars(ctx context.Context, userID int64, out *StarredPa
 	switch {
 	case errors.As(err, &apiErr) && apiErr.Unauthorized():
 		s.revoke(ctx, userID)
-		return ErrSignedOut
+		return StarFetch{}, ErrSignedOut
 	case err != nil:
-		out.RefreshFailed = true
+		f := StarFetch{}
 		if errors.As(err, &apiErr) && apiErr.RateLimited() {
-			out.RetryAt = &apiErr.RetryAt
+			f.RetryAt = &apiErr.RetryAt
 		}
-		return nil
+		return f, nil
 	}
-	return s.replaceStars(ctx, userID, all)
+	return StarFetch{Repos: all, Complete: true}, nil
 }
 
-func (s *Service) replaceStars(ctx context.Context, userID int64, repos []githubapp.Repo) error {
-	p := db.InsertStarsParams{UserID: userID}
-	for _, r := range repos {
-		p.Ids, p.FullNames, p.Descriptions, p.Privates = append(p.Ids, r.ID), append(p.FullNames, r.FullName), append(p.Descriptions, r.Description), append(p.Privates, r.Private)
+// refreshStars replaces the snapshot only when every page was read. Any failure keeps the old one.
+func (s *Service) refreshStars(ctx context.Context, userID int64, out *StarredPage) error {
+	f, err := s.FetchStars(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !f.Complete {
+		out.RefreshFailed, out.RetryAt = true, f.RetryAt
+		return nil
 	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	// Concurrent refreshes for one user (a double page open) queue here instead of colliding on the primary key.
+	if err := s.StoreStars(ctx, tx, userID, f.Repos); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// StoreStars replaces the user's star snapshot with repos (a complete FetchStars result) inside the caller's
+// transaction, then updates follow eligibility and runs OnEligibilityChange in that same transaction: unstarred follows
+// stop being polled (the Selection stays), starred-again ones resume, owned selections never depend on stars. Writes
+// only through tx; the caller commits (and may fence the commit). Concurrent stores for one user queue on an
+// advisory lock instead of colliding on the primary key.
+func (s *Service) StoreStars(ctx context.Context, tx pgx.Tx, userID int64, repos []githubapp.Repo) error {
+	p := db.InsertStarsParams{UserID: userID}
+	for _, r := range repos {
+		p.Ids, p.FullNames, p.Descriptions, p.Privates = append(p.Ids, r.ID), append(p.FullNames, r.FullName), append(p.Descriptions, r.Description), append(p.Privates, r.Private)
+	}
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", userID); err != nil {
 		return err
 	}
@@ -143,23 +173,20 @@ func (s *Service) replaceStars(ctx context.Context, userID int64, repos []github
 	if err := q.InsertStars(ctx, p); err != nil {
 		return err
 	}
-	if err := q.UpsertStarSnapshot(ctx, db.UpsertStarSnapshotParams{UserID: userID, RefreshedAt: pgtype.Timestamptz{Time: s.now(), Valid: true}}); err != nil {
+	now := pgtype.Timestamptz{Time: s.now(), Valid: true}
+	if err := q.UpsertStarSnapshot(ctx, db.UpsertStarSnapshotParams{UserID: userID, RefreshedAt: now}); err != nil {
 		return err
 	}
-	// The snapshot is complete here, so follow eligibility changes with it: unstarred follows stop being polled
-	// (the Selection stays), starred-again ones resume. Owned selections never depend on stars.
-	if err := q.SuspendUnstarredFollows(ctx, db.SuspendUnstarredFollowsParams{UserID: userID, Now: pgtype.Timestamptz{Time: s.now(), Valid: true}}); err != nil {
+	if err := q.SuspendUnstarredFollows(ctx, db.SuspendUnstarredFollowsParams{UserID: userID, Now: now}); err != nil {
 		return err
 	}
 	if err := q.RestoreStarredFollows(ctx, userID); err != nil {
 		return err
 	}
-	if s.OnStarsReplaced != nil {
-		if err := s.OnStarsReplaced(ctx, tx, userID); err != nil {
-			return err
-		}
+	if s.OnEligibilityChange != nil {
+		return s.OnEligibilityChange(ctx, tx, userID)
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // Follow selects a starred repository for contribution discovery. It must be in the user's star snapshot, and

@@ -4,11 +4,13 @@ package repositories_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
@@ -194,5 +196,45 @@ func TestInteractiveRefreshSuspendsAndRestoresFollow(t *testing.T) {
 	alice.starred("?refresh=1")
 	if suspended() {
 		t.Fatal("starred again but still suspended")
+	}
+}
+
+// FetchStars reads GitHub and writes nothing; StoreStars is all-or-nothing with its eligibility hook, so a failing
+// hook leaves neither a replaced snapshot nor a changed follow.
+func TestFetchStarsWritesNothingAndStoreStarsIsAtomic(t *testing.T) {
+	e := setup(t, time.Nanosecond)
+	repo := e.gh.AddRepo("bob", "lib", false)
+	e.gh.Star("alice", repo)
+	alice := e.signIn("alice")
+	ctx := context.Background()
+	f, err := e.repos.FetchStars(ctx, alice.id)
+	if err != nil || !f.Complete || len(f.Repos) != 1 {
+		t.Fatalf("fetch: %+v %v", f, err)
+	}
+	count := func() (n int) {
+		if err := e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM stars) + (SELECT count(*) FROM star_snapshots)`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if count() != 0 {
+		t.Fatal("FetchStars wrote to the database")
+	}
+	e.repos.OnEligibilityChange = func(context.Context, pgx.Tx, int64) error { return errors.New("hook failed") }
+	tx, _ := e.pool.Begin(ctx)
+	if err := e.repos.StoreStars(ctx, tx, alice.id, f.Repos); err == nil {
+		t.Fatal("store ignored the failing hook")
+	}
+	_ = tx.Rollback(ctx)
+	if count() != 0 {
+		t.Fatal("a failed store left a partial snapshot")
+	}
+	e.repos.OnEligibilityChange = nil
+	tx, _ = e.pool.Begin(ctx)
+	if err := e.repos.StoreStars(ctx, tx, alice.id, f.Repos); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil || count() != 2 {
+		t.Fatalf("commit: %v, rows %d", err, count())
 	}
 }
