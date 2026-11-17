@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
@@ -204,6 +205,12 @@ func (d *Deps) record(ctx context.Context, fence jobs.ClaimFence, repoID int64, 
 	}
 }
 
+// isLockNotAvailable reports PostgreSQL's lock_not_available (55P03), raised by NOWAIT locks.
+func isLockNotAvailable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
+}
+
 var (
 	errNoSelection = errors.New("no eligible selection")
 	errRace        = errors.New("selection or access changed")
@@ -222,12 +229,12 @@ func (d *Deps) commit(ctx context.Context, fence jobs.ClaimFence, repoID, uid in
 		if len(users) == 0 {
 			return errNoSelection
 		}
-		mine := false
-		for _, u := range users {
-			mine = mine || u == uid
-		}
-		if !mine {
+		if _, err := q.LockEligibleSelection(ctx, db.LockEligibleSelectionParams{RepositoryID: repoID, UserID: uid}); errors.Is(err, pgx.ErrNoRows) {
 			return errRace // the credential's owner stopped following; pick again
+		} else if isLockNotAvailable(err) {
+			return errRace // a deselection or suspension is in flight; retry shortly instead of waiting
+		} else if err != nil {
+			return err
 		}
 		if wasPrivate {
 			if ok, err := snap.StillCurrent(ctx, tx); err != nil {

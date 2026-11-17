@@ -92,6 +92,27 @@ func (q *Queries) ListRefreshableRepositoryIDs(ctx context.Context) ([]int64, er
 	return items, nil
 }
 
+const lockEligibleSelection = `-- name: LockEligibleSelection :one
+SELECT s.user_id FROM selections s JOIN repositories r ON r.id = s.repository_id
+WHERE s.repository_id = $1 AND s.user_id = $2 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false
+FOR SHARE OF s NOWAIT
+`
+
+type LockEligibleSelectionParams struct {
+	RepositoryID int64
+	UserID       int64
+}
+
+// Commit-time recheck: share-locks the credential owner's eligible selection so a deselection or suspension cannot
+// commit between this check and the metadata write. NOWAIT: a conflicting writer means "changed", never "wait" (lock
+// order is job row, then selection row; the writers resume repo jobs after touching selections).
+func (q *Queries) LockEligibleSelection(ctx context.Context, arg LockEligibleSelectionParams) (int64, error) {
+	row := q.db.QueryRow(ctx, lockEligibleSelection, arg.RepositoryID, arg.UserID)
+	var user_id int64
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
 const markRepositoryPrivate = `-- name: MarkRepositoryPrivate :exec
 UPDATE repositories SET is_private = true WHERE id = $1 AND is_demo = false
 `

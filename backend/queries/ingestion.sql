@@ -9,6 +9,14 @@ SELECT s.user_id FROM selections s JOIN repositories r ON r.id = s.repository_id
 WHERE s.repository_id = $1 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false
 ORDER BY s.selected_at, s.user_id;
 
+-- name: LockEligibleSelection :one
+-- Commit-time recheck: share-locks the credential owner's eligible selection so a deselection or suspension cannot
+-- commit between this check and the metadata write. NOWAIT: a conflicting writer means "changed", never "wait" (lock
+-- order is job row, then selection row; the writers resume repo jobs after touching selections).
+SELECT s.user_id FROM selections s JOIN repositories r ON r.id = s.repository_id
+WHERE s.repository_id = $1 AND s.user_id = $2 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false
+FOR SHARE OF s NOWAIT;
+
 -- name: ListRefreshableRepositoryIDs :many
 SELECT DISTINCT s.repository_id FROM selections s JOIN repositories r ON r.id = s.repository_id
 WHERE s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false ORDER BY s.repository_id;
