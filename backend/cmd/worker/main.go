@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
@@ -55,6 +56,9 @@ func main() {
 		gh := githubapp.New(cfg.ClientID, cfg.ClientSecret, cfg.GitHubURL, cfg.GitHubAPIURL, cfg.AppURL+"/auth/github/callback")
 		authSvc := &auth.Service{Pool: pool, Queries: queries, GitHub: gh, Key: cfg.TokenKey}
 		repos := &repositories.Service{Queries: queries, Pool: pool, GitHub: gh, TokenSource: authSvc, AppURL: cfg.AppURL}
+		repos.OnStarsReplaced = func(ctx context.Context, tx pgx.Tx, userID int64) error {
+			return ingestion.RecheckEligibility(ctx, tx, userID, time.Now())
+		}
 		clock := jobs.SystemClock{}
 		worker := &jobs.Worker{Pool: pool, Clock: clock}
 		(&ingestion.Deps{Pool: pool, GitHub: gh, Tokens: authSvc, Access: repos, Clock: clock}).Register(worker)

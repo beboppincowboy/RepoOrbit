@@ -44,6 +44,9 @@ type Service struct {
 	// OnSelect runs inside the selection transaction after the repository and selection rows are written, so
 	// durable scheduling (ingestion.RequestMetadataRefresh) commits or rolls back with the selection. Nil schedules nothing.
 	OnSelect func(ctx context.Context, tx pgx.Tx, repoID int64) error
+	// OnStarsReplaced runs inside the transaction that replaces a user's star snapshot, after follow eligibility is
+	// updated, so paused work the change unblocks (ingestion.RecheckEligibility) resumes atomically. Nil does nothing.
+	OnStarsReplaced func(ctx context.Context, tx pgx.Tx, userID int64) error
 
 	mu      sync.Mutex
 	entries map[int64]*entry
@@ -137,9 +140,15 @@ func (s *Service) visible(ctx context.Context, userID int64, token string, fresh
 	}
 	snap, snapErr := s.takeFence(ctx, userID)
 	set := s.fetchVisible(ctx, userID, token)
+	if snapErr != nil || !s.fenceHolds(ctx, &entry{snap: snap, fenced: true}) {
+		// An authorization change committed while this listing was being fetched (or the fence could not be read):
+		// nothing fetched before it may be served, even once. Withhold as unverified and cache nothing.
+		e.set = nil
+		return &visibleSet{repos: map[int64]githubapp.Repo{}, complete: false}
+	}
 	// Incomplete listings are cached too (for the same TTL): they only withhold content, and re-fetching on every
 	// request would hammer a GitHub that is rate limiting or failing. Writes (fresh) always look again.
-	e.set, e.at, e.snap, e.fenced = set, s.now(), snap, snapErr == nil && s.Pool != nil
+	e.set, e.at, e.snap, e.fenced = set, s.now(), snap, s.Pool != nil
 	return set
 }
 
