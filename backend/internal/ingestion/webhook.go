@@ -25,8 +25,8 @@ import (
 // signal we re-verify against GitHub anyway; larger deliveries are refused and GitHub shows the failure.
 const maxWebhookBody = 1 << 20
 
-// Deps are the webhook handler's dependencies. An empty Secret rejects every delivery (fail closed).
-type Deps struct {
+// WebhookDeps are the webhook handler's dependencies. An empty Secret rejects every delivery (fail closed).
+type WebhookDeps struct {
 	Pool   *pgxpool.Pool
 	Secret []byte
 	Clock  jobs.Clock // nil means wall time
@@ -56,7 +56,7 @@ type webhookPayload struct {
 // schedule a metadata refresh for an already selected repository; repository (privatized, deleted, transferred),
 // installation, installation_repositories and github_app_authorization bump the access fence. Anything else
 // that is validly signed is acknowledged without work.
-func WebhookHandler(d Deps) http.Handler {
+func WebhookHandler(d WebhookDeps) http.Handler {
 	if d.refresh == nil {
 		d.refresh = RequestRefresh
 	}
@@ -142,7 +142,7 @@ func classifyWebhook(event, action string) whKind {
 }
 
 // accept stores the delivery and its work in one transaction; the caller acknowledges only on nil.
-func (d Deps) accept(ctx context.Context, id, event string, k whKind, p webhookPayload) error {
+func (d WebhookDeps) accept(ctx context.Context, id, event string, k whKind, p webhookPayload) error {
 	now := time.Now()
 	if d.Clock != nil {
 		now = d.Clock.Now()

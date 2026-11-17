@@ -34,7 +34,7 @@ func post(h http.Handler, secret []byte, event, id, body, sig string) *httptest.
 
 // Nothing in these cases may touch the database: Pool is nil and would panic.
 func TestWebhookRejectsWithoutWork(t *testing.T) {
-	h := WebhookHandler(Deps{Secret: testSecret})
+	h := WebhookHandler(WebhookDeps{Secret: testSecret})
 	zero := "sha256=" + strings.Repeat("0", 64)
 	for name, tc := range map[string]struct {
 		got  *httptest.ResponseRecorder
@@ -55,14 +55,14 @@ func TestWebhookRejectsWithoutWork(t *testing.T) {
 }
 
 func TestWebhookEmptySecretRejectsEverything(t *testing.T) {
-	h := WebhookHandler(Deps{})
+	h := WebhookHandler(WebhookDeps{})
 	if w := post(h, nil, "star", "d1", `{}`, ""); w.Code != 401 {
 		t.Fatalf("status %d, want 401", w.Code)
 	}
 }
 
 func TestWebhookMethod(t *testing.T) {
-	h := WebhookHandler(Deps{Secret: testSecret})
+	h := WebhookHandler(WebhookDeps{Secret: testSecret})
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/webhooks/github", nil))
 	if w.Code != 405 {
