@@ -1,6 +1,4 @@
-// Package jobs is the durable PostgreSQL work queue (U3a).
-//
-// Signatures are frozen by docs/plans/2026-11-16-u3-contracts.md; worker.go holds the claim/run loop.
+// Package jobs is the durable PostgreSQL work queue. worker.go holds the claim/run loop.
 package jobs
 
 import (
@@ -34,9 +32,6 @@ type Job struct {
 	Attempt    int // 1-based: the number of failed attempts so far plus this one; Defer and Pause do not count
 }
 
-// ErrNotImplemented is retained for the frozen contract; the queue is implemented and never returns it.
-var ErrNotImplemented = errors.New("jobs: not implemented (U3a)")
-
 // Enqueue schedules (Kind, Key) inside the caller's transaction so selection changes and
 // scheduling commit atomically. Semantics, all inside tx:
 //   - no row: insert queued at runAt
@@ -48,10 +43,15 @@ func Enqueue(ctx context.Context, tx pgx.Tx, kind Kind, key string, runAt time.T
 	return db.New(tx).UpsertJob(ctx, db.UpsertJobParams{Kind: string(kind), Key: key, RunAt: ts(runAt)})
 }
 
-// Resume moves a PAUSED job to queued at runAt (eligibility changed). No-op for queued, running and dead jobs;
+// Resume moves a PAUSED job to queued at runAt (eligibility changed). A RUNNING job is marked pending, so a Pause it
+// is about to return re-queues it. No-op for queued and dead jobs;
 // it never revives dead work (use RequeueDead, operator only). Runs inside the caller's transaction.
 func Resume(ctx context.Context, tx pgx.Tx, kind Kind, key string, runAt time.Time) error {
-	return db.New(tx).ResumeJob(ctx, db.ResumeJobParams{Kind: string(kind), Key: key, RunAt: ts(runAt)})
+	q := db.New(tx)
+	if err := q.ResumeJob(ctx, db.ResumeJobParams{Kind: string(kind), Key: key, RunAt: ts(runAt)}); err != nil {
+		return err
+	}
+	return q.MarkRunningPending(ctx, db.MarkRunningPendingParams{Kind: string(kind), Key: key})
 }
 
 // Handler runs one claimed job. Return values:
@@ -116,7 +116,7 @@ func (SystemClock) Now() time.Time { return time.Now() }
 func ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
 
 // RequeueDead is the operator command: revive a dead job with a fresh attempt budget.
-// Callers recheck eligibility afterwards (U3b handler does this on execution).
+// The job handler rechecks eligibility when it next runs.
 // It returns ErrNotDead when no dead job exists for (kind, key).
 func RequeueDead(ctx context.Context, tx pgx.Tx, kind Kind, key string, runAt time.Time) error {
 	n, err := db.New(tx).RequeueJob(ctx, db.RequeueJobParams{Kind: string(kind), Key: key, RunAt: ts(runAt)})

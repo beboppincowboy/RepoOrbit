@@ -382,9 +382,6 @@ func TestRequestRefreshOnlyForEligibleSelections(t *testing.T) {
 		scheduled, err = ingestion.RequestMetadataRefresh(context.Background(), tx, id)
 		return
 	})
-	if errors.Is(err, jobs.ErrNotImplemented) {
-		t.Skip("needs U3a")
-	}
 	if err != nil || !scheduled {
 		t.Fatalf("scheduled=%v err=%v", scheduled, err)
 	}
@@ -416,9 +413,6 @@ func TestSelectionAndScheduleRollBackTogether(t *testing.T) {
 		return err
 	}
 	err := e.repo.Connect(context.Background(), uid, id)
-	if errors.Is(err, jobs.ErrNotImplemented) {
-		t.Skip("needs U3a")
-	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,9 +433,6 @@ func TestStartupReconciliationSchedulesPreU3Selections(t *testing.T) {
 		t.Fatal(err)
 	}
 	n, err := ingestion.ReconcileSelections(context.Background(), e.pool)
-	if errors.Is(err, jobs.ErrNotImplemented) {
-		t.Skip("needs U3a")
-	}
 	if err != nil || n != 1 {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
@@ -456,9 +447,6 @@ func TestOverlappingRefreshProducesFollowUp(t *testing.T) {
 		_, err := ingestion.RequestMetadataRefresh(context.Background(), tx, id)
 		return err
 	})
-	if errors.Is(err, jobs.ErrNotImplemented) {
-		t.Skip("needs U3a")
-	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,5 +685,43 @@ func TestCredentialThrottleIsSharedAcrossJobKindsAndRestarts(t *testing.T) {
 	d = nil
 	if err := fresh.RefreshMetadata(ctx, jobs.Job{Kind: jobs.KindRepoMetadataRefresh, Key: fmt.Sprintf("repo:%d", id+1)}, e.fence()); !errors.As(err, &d) || !d.RetryAt.Equal(retry) || hits(e, id+1) != before {
 		t.Fatalf("metadata refresh for a star-throttled user: err %v", err)
+	}
+}
+
+// A reselect locks the repository row (its upsert) and then the selection row; the refresh commit must take them in
+// that same order (repository rows first, selection lock last), or the two wait on each other.
+func TestRefreshCommitAndReselectNeverDeadlock(t *testing.T) {
+	e := setup(t)
+	uid := e.signIn("alice")
+	id := e.gh.AddRepo("bob", "tool", false)
+	e.store(uid, id, false)
+	ctx := context.Background()
+	reselect, err := e.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reselect.Rollback(ctx)
+	if _, err := reselect.Exec(ctx, `UPDATE repositories SET description = description WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		err := e.run(e.fence(), id)
+		var d *jobs.Defer
+		if errors.As(err, &d) {
+			err = nil
+		}
+		done <- err
+	}()
+	time.Sleep(400 * time.Millisecond) // the refresh is now inside its commit, waiting on or past the repository row
+	if _, err := reselect.Exec(ctx, `INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES ($1, $2, 'starred', now())
+		ON CONFLICT (user_id, repository_id) DO UPDATE SET deselected_at = NULL`, uid, id); err != nil {
+		t.Fatalf("reselect: %v", err)
+	}
+	if err := reselect.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("refresh: %v", err)
 	}
 }

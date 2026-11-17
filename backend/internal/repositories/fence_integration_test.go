@@ -191,3 +191,21 @@ func TestConnectRollsBackWhenEligibilityHookFails(t *testing.T) {
 		t.Fatal("selection survived a failing eligibility hook")
 	}
 }
+
+// A failing eligibility hook rolls the installation row back and the setup redirect reports failure.
+func TestInstallationConnectRollsBackWhenEligibilityHookFails(t *testing.T) {
+	e := setup(t, time.Hour)
+	u := e.signIn("alice")
+	id := e.gh.AddRepo("alice", "mine", true)
+	e.gh.Install("alice", 9, id)
+	e.repos.OnEligibilityChange = func(context.Context, pgx.Tx, int64) error { return errors.New("recheck failed") }
+	resp := u.do("GET", "/auth/github/installed?setup_action=install&installation_id=9", "", nil)
+	if resp.StatusCode != 302 || resp.Header.Get("Location") != appURL+"/repositories?install=failed" {
+		t.Fatalf("redirect: %d %s", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	var n int
+	_ = e.pool.QueryRow(context.Background(), "SELECT count(*) FROM installations").Scan(&n)
+	if n != 0 {
+		t.Fatal("installation row survived a failing eligibility hook")
+	}
+}

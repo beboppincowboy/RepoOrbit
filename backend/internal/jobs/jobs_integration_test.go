@@ -532,3 +532,29 @@ func TestPauseKeepsRequestThatArrivedDuringTheRun(t *testing.T) {
 	e.runOnce()
 	e.want("p", "paused", 0) // nothing pending this time
 }
+
+// A Resume that lands while the job is still running (sign-in or an installation change arriving between the handler's
+// no-credential decision and its Pause) is remembered, so the pause re-queues the job instead of parking it. A dead job
+// stays dead.
+func TestResumeDuringRunIsNotLostAndNeverRevivesDeadWork(t *testing.T) {
+	e := setup(t)
+	resumeDuringRun := true
+	e.w.Register(kind, func(context.Context, Job, ClaimFence) error {
+		if resumeDuringRun {
+			e.resume("r")
+		}
+		return &Pause{Reason: "no credential"}
+	})
+	e.enqueue("r")
+	e.runOnce()
+	e.want("r", "queued", 0) // the resume that arrived mid-run survived the pause
+	resumeDuringRun = false
+	e.runOnce()
+	e.want("r", "paused", 0)
+	e.must(e.tx(func(tx pgx.Tx) error {
+		_, err := tx.Exec(context.Background(), `UPDATE jobs SET state = 'dead' WHERE key = 'r'`)
+		return err
+	}))
+	e.resume("r")
+	e.want("r", "dead", 0)
+}

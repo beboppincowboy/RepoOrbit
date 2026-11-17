@@ -22,7 +22,7 @@ type MetadataStatus struct {
 	FollowSuspended bool       // the viewer's starred repository was unstarred; their selection is kept but not used
 }
 
-// ActivityNotSynchronizedMessage stays until activity ingestion (U4) exists: metadata success never implies it.
+// ActivityNotSynchronizedMessage stays until activity ingestion exists: metadata success never implies it.
 const ActivityNotSynchronizedMessage = "Selected, awaiting sync — no activity data yet."
 
 var safeCode = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)

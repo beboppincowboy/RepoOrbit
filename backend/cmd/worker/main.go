@@ -19,7 +19,8 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
-// starRefresher adapts repositories.Service to ingestion.StarRefresher (ingestion cannot import repositories).
+// starRefresher adapts repositories.Service to ingestion.StarRefresher: it maps the fetch result type and turns
+// repositories.ErrSignedOut into ingestion.ErrNoCredential.
 type starRefresher struct{ repos *repositories.Service }
 
 func (s starRefresher) FetchStars(ctx context.Context, userID int64) (ingestion.StarFetch, error) {
@@ -62,7 +63,7 @@ func main() {
 		worker := &jobs.Worker{Pool: pool, Clock: clock}
 		(&ingestion.Deps{Pool: pool, GitHub: gh, Tokens: authSvc, Access: repos, Clock: clock}).Register(worker)
 		ingestion.StartScheduler(ctx, ingestion.SchedulerDeps{Pool: pool, Worker: worker, Stars: starRefresher{repos}, Clock: clock})
-		// Pre-U3 selections get durable work too; the queue coalesces repeats.
+		// Selections made before durable scheduling existed get work too; the queue coalesces repeats.
 		if n, err := ingestion.ReconcileSelections(ctx, pool); err != nil {
 			log.Printf("startup reconcile failed (will retry via the periodic scheduler): %v", err)
 		} else {

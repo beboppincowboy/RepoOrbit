@@ -70,13 +70,16 @@ func (d *Deps) throttle(ctx context.Context, userID int64, until time.Time) {
 	throttleCredential(ctx, db.New(d.Pool), userID, until)
 }
 
-func parseRepoKey(key string) (int64, error) {
-	id, err := strconv.ParseInt(strings.TrimPrefix(key, "repo:"), 10, 64)
-	if err != nil || !strings.HasPrefix(key, "repo:") {
+// parseKey reads the numeric id out of a job key of the form prefix+id ("repo:12", "user:7").
+func parseKey(prefix, key string) (int64, error) {
+	id, err := strconv.ParseInt(strings.TrimPrefix(key, prefix), 10, 64)
+	if err != nil || !strings.HasPrefix(key, prefix) {
 		return 0, fmt.Errorf("bad job key %q", key)
 	}
 	return id, nil
 }
+
+func parseRepoKey(key string) (int64, error) { return parseKey("repo:", key) }
 
 // RefreshMetadata is the repo_metadata_refresh handler. It refreshes name, description and visibility of one
 // repository, shared by every user who selects it, using the first eligible selecting user's credential that
@@ -205,42 +208,38 @@ var (
 	errRace        = errors.New("selection or access changed")
 )
 
-// commit applies fetched metadata inside the job fence's transaction after rechecking that the credential's
-// selection is still eligible and, for private repositories, that no authorization epoch moved since the fetch.
+// commit applies fetched metadata inside the job fence's transaction after checking that, for private repositories,
+// no authorization epoch moved since the fetch, and, last, that the credential's selection is still eligible.
+// Lock order is job row, fence rows, repository rows, then the selection row (NOWAIT): the same repository-then-
+// selection order a reselect takes. Taking the selection lock last still precedes the commit, so a deselection cannot
+// slip in, and a failed check rolls the repository writes back with the transaction.
 func (d *Deps) commit(ctx context.Context, fence jobs.ClaimFence, repoID, uid int64, wasPrivate bool, snap accessfence.Snapshot, r githubapp.Repo) error {
 	privatized := false
 	err := fence.Commit(ctx, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		users, err := q.ListEligibleSelectors(ctx, repoID)
-		if err != nil {
-			return err
-		}
-		if len(users) == 0 {
-			return errNoSelection
-		}
-		if _, err := q.LockEligibleSelection(ctx, db.LockEligibleSelectionParams{RepositoryID: repoID, UserID: uid}); errors.Is(err, pgx.ErrNoRows) {
-			return errRace // the credential's owner stopped following; pick again
-		} else if isLockNotAvailable(err) {
-			return errRace // a deselection or suspension is in flight; retry shortly instead of waiting
-		} else if err != nil {
-			return err
-		}
 		if wasPrivate {
 			if ok, err := snap.StillCurrent(ctx, tx); err != nil {
 				return err
 			} else if !ok {
 				return errRace
 			}
-		} else if r.Private {
+		}
+		if !wasPrivate && r.Private {
 			// Became private since last seen: this credential was never verified for private access.
 			// Record only the tightened flag and re-run through the private path.
 			privatized = true
-			return q.MarkRepositoryPrivate(ctx, repoID)
+			if err := q.MarkRepositoryPrivate(ctx, repoID); err != nil {
+				return err
+			}
+		} else {
+			if err := q.UpdateRepositoryMetadata(ctx, db.UpdateRepositoryMetadataParams{ID: repoID, Name: r.FullName, Description: r.Description, IsPrivate: r.Private}); err != nil {
+				return err
+			}
+			if err := q.RecordSyncSuccess(ctx, db.RecordSyncSuccessParams{RepositoryID: repoID, LastSuccessAt: pgtype.Timestamptz{Time: d.Clock.Now(), Valid: true}}); err != nil {
+				return err
+			}
 		}
-		if err := q.UpdateRepositoryMetadata(ctx, db.UpdateRepositoryMetadataParams{ID: repoID, Name: r.FullName, Description: r.Description, IsPrivate: r.Private}); err != nil {
-			return err
-		}
-		return q.RecordSyncSuccess(ctx, db.RecordSyncSuccessParams{RepositoryID: repoID, LastSuccessAt: pgtype.Timestamptz{Time: d.Clock.Now(), Valid: true}})
+		return d.requireOwnerStillFollows(ctx, q, repoID, uid)
 	})
 	switch {
 	case errors.Is(err, errNoSelection):
@@ -250,6 +249,29 @@ func (d *Deps) commit(ctx context.Context, fence jobs.ClaimFence, repoID, uid in
 		return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
 	case err == nil && privatized:
 		return &jobs.Defer{RetryAt: d.Clock.Now(), Reason: "visibility_changed"}
+	}
+	return err
+}
+
+// requireOwnerStillFollows share-locks the credential owner's eligible selection (NOWAIT) so a deselection or
+// suspension cannot commit between this check and the end of the transaction. errNoSelection means nobody follows the
+// repository any more; errRace means the owner stopped (or is stopping) but someone else follows, so pick again.
+func (d *Deps) requireOwnerStillFollows(ctx context.Context, q *db.Queries, repoID, uid int64) error {
+	_, err := q.LockEligibleSelection(ctx, db.LockEligibleSelectionParams{RepositoryID: repoID, UserID: uid})
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, pgx.ErrNoRows):
+		users, err := q.ListEligibleSelectors(ctx, repoID)
+		if err != nil {
+			return err
+		}
+		if len(users) == 0 {
+			return errNoSelection
+		}
+		return errRace
+	case isLockNotAvailable(err):
+		return errRace // a deselection or suspension is in flight; retry shortly instead of waiting
 	}
 	return err
 }

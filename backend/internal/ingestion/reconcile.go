@@ -7,7 +7,6 @@ import (
 	"log"
 	"math/rand/v2"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -83,8 +82,8 @@ func RecheckEligibility(ctx context.Context, tx pgx.Tx, userID int64, now time.T
 // and is shared with the metadata refresh through the credential throttle (q nil means no throttle store).
 func StarReconcileHandler(stars StarRefresher, clock jobs.Clock, q *db.Queries) jobs.Handler {
 	return func(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) error {
-		userID, err := strconv.ParseInt(strings.TrimPrefix(job.Key, "user:"), 10, 64)
-		if err != nil || !strings.HasPrefix(job.Key, "user:") {
+		userID, err := parseKey("user:", job.Key)
+		if err != nil {
 			return jobs.Permanent(fmt.Errorf("bad star reconcile key %q", job.Key))
 		}
 		if until := credentialThrottledUntil(ctx, q, userID); until.After(clock.Now()) {
@@ -195,16 +194,7 @@ func (d SchedulerDeps) pollMetadata(ctx context.Context, now time.Time) error {
 		if err != nil {
 			return err
 		}
-		for _, id := range ids {
-			at := now.Add(spread(MetadataPollInterval, d.Rand))
-			if err := jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(id), at); err != nil {
-				return err
-			}
-			if err := jobs.Resume(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(id), at); err != nil {
-				return err
-			}
-		}
-		return nil
+		return d.enqueueAndResume(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey, ids, now, MetadataPollInterval)
 	})
 }
 
@@ -214,17 +204,23 @@ func (d SchedulerDeps) scheduleStars(ctx context.Context, now time.Time) error {
 		if err != nil {
 			return err
 		}
-		for _, id := range ids {
-			at := now.Add(spread(StarReconcileInterval, d.Rand))
-			if err := jobs.Enqueue(ctx, tx, jobs.KindStarReconcile, userKey(id), at); err != nil {
-				return err
-			}
-			if err := jobs.Resume(ctx, tx, jobs.KindStarReconcile, userKey(id), at); err != nil {
-				return err
-			}
-		}
-		return nil
+		return d.enqueueAndResume(ctx, tx, jobs.KindStarReconcile, userKey, ids, now, StarReconcileInterval)
 	})
+}
+
+// enqueueAndResume records intent for each id at a jittered due time, then unparks it if paused. Enqueue never
+// revives dead work and Resume ignores it.
+func (d SchedulerDeps) enqueueAndResume(ctx context.Context, tx pgx.Tx, kind jobs.Kind, keyOf func(int64) string, ids []int64, now time.Time, interval time.Duration) error {
+	for _, id := range ids {
+		at := now.Add(spread(interval, d.Rand))
+		if err := jobs.Enqueue(ctx, tx, kind, keyOf(id), at); err != nil {
+			return err
+		}
+		if err := jobs.Resume(ctx, tx, kind, keyOf(id), at); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func spread(interval time.Duration, rnd func() float64) time.Duration {
