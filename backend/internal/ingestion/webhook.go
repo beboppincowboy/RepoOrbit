@@ -54,8 +54,8 @@ type webhookPayload struct {
 //
 // Supported events: push, issues, pull_request, repository (edited, renamed, publicized, archived, unarchived)
 // schedule a metadata refresh for an already selected repository; repository (privatized, deleted, transferred),
-// installation, installation_repositories and github_app_authorization bump the access fence. Anything else
-// that is validly signed is acknowledged without work.
+// installation and installation_repositories bump the access fence; github_app_authorization bumps that user's fence and also
+// deletes their sessions and clears their stored tokens in the same transaction. Anything else that is validly signed is acknowledged without work.
 func WebhookHandler(d WebhookDeps) http.Handler {
 	if d.refresh == nil {
 		d.refresh = RequestMetadataRefresh
@@ -180,7 +180,13 @@ func (d WebhookDeps) accept(ctx context.Context, id, event string, k whKind, p w
 		if errors.Is(err, pgx.ErrNoRows) {
 			err = nil // no such user here: nothing to invalidate
 		} else if err == nil {
-			err = d.bump(ctx, tx, accessfence.ScopeUser, uid)
+			// Bump first (cached reads stop), then end the credential: jobs find no token and pause without spending
+			// attempts. Same order and queries as auth.Service.Revoke, in this delivery's transaction.
+			if err = d.bump(ctx, tx, accessfence.ScopeUser, uid); err == nil {
+				if err = q.DeleteUserSessions(ctx, uid); err == nil {
+					err = q.ClearUserTokens(ctx, uid)
+				}
+			}
 		}
 	default: // installation, installation_repositories
 		if p.Installation.ID <= 0 {
