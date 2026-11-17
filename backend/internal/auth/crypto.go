@@ -51,7 +51,8 @@ func randomToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-func hash(token string) []byte {
+// sha256Digest is the stored form of a session token or OAuth state. Not for passwords: the inputs are 256-bit random.
+func sha256Digest(token string) []byte {
 	sum := sha256.Sum256([]byte(token))
 	return sum[:]
 }

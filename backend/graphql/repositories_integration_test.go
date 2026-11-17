@@ -69,17 +69,17 @@ func TestDemoDatabaseGraphQL(t *testing.T) {
 		h.ServeHTTP(w, req)
 		return w.Body.String()
 	}
-	result := run(`{ repositories(first: 1) { nodes { id name } endCursor hasNextPage } issues(repositoryIds: ["1"], first: 1) { nodes { id title } hasNextPage } }`)
+	result := run(`{ selectedRepositories(first: 1) { nodes { id fullName } endCursor hasNextPage } issues(repositoryIds: ["1"], first: 1) { nodes { id title } hasNextPage } }`)
 	for _, want := range []string{"orbit/example", "Improve onboarding documentation", `"hasNextPage":true`} {
 		if !strings.Contains(result, want) {
 			t.Fatalf("missing %s: %s", want, result)
 		}
 	}
-	result = run(`{ repositories(first: 1, after: "1") { nodes { name } } issues(repositoryIds: ["1"], first: 1, after: "1") { nodes { title } } }`)
+	result = run(`{ selectedRepositories(first: 1, after: "1") { nodes { fullName } } issues(repositoryIds: ["1"], first: 1, after: "1") { nodes { title } } }`)
 	if !strings.Contains(result, "orbit/launchpad") || !strings.Contains(result, "Add keyboard shortcuts") {
 		t.Fatal(result)
 	}
-	for _, query := range []string{`{ repositories(first: 101) { nodes { name } } }`, `{ repositories(first: 100) { nodes { a:name b:name c:name d:name e:name f:name g:name h:name i:name j:name k:name } } }`, `{ repositories(after: "bad") { nodes { name } } }`, `{ ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { repositories { nodes { name } } } } } } } } }`} {
+	for _, query := range []string{`{ selectedRepositories(first: 101) { nodes { fullName } } }`, `{ selectedRepositories(first: 100) { nodes { a:fullName b:fullName c:fullName d:fullName e:fullName f:fullName g:fullName h:fullName i:fullName j:fullName k:fullName } } }`, `{ selectedRepositories(after: "bad") { nodes { fullName } } }`, `{ ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { selectedRepositories { nodes { fullName } } } } } } } } }`} {
 		if got := run(query); !strings.Contains(got, `"errors"`) {
 			t.Fatalf("accepted %s: %s", query, got)
 		}
@@ -87,7 +87,7 @@ func TestDemoDatabaseGraphQL(t *testing.T) {
 	if _, err = pool.Exec(ctx, "UPDATE repositories SET name='changed/database' WHERE id=1"); err != nil {
 		t.Fatal(err)
 	}
-	if got := run(`{ repositories { nodes { name } } }`); !strings.Contains(got, "changed/database") {
+	if got := run(`{ selectedRepositories { nodes { fullName } } }`); !strings.Contains(got, "changed/database") {
 		t.Fatal(got)
 	}
 }
@@ -112,7 +112,7 @@ func TestModesSeeOnlyTheirOwnRows(t *testing.T) {
 		Server(&Resolver{Queries: db.New(pool), Demo: demo}).ServeHTTP(w, req)
 		return w.Body.String()
 	}
-	q := `{ repositories { nodes { name } } issues(repositoryIds: ["1","2","500"]) { nodes { title } } }`
+	q := `{ selectedRepositories { nodes { fullName } } issues(repositoryIds: ["1","2","500"]) { nodes { title } } }`
 	got := run(true, q)
 	if strings.Contains(got, "real/") || strings.Contains(got, "real issue") || !strings.Contains(got, "orbit/example") {
 		t.Fatalf("demo mode: %s", got)

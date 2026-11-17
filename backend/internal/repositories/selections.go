@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 )
 
 var (
@@ -21,9 +22,10 @@ type UnverifiedError struct{ RetryAt time.Time }
 
 func (e *UnverifiedError) Error() string { return "access could not be verified; retry later" }
 
-// Select connects one of the user's own repositories. Access is checked live (never from the cache), the
-// repository must be on the user's personal account, and only the explicit choice is stored.
-func (s *Service) Select(ctx context.Context, userID, repoID int64) error {
+// Connect selects one of the user's own repositories (source "owned"). Access is checked live (never from the
+// cache) and the repository must be on the user's personal account. Calls GitHub; writes one repository and one
+// selection row. Returns ErrNotFound (no access), ErrNotOwned (not personal account) or *UnverifiedError.
+func (s *Service) Connect(ctx context.Context, userID, repoID int64) error {
 	d := s.CheckOne(ctx, userID, repoID, true)
 	if d.Unverified {
 		return &UnverifiedError{RetryAt: d.RetryAt}
@@ -31,24 +33,37 @@ func (s *Service) Select(ctx context.Context, userID, repoID int64) error {
 	if !d.Allowed {
 		return ErrNotFound
 	}
-	ghID, err := s.Q.GetUserGithubID(ctx, userID)
+	ghID, err := s.Queries.GetUserGithubID(ctx, userID)
 	if err != nil {
 		return err
 	}
 	if d.Repo.Owner.ID != ghID || d.Repo.Owner.Type != "User" {
 		return ErrNotOwned
 	}
-	if _, err = s.Q.UpsertRepository(ctx, db.UpsertRepositoryParams{ID: d.Repo.ID, Name: d.Repo.FullName, Description: d.Repo.Description, IsPrivate: d.Repo.Private}); errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("repository %d collides with a demo row", d.Repo.ID)
+	return s.storeSelection(ctx, userID, d.Repo, selectionSourceOwned)
+}
+
+// How a selection came about; stored in selections.source. "owned" wins when both apply (see UpsertSelection).
+const (
+	selectionSourceOwned   = "owned"
+	selectionSourceStarred = "starred"
+)
+
+// storeSelection upserts repo's metadata and the user's selection of it. Fails (loudly) if repo's id collides
+// with a demo row, which is never overwritten.
+func (s *Service) storeSelection(ctx context.Context, userID int64, repo githubapp.Repo, source string) error {
+	if _, err := s.Queries.UpsertRepository(ctx, db.UpsertRepositoryParams{ID: repo.ID, Name: repo.FullName, Description: repo.Description, IsPrivate: repo.Private}); errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("repository %d collides with a demo row", repo.ID)
 	} else if err != nil {
 		return err
 	}
-	return s.Q.UpsertSelection(ctx, db.UpsertSelectionParams{UserID: userID, RepositoryID: d.Repo.ID, Source: "owned", SelectedAt: pgtype.Timestamptz{Time: s.now(), Valid: true}})
+	return s.Queries.UpsertSelection(ctx, db.UpsertSelectionParams{UserID: userID, RepositoryID: repo.ID, Source: source, SelectedAt: pgtype.Timestamptz{Time: s.now(), Valid: true}})
 }
 
-// Deselect marks the user's own selection deselected. It touches only that user's row.
+// Deselect marks the user's own selection deselected, for either source (also unfollows). It touches only that
+// user's row and makes no GitHub call. Returns ErrNotFound when the user has no active selection for repoID.
 func (s *Service) Deselect(ctx context.Context, userID, repoID int64) error {
-	n, err := s.Q.DeselectRepository(ctx, db.DeselectRepositoryParams{UserID: userID, RepositoryID: repoID, Now: pgtype.Timestamptz{Time: s.now(), Valid: true}})
+	n, err := s.Queries.DeselectRepository(ctx, db.DeselectRepositoryParams{UserID: userID, RepositoryID: repoID, Now: pgtype.Timestamptz{Time: s.now(), Valid: true}})
 	if err != nil {
 		return err
 	}
@@ -58,10 +73,20 @@ func (s *Service) Deselect(ctx context.Context, userID, repoID int64) error {
 	return nil
 }
 
-// SyncState is what the UI says about a repository's data until ingestion exists (U3).
-func SyncState(selected bool) string {
+// SyncState is what the UI says about a repository's data until ingestion exists (U3). The string values are
+// the wire format in REST (syncState) and GraphQL (Repository.syncState).
+type SyncState string
+
+const (
+	SyncStateDemo            SyncState = "demo"             // seeded demo repository (Demo mode only)
+	SyncStateAwaitingSync    SyncState = "awaiting-sync"    // selected, not yet ingested
+	SyncStateNotSynchronized SyncState = "not-synchronized" // accessible but not selected
+)
+
+// SyncStateFor returns the state of a real repository given whether the user has selected it.
+func SyncStateFor(selected bool) SyncState {
 	if selected {
-		return "awaiting-sync"
+		return SyncStateAwaitingSync
 	}
-	return "not-synchronized"
+	return SyncStateNotSynchronized
 }

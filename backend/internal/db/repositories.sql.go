@@ -9,6 +9,41 @@ import (
 	"context"
 )
 
+const listDemoRepositories = `-- name: ListDemoRepositories :many
+SELECT id, name, description FROM repositories WHERE is_demo = true AND id > $1::bigint ORDER BY id LIMIT $2::int
+`
+
+type ListDemoRepositoriesParams struct {
+	After    int64
+	PageSize int32
+}
+
+type ListDemoRepositoriesRow struct {
+	ID          int64
+	Name        string
+	Description string
+}
+
+func (q *Queries) ListDemoRepositories(ctx context.Context, arg ListDemoRepositoriesParams) ([]ListDemoRepositoriesRow, error) {
+	rows, err := q.db.Query(ctx, listDemoRepositories, arg.After, arg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDemoRepositoriesRow
+	for rows.Next() {
+		var i ListDemoRepositoriesRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.Description); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIssues = `-- name: ListIssues :many
 SELECT i.id, i.repository_id, i.title, i.state FROM issues i JOIN repositories r ON r.id = i.repository_id
 WHERE r.is_demo = $1::boolean AND i.repository_id = ANY($2::bigint[]) AND i.id > $3::bigint ORDER BY i.id LIMIT $4::int
@@ -41,42 +76,6 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]Issue
 			&i.Title,
 			&i.State,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listRepositories = `-- name: ListRepositories :many
-SELECT id, name, description FROM repositories WHERE is_demo = $1::boolean AND id > $2::bigint ORDER BY id LIMIT $3::int
-`
-
-type ListRepositoriesParams struct {
-	Demo     bool
-	After    int64
-	PageSize int32
-}
-
-type ListRepositoriesRow struct {
-	ID          int64
-	Name        string
-	Description string
-}
-
-func (q *Queries) ListRepositories(ctx context.Context, arg ListRepositoriesParams) ([]ListRepositoriesRow, error) {
-	rows, err := q.db.Query(ctx, listRepositories, arg.Demo, arg.After, arg.PageSize)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListRepositoriesRow
-	for rows.Next() {
-		var i ListRepositoriesRow
-		if err := rows.Scan(&i.ID, &i.Name, &i.Description); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -32,8 +32,9 @@ type Server struct {
 
 	repos        map[int64]*repo
 	installs     map[int64]*install
-	limitedUntil time.Time // API calls fail with a rate limit until this time
-	failing      bool      // API calls fail with 502
+	stars        map[string]map[int64]bool // login -> starred repository IDs
+	limitedUntil time.Time                 // API calls fail with a rate limit until this time
+	failing      bool                      // API calls fail with 502
 	hits         map[string]int
 }
 
@@ -53,7 +54,7 @@ type install struct {
 type grant struct{ challenge, login string }
 
 func New(clientID, clientSecret string) *Server {
-	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, hits: map[string]int{}}
+	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, stars: map[string]map[int64]bool{}, hits: map[string]int{}}
 }
 
 // Refreshes reports how many refresh-token exchanges were accepted.
@@ -72,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/login/oauth/access_token", s.token)
 	mux.HandleFunc("/user", s.api(s.user))
 	mux.HandleFunc("/user/repos", s.api(s.userRepos))
+	mux.HandleFunc("/user/starred", s.api(s.userStarred))
 	mux.HandleFunc("/user/installations", s.api(s.userInstallations))
 	mux.HandleFunc("/user/installations/{id}/repositories", s.api(s.installationRepos))
 	mux.HandleFunc("/repositories/{id}", s.api(s.repoByID))
@@ -215,6 +217,22 @@ func (s *Server) AddRepo(owner, name string, private bool) int64 {
 	return id
 }
 
+// Star makes login a stargazer of the repository; Unstar undoes it.
+func (s *Server) Star(login string, id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stars[login] == nil {
+		s.stars[login] = map[int64]bool{}
+	}
+	s.stars[login][id] = true
+}
+
+func (s *Server) Unstar(login string, id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.stars[login], id)
+}
+
 func (s *Server) SetPrivate(id int64, private bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -317,6 +335,14 @@ func (s *Server) sortedRepos(keep func(*repo) bool) []map[string]any {
 func (s *Server) userRepos(w http.ResponseWriter, r *http.Request, login string) {
 	s.mu.Lock()
 	items := s.sortedRepos(func(x *repo) bool { return x.owner == login && s.canRead(login, x) })
+	s.mu.Unlock()
+	writeJSON(w, page(w, r, items))
+}
+
+// userStarred lists the stars the token can read: public ones, and private ones only where it can read them.
+func (s *Server) userStarred(w http.ResponseWriter, r *http.Request, login string) {
+	s.mu.Lock()
+	items := s.sortedRepos(func(x *repo) bool { return s.stars[login][x.id] && s.canRead(login, x) })
 	s.mu.Unlock()
 	writeJSON(w, page(w, r, items))
 }

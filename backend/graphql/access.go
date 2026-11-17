@@ -2,19 +2,19 @@ package graph
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
+	"github.com/vektah/gqlparser/v2/gqlerror"
 )
 
 // userID is the signed-in user's id; real-mode resolvers never run without one.
 func (r *Resolver) userID(ctx context.Context) (int64, error) {
-	v, ok := auth.FromContext(ctx)
-	if !ok || v.Demo || v.UserID == 0 {
-		return 0, fmt.Errorf("sign in required")
+	userID, ok := auth.SignedInUserID(ctx)
+	if !ok {
+		return 0, codedError(codeUnauthenticated, "sign in required")
 	}
-	return v.UserID, nil
+	return userID, nil
 }
 
 // laterRetry keeps the latest retry time (RFC 3339) among withheld items.
@@ -31,9 +31,21 @@ func laterRetry(current *string, t time.Time) *string {
 	return &s
 }
 
+// Machine-readable GraphQL error codes (errors[].extensions.code). Clients branch on these, never on the message.
+const (
+	codeUnauthenticated  = "UNAUTHENTICATED"   // no real signed-in viewer
+	codeAccessUnverified = "ACCESS_UNVERIFIED" // GitHub could not confirm access; extensions.retryAt (RFC 3339) may be set
+)
+
+func codedError(code, message string) error {
+	return &gqlerror.Error{Message: message, Extensions: map[string]any{"code": code}}
+}
+
+// unverifiedError is the ACCESS_UNVERIFIED error; retryAt zero means GitHub gave no time.
 func unverifiedError(retryAt time.Time) error {
-	if retryAt.IsZero() {
-		return fmt.Errorf("access could not be verified; retry later")
+	err := &gqlerror.Error{Message: "access could not be verified; retry later", Extensions: map[string]any{"code": codeAccessUnverified}}
+	if !retryAt.IsZero() {
+		err.Extensions["retryAt"] = retryAt.UTC().Format(time.RFC3339)
 	}
-	return fmt.Errorf("access could not be verified; retry after %s", retryAt.UTC().Format(time.RFC3339))
+	return err
 }

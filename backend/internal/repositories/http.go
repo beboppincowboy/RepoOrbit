@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -18,18 +19,21 @@ import (
 func (s *Service) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/repositories/owned", s.owned)
-	mux.HandleFunc("PUT /api/repositories/{id}/selection", s.selection(true))
-	mux.HandleFunc("DELETE /api/repositories/{id}/selection", s.selection(false))
+	mux.HandleFunc("GET /api/repositories/starred", s.starred)
+	mux.HandleFunc("PUT /api/repositories/{id}/selection", s.selection(true, s.Connect))
+	mux.HandleFunc("PUT /api/repositories/{id}/follow", s.selection(true, s.Follow))
+	mux.HandleFunc("DELETE /api/repositories/{id}/selection", s.selection(false, s.Deselect)) // also unfollows
 	return mux
 }
 
+// viewer returns the signed-in user's id, or writes 401 and returns ok=false (Demo viewers are refused).
 func viewer(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	v, ok := auth.FromContext(r.Context())
-	if !ok || v.Demo || v.UserID == 0 {
+	userID, ok := auth.SignedInUserID(r.Context())
+	if !ok {
 		http.Error(w, "sign in required", http.StatusUnauthorized)
 		return 0, false
 	}
-	return v.UserID, true
+	return userID, true
 }
 
 func (s *Service) owned(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +52,24 @@ func (s *Service) owned(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(out)
 }
 
-func (s *Service) selection(connect bool) http.HandlerFunc {
+// starred serves the star snapshot. refresh=1 (page open, Refresh button) re-reads GitHub first; paging does not.
+func (s *Service) starred(w http.ResponseWriter, r *http.Request) {
+	userID, ok := viewer(w, r)
+	if !ok {
+		return
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	page = min(max(page, 1), maxStarPages*githubPerPage/starredPerPage+1)
+	out, err := s.Starred(r.Context(), userID, page, r.URL.Query().Get("refresh") == "1")
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (s *Service) selection(connect bool, act func(ctx context.Context, userID, repoID int64) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID, ok := viewer(w, r)
 		if !ok {
@@ -59,17 +80,12 @@ func (s *Service) selection(connect bool) http.HandlerFunc {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		if connect {
-			err = s.Select(r.Context(), userID, id)
-		} else {
-			err = s.Deselect(r.Context(), userID, id)
-		}
-		if err != nil {
+		if err = act(r.Context(), userID, id); err != nil {
 			s.fail(w, err)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"selected": connect, "syncState": SyncState(connect)})
+		_ = json.NewEncoder(w).Encode(map[string]any{"selected": connect, "syncState": SyncStateFor(connect)})
 	}
 }
 
@@ -97,30 +113,31 @@ func (s *Service) fail(w http.ResponseWriter, err error) {
 // Installed handles GitHub's redirect after the app is installed. The installation_id is accepted only if it
 // appears in the signed-in user's own installations, so a forged or foreign id is rejected. It always
 // redirects to the configured app origin.
+// Installed is an HTTP handler, not a query: it also writes the installation row.
 func (s *Service) Installed(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	result := "failed"
 	defer func() { http.Redirect(w, r, s.AppURL+"/repositories?install="+result, http.StatusFound) }()
-	v, ok := auth.FromContext(r.Context())
+	userID, ok := auth.SignedInUserID(r.Context())
 	id, err := strconv.ParseInt(r.URL.Query().Get("installation_id"), 10, 64)
-	if !ok || v.UserID == 0 || err != nil || id <= 0 {
+	if !ok || err != nil || id <= 0 {
 		result = "rejected"
 		return
 	}
-	token, err := s.Tokens.AccessToken(r.Context(), v.UserID)
+	token, err := s.TokenSource.AccessToken(r.Context(), userID)
 	if err != nil {
 		return
 	}
 	installs, complete, err := collect(func(p int) ([]githubapp.Installation, bool, error) {
-		return s.GitHub.Installations(r.Context(), token, p)
+		return s.GitHub.FetchInstallations(r.Context(), token, p)
 	})
 	for _, in := range installs {
 		if in.ID == id {
-			if err := s.Q.UpsertInstallation(r.Context(), db.UpsertInstallationParams{UserID: v.UserID, InstallationID: in.ID, AccountLogin: in.Account.Login}); err != nil {
+			if err := s.Queries.UpsertInstallation(r.Context(), db.UpsertInstallationParams{UserID: userID, InstallationID: in.ID, AccountLogin: in.Account.Login}); err != nil {
 				log.Printf("repositories: store installation: %v", err)
 				return
 			}
-			s.invalidate(v.UserID)
+			s.invalidate(userID)
 			result = "ok"
 			return
 		}

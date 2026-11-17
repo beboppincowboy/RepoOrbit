@@ -55,13 +55,13 @@ func setup(t *testing.T, ttl time.Duration) *env {
 	t.Cleanup(ghSrv.Close)
 	client := githubapp.New("cid", "secret", ghSrv.URL, ghSrv.URL, appURL+"/auth/github/callback")
 	q := db.New(pool)
-	svc := &auth.Service{Pool: pool, Q: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
-	repos := &repositories.Service{Q: q, GitHub: client, Tokens: svc, TTL: ttl, AppURL: appURL, InstallURL: ghSrv.URL + "/apps/app/installations/new"}
+	svc := &auth.Service{Pool: pool, Queries: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
+	repos := &repositories.Service{Queries: q, Pool: pool, GitHub: client, TokenSource: svc, TTL: ttl, AppURL: appURL, InstallURL: ghSrv.URL + "/apps/app/installations/new"}
 	h := &auth.Handler{Service: svc, AppURL: appURL, Installed: http.HandlerFunc(repos.Installed)}
 	mux := http.NewServeMux()
 	mux.Handle("/auth/", h.Routes())
 	mux.Handle("/api/", h.Protect(repos.Routes()))
-	mux.Handle("/graphql", h.Protect(graph.Server(&graph.Resolver{Queries: q, Access: repos})))
+	mux.Handle("/graphql", h.Protect(graph.Server(&graph.Resolver{Queries: q, RepoAccess: repos})))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	gh.SetupURL = srv.URL + "/auth/github/installed"
@@ -177,14 +177,14 @@ func (e *env) addIssue(repoID int64, title string) {
 }
 
 func repoNames(data map[string]any) (names []string, withheld int, retryAt any) {
-	conn := data["repositories"].(map[string]any)
+	conn := data["selectedRepositories"].(map[string]any)
 	for _, n := range conn["nodes"].([]any) {
-		names = append(names, n.(map[string]any)["name"].(string))
+		names = append(names, n.(map[string]any)["fullName"].(string))
 	}
 	return names, int(conn["withheld"].(float64)), conn["retryAt"]
 }
 
-const repoQuery = `{ repositories(first: 50) { nodes { id name private selected syncState } endCursor hasNextPage withheld retryAt } }`
+const repoQuery = `{ selectedRepositories(first: 50) { nodes { id fullName private selected syncState } endCursor hasNextPage withheld retryAt } }`
 
 func issueTitles(data map[string]any) (titles []string) {
 	for _, n := range data["issues"].(map[string]any)["nodes"].([]any) {
@@ -232,11 +232,11 @@ func TestUsersCannotCrossRead(t *testing.T) {
 	if data, _ := alice.gql(issuesQuery(secret, pub, bobPub)); len(issueTitles(data)) != 2 {
 		t.Fatalf("alice issues: %v", data)
 	}
-	if data, _ := bob.gql(fmt.Sprintf(`{ repository(id: "%d") { name } }`, secret)); data["repository"] != nil {
+	if data, _ := bob.gql(fmt.Sprintf(`{ repository(id: "%d") { fullName } }`, secret)); data["repository"] != nil {
 		t.Fatalf("bob read alice's private repository: %v", data)
 	}
 	// R1: the public repo opens for bob with the not-synchronized state; it is not his selection.
-	data, _ = bob.gql(fmt.Sprintf(`{ repository(id: "%d") { name selected syncState } }`, pub))
+	data, _ = bob.gql(fmt.Sprintf(`{ repository(id: "%d") { fullName selected syncState } }`, pub))
 	if r, _ := data["repository"].(map[string]any); r == nil || r["selected"] != false || r["syncState"] != "not-synchronized" {
 		t.Fatalf("bob public view: %v", data)
 	}
@@ -416,7 +416,7 @@ func TestOwnedRepositories(t *testing.T) {
 		t.Fatalf("listing stored rows: %d %v", stored, err)
 	}
 	for _, p := range append(p1.Repositories, p2.Repositories...) {
-		if p.Name == "alice/secret" {
+		if p.FullName == "alice/secret" {
 			t.Fatalf("uninstalled private repo listed: %+v", p)
 		}
 	}
@@ -429,7 +429,7 @@ func TestOwnedRepositories(t *testing.T) {
 	if r := alice.do("GET", loc.Path+"?"+loc.RawQuery, "", nil); r.Header.Get("Location") != appURL+"/repositories?install=ok" {
 		t.Fatalf("setup callback: %s", r.Header.Get("Location"))
 	}
-	var all []repositories.OwnedRepo
+	var all []repositories.ListedRepo
 	for page := 1; page != 0; {
 		var p repositories.OwnedPage
 		alice.json("GET", fmt.Sprintf("/api/repositories/owned?page=%d", page), "", &p)
@@ -449,7 +449,7 @@ func TestOwnedRepositories(t *testing.T) {
 	e.gh.Fail(true)
 	var failed repositories.OwnedPage
 	alice.json("GET", "/api/repositories/owned", "", &failed)
-	if !failed.RefreshFailed || len(failed.Repositories) != 1 || failed.Repositories[0].Name != "alice/r00" || failed.Withheld != 1 || !failed.Repositories[0].Selected {
+	if !failed.RefreshFailed || len(failed.Repositories) != 1 || failed.Repositories[0].FullName != "alice/r00" || failed.Withheld != 1 || !failed.Repositories[0].Selected {
 		t.Fatalf("failed refresh: %+v", failed)
 	}
 }

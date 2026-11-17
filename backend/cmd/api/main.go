@@ -43,13 +43,13 @@ func main() {
 	var repoAPI http.Handler
 	if !cfg.Demo {
 		gh := githubapp.New(cfg.ClientID, cfg.ClientSecret, cfg.GitHubURL, cfg.GitHubAPIURL, cfg.AppURL+"/auth/github/callback")
-		authHandler.Service = &auth.Service{Pool: pool, Q: queries, GitHub: gh, Key: cfg.TokenKey}
-		repos := &repositories.Service{Q: queries, GitHub: gh, Tokens: authHandler.Service, AppURL: cfg.AppURL}
+		authHandler.Service = &auth.Service{Pool: pool, Queries: queries, GitHub: gh, Key: cfg.TokenKey}
+		repos := &repositories.Service{Queries: queries, Pool: pool, GitHub: gh, TokenSource: authHandler.Service, AppURL: cfg.AppURL}
 		if cfg.AppSlug != "" {
 			repos.InstallURL = cfg.GitHubURL + "/apps/" + cfg.AppSlug + "/installations/new"
 		}
 		authHandler.Installed = http.HandlerFunc(repos.Installed)
-		resolver.Access, repoAPI = repos, authHandler.Protect(repos.Routes())
+		resolver.RepoAccess, repoAPI = repos, authHandler.Protect(repos.Routes())
 	}
 	router := chi.NewRouter()
 	router.Mount("/", platform.Health(pool))

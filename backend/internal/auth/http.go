@@ -24,9 +24,19 @@ func FromContext(ctx context.Context) (Viewer, bool) {
 	return v, ok
 }
 
+// SignedInUserID returns the stored user id of the request's viewer. ok is false when there is no viewer or the
+// viewer is the demo identity (which has no stored user), so real-mode-only code can use it as its one gate.
+func SignedInUserID(ctx context.Context) (userID int64, ok bool) {
+	v, ok := FromContext(ctx)
+	if !ok || v.Demo || v.UserID == 0 {
+		return 0, false
+	}
+	return v.UserID, true
+}
+
 // Handler serves the /auth/* routes and the middleware that protects other routes.
 type Handler struct {
-	Service *Service
+	Service *Service // nil in Demo mode
 	Demo    bool
 	AppURL  string // browser-facing origin, e.g. https://repoorbit.example; GitHub redirects back here
 	// Installed serves GitHub's post-install redirect (the app's Setup URL). Signed-in users only.
@@ -116,7 +126,7 @@ func (h *Handler) session(r *http.Request) (string, Viewer, error) {
 	if err != nil {
 		return "", Viewer{}, ErrUnauthenticated
 	}
-	v, err := h.Service.Viewer(r.Context(), c.Value)
+	v, err := h.Service.ViewerForSession(r.Context(), c.Value)
 	return c.Value, v, err
 }
 

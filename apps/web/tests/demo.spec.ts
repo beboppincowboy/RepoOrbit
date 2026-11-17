@@ -6,7 +6,7 @@ test('shows database-backed demo repositories and issues', async ({ page }) => {
   await expect(page.getByText('Improve onboarding documentation')).toBeVisible();
 });
 test('distinguishes an empty dataset from an error', async ({ page }) => {
-  await page.route('**/graphql', route => route.fulfill({ json: { data: { repositories: { nodes: [], endCursor: null, hasNextPage: false } } } }));
+  await page.route('**/graphql', route => route.fulfill({ json: { data: { selectedRepositories: { nodes: [], endCursor: null, hasNextPage: false } } } }));
   await page.goto('http://127.0.0.1:3000');
   await expect(page.getByText('No demo repositories yet.')).toBeVisible();
   await expect(page.getByText('Could not load repositories.', { exact: false })).toHaveCount(0);

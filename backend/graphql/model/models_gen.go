@@ -22,7 +22,7 @@ type Query struct {
 
 type Repository struct {
 	ID          string `json:"id"`
-	Name        string `json:"name"`
+	FullName    string `json:"fullName"`
 	Description string `json:"description"`
 	Private     bool   `json:"private"`
 	Selected    bool   `json:"selected"`
