@@ -106,3 +106,43 @@ func ReconcileSelections(ctx context.Context, pool *pgxpool.Pool) (int, error) {
 	}
 	return n, tx.Commit(ctx)
 }
+
+// ActivityOutcome reports what SignalActivity did for one repository.
+type ActivityOutcome string
+
+const (
+	ActivityAccepted   ActivityOutcome = "accepted"   // new activity work was queued
+	ActivityCoalesced  ActivityOutcome = "coalesced"  // work was already queued or running; intent is retained by the queue
+	ActivityDead       ActivityOutcome = "dead"       // a stream is dead; only an operator requeue revives it
+	ActivityIneligible ActivityOutcome = "ineligible" // no eligible selection: nothing is scheduled
+)
+
+var activityParentKinds = []jobs.Kind{jobs.KindActivityIssues, jobs.KindActivityPullRequests, jobs.KindActivityReleases, jobs.KindActivityIssueEvents}
+
+// SignalActivity is the single reconciliation entry point for webhooks, polling and the Refresh action. It
+// reopens every caught-up stream for another catch-up scan from the retained boundary (a stream still
+// backfilling or catching up already rescans, so it is left alone) and enqueues the stream jobs. It never
+// revives dead work and never moves a deferred or paused job's run time earlier, so throttling holds.
+func SignalActivity(ctx context.Context, tx pgx.Tx, repoID int64, now time.Time) (ActivityOutcome, error) {
+	ok, err := db.New(tx).HasEligibleSelection(ctx, repoID)
+	if err != nil || !ok {
+		return ActivityIneligible, err
+	}
+	var busy, dead int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state IN ('queued','running')), count(*) FILTER (WHERE state='dead') FROM jobs WHERE key=$1 AND kind = ANY($2)`, repoKey(repoID), activityParentKinds).Scan(&busy, &dead); err != nil {
+		return "", err
+	}
+	if dead > 0 {
+		return ActivityDead, nil
+	}
+	if _, err = tx.Exec(ctx, `UPDATE activity_resources SET phase='catchup',page=1,cursor='',scan_started_at=NULL,current_scan='{}',previous_scan=NULL,generation=generation+1 WHERE repository_id=$1 AND phase='current'`, repoID); err != nil {
+		return "", err
+	}
+	if err = RequestActivity(ctx, tx, repoID, now); err != nil {
+		return "", err
+	}
+	if busy > 0 {
+		return ActivityCoalesced, nil
+	}
+	return ActivityAccepted, nil
+}
