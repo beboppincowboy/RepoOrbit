@@ -16,7 +16,7 @@ test('renders a repository inserted into the database', async ({ page }) => {
   const id = Date.now();
   const sql = (statement: string) => execFileSync('docker', ['compose', 'exec', '-T', 'db', 'psql', '-U', 'repoorbit', '-d', 'repoorbit', '-c', statement], { cwd: '../..' });
   try {
-    sql(`INSERT INTO repositories (id, name, description) VALUES (${id}, 'demo/db-change', 'Inserted by browser test')`);
+    sql(`INSERT INTO repositories (id, name, description, is_demo) VALUES (${id}, 'demo/db-change', 'Inserted by browser test', true)`);
     await page.goto('http://127.0.0.1:3000');
     const heading = page.getByRole('heading', { name: 'demo/db-change' });
     const more = page.getByRole('button', { name: 'Load more repositories' });

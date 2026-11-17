@@ -8,6 +8,7 @@ require (
 	github.com/jackc/pgx/v5 v5.7.5
 	github.com/pressly/goose/v3 v3.24.3
 	github.com/vektah/gqlparser/v2 v2.5.27
+	golang.org/x/oauth2 v0.30.0
 )
 
 require (

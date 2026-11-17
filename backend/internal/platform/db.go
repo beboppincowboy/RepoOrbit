@@ -23,7 +23,9 @@ func OpenDB(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	}
 	return pool, nil
 }
-func PrepareDemo(ctx context.Context, url string) error {
+
+// Migrate applies schema migrations from ./migrations. Both modes run it.
+func Migrate(ctx context.Context, url string) error {
 	conn, err := sql.Open("pgx", url)
 	if err != nil {
 		return err
@@ -35,6 +37,16 @@ func PrepareDemo(ctx context.Context, url string) error {
 	if err := goose.UpContext(ctx, conn, "migrations"); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	return nil
+}
+
+// SeedDemo loads the labeled demo rows. Only Demo mode calls it, so real mode never sees them.
+func SeedDemo(ctx context.Context, url string) error {
+	conn, err := sql.Open("pgx", url)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
 	seed, err := os.ReadFile("testdata/demo.sql")
 	if err != nil {
 		return err
@@ -42,6 +54,7 @@ func PrepareDemo(ctx context.Context, url string) error {
 	_, err = conn.ExecContext(ctx, string(seed))
 	return err
 }
+
 func Deadline(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, 3*time.Second)
 }

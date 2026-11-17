@@ -15,3 +15,4 @@ jobs:
       - run: make test-integration
       - run: cd apps/web && npx playwright install --with-deps chromium
       - run: make test-e2e
+      - run: make test-e2e-auth

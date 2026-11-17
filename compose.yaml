@@ -15,8 +15,13 @@ services:
   api:
     build: ./backend
     command: ["/app/api"]
-    environment:
+    environment: &app-env
       DATABASE_URL: postgres://repoorbit:repoorbit@db:5432/repoorbit?sslmode=disable
+      # Leave the GitHub values empty for Demo mode. Setting one without the other stops startup.
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
+      APP_URL: ${APP_URL:-http://localhost:3000}
     ports: ["127.0.0.1:8080:8080"]
     depends_on:
       db: { condition: service_healthy }
@@ -28,8 +33,7 @@ services:
   worker:
     build: ./backend
     command: ["/app/worker"]
-    environment:
-      DATABASE_URL: postgres://repoorbit:repoorbit@db:5432/repoorbit?sslmode=disable
+    environment: *app-env
     depends_on:
       db: { condition: service_healthy }
     healthcheck:

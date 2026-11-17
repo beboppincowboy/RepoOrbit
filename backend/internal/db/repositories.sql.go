@@ -10,17 +10,24 @@ import (
 )
 
 const listIssues = `-- name: ListIssues :many
-SELECT id, repository_id, title, state FROM issues WHERE repository_id = ANY($1::bigint[]) AND id > $2 ORDER BY id LIMIT $3
+SELECT i.id, i.repository_id, i.title, i.state FROM issues i JOIN repositories r ON r.id = i.repository_id
+WHERE r.is_demo = $1::boolean AND i.repository_id = ANY($2::bigint[]) AND i.id > $3::bigint ORDER BY i.id LIMIT $4::int
 `
 
 type ListIssuesParams struct {
-	Column1 []int64
-	ID      int64
-	Limit   int32
+	Demo          bool
+	RepositoryIds []int64
+	After         int64
+	PageSize      int32
 }
 
 func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]Issue, error) {
-	rows, err := q.db.Query(ctx, listIssues, arg.Column1, arg.ID, arg.Limit)
+	rows, err := q.db.Query(ctx, listIssues,
+		arg.Demo,
+		arg.RepositoryIds,
+		arg.After,
+		arg.PageSize,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -45,23 +52,30 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]Issue
 }
 
 const listRepositories = `-- name: ListRepositories :many
-SELECT id, name, description FROM repositories WHERE id > $1 ORDER BY id LIMIT $2
+SELECT id, name, description FROM repositories WHERE is_demo = $1::boolean AND id > $2::bigint ORDER BY id LIMIT $3::int
 `
 
 type ListRepositoriesParams struct {
-	ID    int64
-	Limit int32
+	Demo     bool
+	After    int64
+	PageSize int32
 }
 
-func (q *Queries) ListRepositories(ctx context.Context, arg ListRepositoriesParams) ([]Repository, error) {
-	rows, err := q.db.Query(ctx, listRepositories, arg.ID, arg.Limit)
+type ListRepositoriesRow struct {
+	ID          int64
+	Name        string
+	Description string
+}
+
+func (q *Queries) ListRepositories(ctx context.Context, arg ListRepositoriesParams) ([]ListRepositoriesRow, error) {
+	rows, err := q.db.Query(ctx, listRepositories, arg.Demo, arg.After, arg.PageSize)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Repository
+	var items []ListRepositoriesRow
 	for rows.Next() {
-		var i Repository
+		var i ListRepositoriesRow
 		if err := rows.Scan(&i.ID, &i.Name, &i.Description); err != nil {
 			return nil, err
 		}

@@ -10,9 +10,19 @@ import (
 	"strconv"
 
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
+	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/platform"
 )
+
+// Viewer is the resolver for the viewer field.
+func (r *queryResolver) Viewer(ctx context.Context) (*model.Viewer, error) {
+	v, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil, nil
+	}
+	return &model.Viewer{Login: v.Login, Demo: v.Demo}, nil
+}
 
 // Repositories is the resolver for the repositories field.
 func (r *queryResolver) Repositories(ctx context.Context, first int, after *string) (*model.RepositoryConnection, error) {
@@ -26,7 +36,7 @@ func (r *queryResolver) Repositories(ctx context.Context, first int, after *stri
 	}
 	ctx, cancel := platform.Deadline(ctx)
 	defer cancel()
-	rows, err := r.Queries.ListRepositories(ctx, db.ListRepositoriesParams{ID: id, Limit: int32(n + 1)})
+	rows, err := r.Queries.ListRepositories(ctx, db.ListRepositoriesParams{Demo: r.Demo, After: id, PageSize: int32(n + 1)})
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
@@ -65,7 +75,7 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 	}
 	ctx, cancel := platform.Deadline(ctx)
 	defer cancel()
-	rows, err := r.Queries.ListIssues(ctx, db.ListIssuesParams{Column1: ids, ID: id, Limit: int32(n + 1)})
+	rows, err := r.Queries.ListIssues(ctx, db.ListIssuesParams{Demo: r.Demo, RepositoryIds: ids, After: id, PageSize: int32(n + 1)})
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
