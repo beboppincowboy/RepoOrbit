@@ -138,7 +138,7 @@ func (s *Service) visible(ctx context.Context, userID int64, token string, fresh
 	if !fresh && e.set != nil && s.now().Sub(e.at) < s.ttl() && s.fenceHolds(ctx, e.snap) {
 		return e.set
 	}
-	snap, snapErr := s.takeFence(ctx, userID)
+	snap, snapErr := accessfence.TakeSnapshotForUser(ctx, s.Pool, userID)
 	set := s.fetchVisible(ctx, userID, token)
 	if snapErr != nil || !s.fenceHolds(ctx, snap) {
 		// An authorization change committed while this listing was being fetched (or the fence could not be read):
@@ -152,20 +152,8 @@ func (s *Service) visible(ctx context.Context, userID int64, token string, fresh
 	return set
 }
 
-// takeFence records authorization epochs before a fetch (see accessfence); without a pool there is no fence.
-func (s *Service) takeFence(ctx context.Context, userID int64) (accessfence.Snapshot, error) {
-	if s.Pool == nil {
-		return accessfence.Snapshot{}, nil
-	}
-	return accessfence.TakeSnapshotForUser(ctx, s.Pool, userID)
-}
-
 // fenceHolds reports whether no authorization change happened since snap was taken. Fails closed on a read error.
-// Without a pool there is no fence.
 func (s *Service) fenceHolds(ctx context.Context, snap accessfence.Snapshot) bool {
-	if s.Pool == nil {
-		return true
-	}
 	ok, err := snap.Current(ctx, s.Pool)
 	return ok && err == nil
 }

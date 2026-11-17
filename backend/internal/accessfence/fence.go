@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/repoorbit/repoorbit/backend/internal/db"
 )
 
 type Scope string
@@ -172,6 +174,16 @@ func TakeSnapshot(ctx context.Context, q pgx.Tx, userID, repoID int64) (Snapshot
 		s.set(k, live[k])
 	}
 	return s, nil
+}
+
+// Take is TakeSnapshot in its own short transaction: what a job calls before a private remote fetch, so it never
+// handles the transaction itself.
+func Take(ctx context.Context, pool *pgxpool.Pool, userID, repoID int64) (s Snapshot, err error) {
+	err = db.InTx(ctx, pool, func(tx pgx.Tx) (err error) {
+		s, err = TakeSnapshot(ctx, tx, userID, repoID)
+		return err
+	})
+	return s, err
 }
 
 // TakeSnapshotForUser snapshots what a cached read of everything the user can see depends on: the user, their
