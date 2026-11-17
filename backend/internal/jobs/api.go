@@ -1,7 +1,6 @@
 // Package jobs is the durable PostgreSQL work queue (U3a).
 //
-// CONTRACT STUB: signatures are frozen by docs/plans/2026-11-16-u3-contracts.md.
-// U3a replaces the bodies (and may add files); other units must not edit this package.
+// Signatures are frozen by docs/plans/2026-11-16-u3-contracts.md; worker.go holds the claim/run loop.
 package jobs
 
 import (
@@ -10,6 +9,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/repoorbit/repoorbit/backend/internal/db"
 )
 
 // Kind names a job type. One job row exists per (Kind, Key).
@@ -32,6 +34,7 @@ type Job struct {
 	Attempt    int
 }
 
+// ErrNotImplemented is retained for the frozen contract; the queue is implemented and never returns it.
 var ErrNotImplemented = errors.New("jobs: not implemented (U3a)")
 
 // Enqueue schedules (Kind, Key) inside the caller's transaction so selection changes and
@@ -42,12 +45,12 @@ var ErrNotImplemented = errors.New("jobs: not implemented (U3a)")
 //   - paused: record pending=true; stays paused until Resume
 //   - dead: record pending=true only; NEVER revives (dead-work barrier). Only Requeue revives.
 func Enqueue(ctx context.Context, tx pgx.Tx, kind Kind, key string, runAt time.Time) error {
-	return ErrNotImplemented
+	return db.New(tx).UpsertJob(ctx, db.UpsertJobParams{Kind: string(kind), Key: key, RunAt: ts(runAt)})
 }
 
 // Resume moves a paused job to queued at runAt (eligibility changed). No-op for other states.
 func Resume(ctx context.Context, tx pgx.Tx, kind Kind, key string, runAt time.Time) error {
-	return ErrNotImplemented
+	return db.New(tx).ResumeJob(ctx, db.ResumeJobParams{Kind: string(kind), Key: key, RunAt: ts(runAt)})
 }
 
 // Handler runs one claimed job. Return values:
@@ -88,15 +91,36 @@ func Permanent(err error) error { return permanent{err} }
 
 // Worker claims and runs jobs: 2 concurrent, 60s lease, 20s heartbeat, 5min max per attempt.
 type Worker struct {
+	Pool  *pgxpool.Pool
 	Clock Clock
-	// internal fields are U3a's
+	// Zero values use the documented defaults (2, 60s, 20s, 5min, 1s, 30s).
+	Concurrency   int
+	Lease         time.Duration
+	Heartbeat     time.Duration
+	MaxExecution  time.Duration
+	Poll          time.Duration
+	ShutdownGrace time.Duration
+	// Jitter returns a value in [0,1); nil uses math/rand. Tests inject a constant.
+	Jitter   func() float64
+	handlers map[Kind]Handler // set by Register before Run
 }
 
-func (w *Worker) Register(kind Kind, h Handler) {}
-func (w *Worker) Run(ctx context.Context) error { return ErrNotImplemented }
+var ErrNotDead = errors.New("jobs: job is not dead")
+
+// SystemClock is the production Clock.
+type SystemClock struct{}
+
+func (SystemClock) Now() time.Time { return time.Now() }
+
+func ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
 
 // Requeue is the operator command: revive a dead job with a fresh attempt budget.
 // Callers recheck eligibility afterwards (U3b handler does this on execution).
+// It returns ErrNotDead when no dead job exists for (kind, key).
 func Requeue(ctx context.Context, tx pgx.Tx, kind Kind, key string, runAt time.Time) error {
-	return ErrNotImplemented
+	n, err := db.New(tx).RequeueJob(ctx, db.RequeueJobParams{Kind: string(kind), Key: key, RunAt: ts(runAt)})
+	if err == nil && n == 0 {
+		return ErrNotDead
+	}
+	return err
 }
