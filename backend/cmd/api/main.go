@@ -50,11 +50,17 @@ func main() {
 		repos := &repositories.Service{Queries: queries, Pool: pool, GitHub: gh, TokenSource: authHandler.Service, AppURL: cfg.AppURL}
 		// A selection and its durable refresh intent commit together.
 		repos.OnSelect = func(ctx context.Context, tx pgx.Tx, repoID int64) error {
-			_, err := ingestion.RequestMetadataRefresh(ctx, tx, repoID)
-			return err
+			if _, err := ingestion.RequestMetadataRefresh(ctx, tx, repoID); err != nil {
+				return err
+			}
+			return ingestion.RequestActivity(ctx, tx, repoID, time.Now())
 		}
 		repos.OnEligibilityChange = func(ctx context.Context, tx pgx.Tx, userID int64) error {
 			return ingestion.RecheckEligibility(ctx, tx, userID, time.Now())
+		}
+		repos.SignalActivity = func(ctx context.Context, tx pgx.Tx, repoID int64) (string, error) {
+			out, err := ingestion.SignalActivity(ctx, tx, repoID, time.Now())
+			return string(out), err
 		}
 		authHandler.Service.OnSignIn = repos.OnEligibilityChange
 		webhooks = ingestion.WebhookHandler(ingestion.WebhookDeps{Pool: pool, Secret: cfg.WebhookSecret, Clock: jobs.SystemClock{}})

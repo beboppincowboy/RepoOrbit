@@ -45,8 +45,11 @@ func (q *Queries) ListDemoRepositories(ctx context.Context, arg ListDemoReposito
 }
 
 const listIssues = `-- name: ListIssues :many
-SELECT i.id, i.repository_id, i.title, i.state FROM issues i JOIN repositories r ON r.id = i.repository_id
-WHERE r.is_demo = $1::boolean AND i.repository_id = ANY($2::bigint[]) AND i.id > $3::bigint ORDER BY i.id LIMIT $4::int
+SELECT id, repository_id, title, state FROM (
+ SELECT i.id, i.repository_id, i.title, i.state FROM issues i JOIN repositories r ON r.id = i.repository_id WHERE r.is_demo = $1::boolean
+ UNION ALL
+ SELECT i.source_id AS id, i.repository_id, i.title, i.state FROM activity_issues i JOIN repositories r ON r.id = i.repository_id WHERE NOT r.is_demo AND NOT $1::boolean
+) AS source WHERE repository_id = ANY($2::bigint[]) AND id > $3::bigint ORDER BY id LIMIT $4::int
 `
 
 type ListIssuesParams struct {

@@ -7,7 +7,8 @@ type Repository { id: ID!, fullName: String!, description: String!, private: Boo
 # followSuspended means the viewer unstarred a followed repository: the selection is kept but not used for synchronization.
 type MetadataStatus { state: String!, lastSuccessAt: String, nextAttemptAt: String, paused: Boolean!, failureCode: String, followSuspended: Boolean! }
 # Activity (issues, pull requests, history) is synchronized separately from metadata; until activity ingestion exists synchronized is false for real repositories whatever the metadata state.
-type ActivityStatus { synchronized: Boolean!, message: String! }
+type ActivityStatus { synchronized: Boolean!, message: String!, issues: ActivityResourceStatus, futureResources: [String!]! }
+type ActivityResourceStatus { phase: String!, boundary: String!, catchupThrough: String, lastSuccessAt: String, failureCode: String, jobState: String!, nextAttemptAt: String }
 type Issue { id: ID!, repositoryId: ID!, title: String!, state: String! }
 # endCursor is the id of the last stored row scanned (even if access filtering hid it), so pass it as `after` to continue; null when the page held no rows.
 # withheld counts items hidden because access could not be verified; retryAt (RFC 3339) is set when that is a rate limit.
@@ -16,3 +17,24 @@ type IssueConnection { nodes: [Issue!]!, endCursor: ID, hasNextPage: Boolean!, w
 # Errors carry extensions.code: UNAUTHENTICATED (no real signed-in viewer) or ACCESS_UNVERIFIED (GitHub could not confirm access; extensions.retryAt is RFC 3339 when rate limited).
 # selectedRepositories lists only repositories the viewer has selected (not every accessible one). first is 1..100; repositoryIds holds at most 100 ids.
 type Query { viewer: Viewer, selectedRepositories(first: Int! = 20, after: ID): RepositoryConnection!, repository(id: ID!): Repository, issues(repositoryIds: [ID!]!, first: Int! = 20, after: ID): IssueConnection! }
+
+type EvidenceActor { id: ID!, login: String!, type: String! }
+type PullRequestEvidence { id: ID!, repositoryId: ID!, number: Int!, title: String!, state: String!, url: String!, createdAt: String!, updatedAt: String!, closedAt: String, mergedAt: String, author: EvidenceActor }
+type ReviewEvidence { id: ID!, repositoryId: ID!, pullRequestId: ID!, state: String!, body: String!, url: String!, submittedAt: String!, author: EvidenceActor }
+type CommentEvidence { id: ID!, repositoryId: ID!, issueNumber: Int!, body: String!, url: String!, createdAt: String!, updatedAt: String!, author: EvidenceActor }
+type PullRequestEvidenceConnection { nodes: [PullRequestEvidence!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
+type ReviewEvidenceConnection { nodes: [ReviewEvidence!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
+type CommentEvidenceConnection { nodes: [CommentEvidence!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
+type ChildResourceStatus { complete: Boolean!, pendingChildren: Int!, lastSuccessAt: String, failureCode: String, nextAttemptAt: String }
+extend type ActivityStatus { pullRequests: ActivityResourceStatus, reviews: ChildResourceStatus, comments: ChildResourceStatus }
+extend type Query { pullRequestEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): PullRequestEvidenceConnection!, reviewEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): ReviewEvidenceConnection!, commentEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): CommentEvidenceConnection! }
+
+type ReleaseEvidence { id: ID!, repositoryId: ID!, name: String!, tagName: String!, body: String!, url: String!, createdAt: String!, updatedAt: String, publishedAt: String!, observedAt: String!, prerelease: Boolean!, author: EvidenceActor }
+type IssueEventEvidence { id: ID!, repositoryId: ID!, issueId: ID!, issueNumber: Int!, event: String!, url: String!, createdAt: String!, observedAt: String!, actor: EvidenceActor, assignee: EvidenceActor, label: String }
+type ReleaseEvidenceConnection { nodes: [ReleaseEvidence!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
+type IssueEventEvidenceConnection { nodes: [IssueEventEvidence!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
+type IssueEventStatus { traversal: ActivityResourceStatus, historicalGap: Boolean! }
+extend type ActivityStatus { releases: ActivityResourceStatus, issueEvents: IssueEventStatus }
+extend type Query { releaseEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): ReleaseEvidenceConnection!, issueEventEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): IssueEventEvidenceConnection! }
+
+extend type ActivityStatus { archived: Boolean! }

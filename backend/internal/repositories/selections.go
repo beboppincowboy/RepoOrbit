@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 )
@@ -61,6 +62,11 @@ func (s *Service) storeSelection(ctx context.Context, userID int64, repo githuba
 		}
 		if err := q.UpsertSelection(ctx, db.UpsertSelectionParams{UserID: userID, RepositoryID: repo.ID, Source: source, SelectedAt: pgtype.Timestamptz{Time: s.now(), Valid: true}}); err != nil {
 			return err
+		}
+		if repo.Private {
+			if err := accessfence.BumpAccess(ctx, tx, accessfence.ScopeRepository, repo.ID); err != nil {
+				return err
+			}
 		}
 		if s.OnSelect != nil {
 			if err := s.OnSelect(ctx, tx, repo.ID); err != nil {

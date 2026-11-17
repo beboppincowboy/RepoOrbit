@@ -10,6 +10,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
+	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
 
@@ -54,3 +55,40 @@ func TestAttachMetadataStatus(t *testing.T) {
 		t.Fatalf("%v %+v", err, nodes[0].MetadataStatus)
 	}
 }
+
+func TestEvidenceCoverageRequiresParentsAndChildren(t *testing.T) {
+	ctx := context.Background()
+	_, pool := testutil.Database(t)
+	_, err := pool.Exec(ctx, `INSERT INTO repositories (id,name,description) VALUES (10,'o/a','');
+ INSERT INTO activity_resources(repository_id,resource,boundary,phase,watermark) VALUES (10,'issues',now(),'current',now()),(10,'pull_requests',now(),'catchup',NULL);
+ INSERT INTO activity_children(repository_id,resource,parent_id,parent_number,complete,last_error_code,last_success_at) VALUES (10,'reviews',100,1,false,'rate_limited',now());`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &Resolver{Queries: db.New(pool), RepoAccess: &repositories.Service{Pool: pool}}
+	a := &model.ActivityStatus{Issues: &model.ActivityResourceStatus{Phase: "current", CatchupThrough: ptr("now")}}
+	if err = r.attachEvidenceStatus(ctx, 10, a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Reviews.Complete || a.Comments.Complete || a.Reviews.PendingChildren != 1 || a.Reviews.FailureCode == nil || *a.Reviews.FailureCode != "rate_limited" || a.Reviews.LastSuccessAt == nil {
+		t.Fatalf("incomplete %+v", a)
+	}
+	_, err = pool.Exec(ctx, `UPDATE activity_resources SET phase='current',watermark=now() WHERE resource='pull_requests'; UPDATE activity_children SET complete=true WHERE repository_id=10`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = r.attachEvidenceStatus(ctx, 10, a); err != nil {
+		t.Fatal(err)
+	}
+	if !a.Reviews.Complete || !a.Comments.Complete || a.Reviews.FailureCode == nil {
+		t.Fatalf("completed evidence should retain later error: %+v", a)
+	}
+	a.Issues.Phase = "catchup"
+	if err = r.attachEvidenceStatus(ctx, 10, a); err != nil {
+		t.Fatal(err)
+	}
+	if !a.Reviews.Complete || a.Comments.Complete {
+		t.Fatalf("independent coverage: %+v", a)
+	}
+}
+func ptr(s string) *string { return &s }

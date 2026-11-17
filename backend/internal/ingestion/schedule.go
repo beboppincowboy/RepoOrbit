@@ -4,6 +4,7 @@ package ingestion
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -14,6 +15,24 @@ import (
 )
 
 func repoKey(repoID int64) string { return fmt.Sprintf("repo:%d", repoID) }
+
+func childKey(repoID, parentID int64) string {
+	return fmt.Sprintf("repo:%d:parent:%d", repoID, parentID)
+}
+
+// registerChild commits discovered history work with the parent page checkpoint.
+func registerChild(ctx context.Context, tx pgx.Tx, repoID int64, resource string, parentID, number int64, now time.Time) error {
+	kind := jobs.KindActivityComments
+	if resource == "reviews" {
+		kind = jobs.KindActivityReviews
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO activity_children(repository_id,resource,parent_id,parent_number) VALUES($1,$2,$3,$4)
+		ON CONFLICT(repository_id,resource,parent_id) DO UPDATE SET parent_number=EXCLUDED.parent_number, cursor='', complete=false, generation=activity_children.generation+1, scan_started_at=NULL, previous_scan=NULL, current_scan='{}'`, repoID, resource, parentID, number)
+	if err != nil {
+		return err
+	}
+	return jobs.Enqueue(ctx, tx, kind, childKey(repoID, parentID), now)
+}
 
 // RequestMetadataRefresh enqueues a metadata refresh for repoID inside tx, only when the repository
 // has at least one active, follow-eligible selection (ordinary events never import
@@ -29,6 +48,34 @@ func RequestMetadataRefresh(ctx context.Context, tx pgx.Tx, repoID int64) (bool,
 		return false, err
 	}
 	return true, nil
+}
+
+// RequestActivity schedules issue backfill alongside the eligible selection.
+func RequestActivity(ctx context.Context, tx pgx.Tx, repoID int64, now time.Time) error {
+	ok, err := db.New(tx).HasEligibleSelection(ctx, repoID)
+	if err != nil || !ok {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO activity_resources (repository_id, resource, boundary) VALUES ($1, 'issues', $2) ON CONFLICT DO NOTHING`, repoID, now.Add(-90*24*time.Hour)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO activity_resources (repository_id, resource, boundary) SELECT $1, 'pull_requests', boundary FROM activity_resources WHERE repository_id=$1 AND resource='issues' ON CONFLICT DO NOTHING`, repoID); err != nil {
+		return err
+	}
+	for _, resource := range []string{"releases", "issue_events"} {
+		if _, err := tx.Exec(ctx, `INSERT INTO activity_resources (repository_id, resource, boundary) SELECT $1, $2, boundary FROM activity_resources WHERE repository_id=$1 AND resource='issues' ON CONFLICT DO NOTHING`, repoID, resource); err != nil {
+			return err
+		}
+	}
+	for _, kind := range eventStreamKinds {
+		if err := jobs.Enqueue(ctx, tx, kind, repoKey(repoID), now); err != nil {
+			return err
+		}
+	}
+	if err := jobs.Enqueue(ctx, tx, jobs.KindActivityIssues, repoKey(repoID), now); err != nil {
+		return err
+	}
+	return jobs.Enqueue(ctx, tx, jobs.KindActivityPullRequests, repoKey(repoID), now)
 }
 
 // ReconcileSelections schedules a refresh for every repository with an eligible active selection,
@@ -52,8 +99,80 @@ func ReconcileSelections(ctx context.Context, pool *pgxpool.Pool) (int, error) {
 			return 0, err
 		}
 		if ok {
+			if err := RequestActivity(ctx, tx, id, time.Now()); err != nil {
+				return 0, err
+			}
 			n++
 		}
 	}
 	return n, tx.Commit(ctx)
 }
+
+// ActivityOutcome reports what SignalActivity did for one repository.
+type ActivityOutcome string
+
+const (
+	ActivityAccepted   ActivityOutcome = "accepted"   // new activity work was queued
+	ActivityCoalesced  ActivityOutcome = "coalesced"  // work was already queued or running; intent is retained by the queue
+	ActivityDead       ActivityOutcome = "dead"       // a stream is dead; only an operator requeue revives it
+	ActivityIneligible ActivityOutcome = "ineligible" // no eligible selection: nothing is scheduled
+)
+
+var activityParentKinds = []jobs.Kind{jobs.KindActivityIssues, jobs.KindActivityPullRequests, jobs.KindActivityReleases, jobs.KindActivityIssueEvents}
+
+// SignalActivity is the single reconciliation entry point for webhooks, polling and the Refresh action. It
+// reopens every caught-up stream for another catch-up scan from the retained boundary (a stream still
+// backfilling or catching up already rescans, so it is left alone) and enqueues the stream jobs. It never
+// revives dead work and never moves a deferred or paused job's run time earlier, so throttling holds.
+func SignalActivity(ctx context.Context, tx pgx.Tx, repoID int64, now time.Time) (ActivityOutcome, error) {
+	ok, err := db.New(tx).HasEligibleSelection(ctx, repoID)
+	if err != nil || !ok {
+		return ActivityIneligible, err
+	}
+	var busy, dead int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE state IN ('queued','running')), count(*) FILTER (WHERE state='dead') FROM jobs WHERE key=$1 AND kind = ANY($2)`, repoKey(repoID), activityParentKinds).Scan(&busy, &dead); err != nil {
+		return "", err
+	}
+	// A dead stream is skipped, not a reason to stop the others from reconciling.
+	if _, err = tx.Exec(ctx, `UPDATE activity_resources r SET phase='catchup',page=1,cursor='',scan_started_at=NULL,current_scan='{}',previous_scan=NULL,generation=generation+1 WHERE repository_id=$1 AND phase='current' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.key=$2 AND j.kind='activity_'||r.resource AND j.state='dead')`, repoID, repoKey(repoID)); err != nil {
+		return "", err
+	}
+	if err = RequestActivity(ctx, tx, repoID, now); err != nil {
+		return "", err
+	}
+	if dead > 0 {
+		return ActivityDead, nil
+	}
+	if busy > 0 {
+		return ActivityCoalesced, nil
+	}
+	return ActivityAccepted, nil
+}
+
+// activityFailureCode maps a job error to the safe code stored in last_error_code. ok is false for a lost claim or an
+// internal "continue" deferral, which are not failures. Unknown reasons are recorded as CodeUpstream.
+func activityFailureCode(result error) (code string, ok bool) {
+	if result == nil || errors.Is(result, jobs.ErrLostClaim) {
+		return "", false
+	}
+	code = CodeUpstream
+	var deferred *jobs.Defer
+	var paused *jobs.Pause
+	if errors.As(result, &deferred) {
+		if deferred.Reason == "continue" {
+			return "", false
+		}
+		code = deferred.Reason
+	}
+	if errors.As(result, &paused) {
+		code = paused.Reason
+	}
+	switch code {
+	case CodeNoCredential, CodeRateLimited, CodeUnverified, CodeAccessMoved, CodeUpstream:
+		return code, true
+	}
+	return CodeUpstream, true
+}
+
+// eventStreamKinds are the streams added after issues and pull requests.
+var eventStreamKinds = []jobs.Kind{jobs.KindActivityReleases, jobs.KindActivityIssueEvents}

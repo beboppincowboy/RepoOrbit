@@ -46,9 +46,60 @@ type DirectiveRoot struct {
 }
 
 type ComplexityRoot struct {
+	ActivityResourceStatus struct {
+		Boundary       func(childComplexity int) int
+		CatchupThrough func(childComplexity int) int
+		FailureCode    func(childComplexity int) int
+		JobState       func(childComplexity int) int
+		LastSuccessAt  func(childComplexity int) int
+		NextAttemptAt  func(childComplexity int) int
+		Phase          func(childComplexity int) int
+	}
+
 	ActivityStatus struct {
-		Message      func(childComplexity int) int
-		Synchronized func(childComplexity int) int
+		Archived        func(childComplexity int) int
+		Comments        func(childComplexity int) int
+		FutureResources func(childComplexity int) int
+		IssueEvents     func(childComplexity int) int
+		Issues          func(childComplexity int) int
+		Message         func(childComplexity int) int
+		PullRequests    func(childComplexity int) int
+		Releases        func(childComplexity int) int
+		Reviews         func(childComplexity int) int
+		Synchronized    func(childComplexity int) int
+	}
+
+	ChildResourceStatus struct {
+		Complete        func(childComplexity int) int
+		FailureCode     func(childComplexity int) int
+		LastSuccessAt   func(childComplexity int) int
+		NextAttemptAt   func(childComplexity int) int
+		PendingChildren func(childComplexity int) int
+	}
+
+	CommentEvidence struct {
+		Author       func(childComplexity int) int
+		Body         func(childComplexity int) int
+		CreatedAt    func(childComplexity int) int
+		ID           func(childComplexity int) int
+		IssueNumber  func(childComplexity int) int
+		RepositoryID func(childComplexity int) int
+		URL          func(childComplexity int) int
+		UpdatedAt    func(childComplexity int) int
+	}
+
+	CommentEvidenceConnection struct {
+		EndCursor   func(childComplexity int) int
+		HasNextPage func(childComplexity int) int
+		Nodes       func(childComplexity int) int
+		RetryAt     func(childComplexity int) int
+		Withheld    func(childComplexity int) int
+	}
+
+	EvidenceActor struct {
+		ID    func(childComplexity int) int
+		Login func(childComplexity int) int
+		Type  func(childComplexity int) int
 	}
 
 	Issue struct {
@@ -66,6 +117,33 @@ type ComplexityRoot struct {
 		Withheld    func(childComplexity int) int
 	}
 
+	IssueEventEvidence struct {
+		Actor        func(childComplexity int) int
+		Assignee     func(childComplexity int) int
+		CreatedAt    func(childComplexity int) int
+		Event        func(childComplexity int) int
+		ID           func(childComplexity int) int
+		IssueID      func(childComplexity int) int
+		IssueNumber  func(childComplexity int) int
+		Label        func(childComplexity int) int
+		ObservedAt   func(childComplexity int) int
+		RepositoryID func(childComplexity int) int
+		URL          func(childComplexity int) int
+	}
+
+	IssueEventEvidenceConnection struct {
+		EndCursor   func(childComplexity int) int
+		HasNextPage func(childComplexity int) int
+		Nodes       func(childComplexity int) int
+		RetryAt     func(childComplexity int) int
+		Withheld    func(childComplexity int) int
+	}
+
+	IssueEventStatus struct {
+		HistoricalGap func(childComplexity int) int
+		Traversal     func(childComplexity int) int
+	}
+
 	MetadataStatus struct {
 		FailureCode     func(childComplexity int) int
 		FollowSuspended func(childComplexity int) int
@@ -75,11 +153,61 @@ type ComplexityRoot struct {
 		State           func(childComplexity int) int
 	}
 
+	PullRequestEvidence struct {
+		Author       func(childComplexity int) int
+		ClosedAt     func(childComplexity int) int
+		CreatedAt    func(childComplexity int) int
+		ID           func(childComplexity int) int
+		MergedAt     func(childComplexity int) int
+		Number       func(childComplexity int) int
+		RepositoryID func(childComplexity int) int
+		State        func(childComplexity int) int
+		Title        func(childComplexity int) int
+		URL          func(childComplexity int) int
+		UpdatedAt    func(childComplexity int) int
+	}
+
+	PullRequestEvidenceConnection struct {
+		EndCursor   func(childComplexity int) int
+		HasNextPage func(childComplexity int) int
+		Nodes       func(childComplexity int) int
+		RetryAt     func(childComplexity int) int
+		Withheld    func(childComplexity int) int
+	}
+
 	Query struct {
+		CommentEvidence      func(childComplexity int, repositoryIds []string, first int, after *string) int
+		IssueEventEvidence   func(childComplexity int, repositoryIds []string, first int, after *string) int
 		Issues               func(childComplexity int, repositoryIds []string, first int, after *string) int
+		PullRequestEvidence  func(childComplexity int, repositoryIds []string, first int, after *string) int
+		ReleaseEvidence      func(childComplexity int, repositoryIds []string, first int, after *string) int
 		Repository           func(childComplexity int, id string) int
+		ReviewEvidence       func(childComplexity int, repositoryIds []string, first int, after *string) int
 		SelectedRepositories func(childComplexity int, first int, after *string) int
 		Viewer               func(childComplexity int) int
+	}
+
+	ReleaseEvidence struct {
+		Author       func(childComplexity int) int
+		Body         func(childComplexity int) int
+		CreatedAt    func(childComplexity int) int
+		ID           func(childComplexity int) int
+		Name         func(childComplexity int) int
+		ObservedAt   func(childComplexity int) int
+		Prerelease   func(childComplexity int) int
+		PublishedAt  func(childComplexity int) int
+		RepositoryID func(childComplexity int) int
+		TagName      func(childComplexity int) int
+		URL          func(childComplexity int) int
+		UpdatedAt    func(childComplexity int) int
+	}
+
+	ReleaseEvidenceConnection struct {
+		EndCursor   func(childComplexity int) int
+		HasNextPage func(childComplexity int) int
+		Nodes       func(childComplexity int) int
+		RetryAt     func(childComplexity int) int
+		Withheld    func(childComplexity int) int
 	}
 
 	Repository struct {
@@ -101,6 +229,25 @@ type ComplexityRoot struct {
 		Withheld    func(childComplexity int) int
 	}
 
+	ReviewEvidence struct {
+		Author        func(childComplexity int) int
+		Body          func(childComplexity int) int
+		ID            func(childComplexity int) int
+		PullRequestID func(childComplexity int) int
+		RepositoryID  func(childComplexity int) int
+		State         func(childComplexity int) int
+		SubmittedAt   func(childComplexity int) int
+		URL           func(childComplexity int) int
+	}
+
+	ReviewEvidenceConnection struct {
+		EndCursor   func(childComplexity int) int
+		HasNextPage func(childComplexity int) int
+		Nodes       func(childComplexity int) int
+		RetryAt     func(childComplexity int) int
+		Withheld    func(childComplexity int) int
+	}
+
 	Viewer struct {
 		Demo  func(childComplexity int) int
 		Login func(childComplexity int) int
@@ -112,6 +259,11 @@ type QueryResolver interface {
 	SelectedRepositories(ctx context.Context, first int, after *string) (*model.RepositoryConnection, error)
 	Repository(ctx context.Context, id string) (*model.Repository, error)
 	Issues(ctx context.Context, repositoryIds []string, first int, after *string) (*model.IssueConnection, error)
+	PullRequestEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.PullRequestEvidenceConnection, error)
+	ReviewEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.ReviewEvidenceConnection, error)
+	CommentEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.CommentEvidenceConnection, error)
+	ReleaseEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.ReleaseEvidenceConnection, error)
+	IssueEventEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.IssueEventEvidenceConnection, error)
 }
 
 type executableSchema struct {
@@ -133,6 +285,90 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 	_ = ec
 	switch typeName + "." + field {
 
+	case "ActivityResourceStatus.boundary":
+		if e.complexity.ActivityResourceStatus.Boundary == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.Boundary(childComplexity), true
+
+	case "ActivityResourceStatus.catchupThrough":
+		if e.complexity.ActivityResourceStatus.CatchupThrough == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.CatchupThrough(childComplexity), true
+
+	case "ActivityResourceStatus.failureCode":
+		if e.complexity.ActivityResourceStatus.FailureCode == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.FailureCode(childComplexity), true
+
+	case "ActivityResourceStatus.jobState":
+		if e.complexity.ActivityResourceStatus.JobState == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.JobState(childComplexity), true
+
+	case "ActivityResourceStatus.lastSuccessAt":
+		if e.complexity.ActivityResourceStatus.LastSuccessAt == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.LastSuccessAt(childComplexity), true
+
+	case "ActivityResourceStatus.nextAttemptAt":
+		if e.complexity.ActivityResourceStatus.NextAttemptAt == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.NextAttemptAt(childComplexity), true
+
+	case "ActivityResourceStatus.phase":
+		if e.complexity.ActivityResourceStatus.Phase == nil {
+			break
+		}
+
+		return e.complexity.ActivityResourceStatus.Phase(childComplexity), true
+
+	case "ActivityStatus.archived":
+		if e.complexity.ActivityStatus.Archived == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.Archived(childComplexity), true
+
+	case "ActivityStatus.comments":
+		if e.complexity.ActivityStatus.Comments == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.Comments(childComplexity), true
+
+	case "ActivityStatus.futureResources":
+		if e.complexity.ActivityStatus.FutureResources == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.FutureResources(childComplexity), true
+
+	case "ActivityStatus.issueEvents":
+		if e.complexity.ActivityStatus.IssueEvents == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.IssueEvents(childComplexity), true
+
+	case "ActivityStatus.issues":
+		if e.complexity.ActivityStatus.Issues == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.Issues(childComplexity), true
+
 	case "ActivityStatus.message":
 		if e.complexity.ActivityStatus.Message == nil {
 			break
@@ -140,12 +376,180 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.ActivityStatus.Message(childComplexity), true
 
+	case "ActivityStatus.pullRequests":
+		if e.complexity.ActivityStatus.PullRequests == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.PullRequests(childComplexity), true
+
+	case "ActivityStatus.releases":
+		if e.complexity.ActivityStatus.Releases == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.Releases(childComplexity), true
+
+	case "ActivityStatus.reviews":
+		if e.complexity.ActivityStatus.Reviews == nil {
+			break
+		}
+
+		return e.complexity.ActivityStatus.Reviews(childComplexity), true
+
 	case "ActivityStatus.synchronized":
 		if e.complexity.ActivityStatus.Synchronized == nil {
 			break
 		}
 
 		return e.complexity.ActivityStatus.Synchronized(childComplexity), true
+
+	case "ChildResourceStatus.complete":
+		if e.complexity.ChildResourceStatus.Complete == nil {
+			break
+		}
+
+		return e.complexity.ChildResourceStatus.Complete(childComplexity), true
+
+	case "ChildResourceStatus.failureCode":
+		if e.complexity.ChildResourceStatus.FailureCode == nil {
+			break
+		}
+
+		return e.complexity.ChildResourceStatus.FailureCode(childComplexity), true
+
+	case "ChildResourceStatus.lastSuccessAt":
+		if e.complexity.ChildResourceStatus.LastSuccessAt == nil {
+			break
+		}
+
+		return e.complexity.ChildResourceStatus.LastSuccessAt(childComplexity), true
+
+	case "ChildResourceStatus.nextAttemptAt":
+		if e.complexity.ChildResourceStatus.NextAttemptAt == nil {
+			break
+		}
+
+		return e.complexity.ChildResourceStatus.NextAttemptAt(childComplexity), true
+
+	case "ChildResourceStatus.pendingChildren":
+		if e.complexity.ChildResourceStatus.PendingChildren == nil {
+			break
+		}
+
+		return e.complexity.ChildResourceStatus.PendingChildren(childComplexity), true
+
+	case "CommentEvidence.author":
+		if e.complexity.CommentEvidence.Author == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidence.Author(childComplexity), true
+
+	case "CommentEvidence.body":
+		if e.complexity.CommentEvidence.Body == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidence.Body(childComplexity), true
+
+	case "CommentEvidence.createdAt":
+		if e.complexity.CommentEvidence.CreatedAt == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidence.CreatedAt(childComplexity), true
+
+	case "CommentEvidence.id":
+		if e.complexity.CommentEvidence.ID == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidence.ID(childComplexity), true
+
+	case "CommentEvidence.issueNumber":
+		if e.complexity.CommentEvidence.IssueNumber == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidence.IssueNumber(childComplexity), true
+
+	case "CommentEvidence.repositoryId":
+		if e.complexity.CommentEvidence.RepositoryID == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidence.RepositoryID(childComplexity), true
+
+	case "CommentEvidence.url":
+		if e.complexity.CommentEvidence.URL == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidence.URL(childComplexity), true
+
+	case "CommentEvidence.updatedAt":
+		if e.complexity.CommentEvidence.UpdatedAt == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidence.UpdatedAt(childComplexity), true
+
+	case "CommentEvidenceConnection.endCursor":
+		if e.complexity.CommentEvidenceConnection.EndCursor == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidenceConnection.EndCursor(childComplexity), true
+
+	case "CommentEvidenceConnection.hasNextPage":
+		if e.complexity.CommentEvidenceConnection.HasNextPage == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidenceConnection.HasNextPage(childComplexity), true
+
+	case "CommentEvidenceConnection.nodes":
+		if e.complexity.CommentEvidenceConnection.Nodes == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidenceConnection.Nodes(childComplexity), true
+
+	case "CommentEvidenceConnection.retryAt":
+		if e.complexity.CommentEvidenceConnection.RetryAt == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidenceConnection.RetryAt(childComplexity), true
+
+	case "CommentEvidenceConnection.withheld":
+		if e.complexity.CommentEvidenceConnection.Withheld == nil {
+			break
+		}
+
+		return e.complexity.CommentEvidenceConnection.Withheld(childComplexity), true
+
+	case "EvidenceActor.id":
+		if e.complexity.EvidenceActor.ID == nil {
+			break
+		}
+
+		return e.complexity.EvidenceActor.ID(childComplexity), true
+
+	case "EvidenceActor.login":
+		if e.complexity.EvidenceActor.Login == nil {
+			break
+		}
+
+		return e.complexity.EvidenceActor.Login(childComplexity), true
+
+	case "EvidenceActor.type":
+		if e.complexity.EvidenceActor.Type == nil {
+			break
+		}
+
+		return e.complexity.EvidenceActor.Type(childComplexity), true
 
 	case "Issue.id":
 		if e.complexity.Issue.ID == nil {
@@ -210,6 +614,132 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.IssueConnection.Withheld(childComplexity), true
 
+	case "IssueEventEvidence.actor":
+		if e.complexity.IssueEventEvidence.Actor == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidence.Actor(childComplexity), true
+
+	case "IssueEventEvidence.assignee":
+		if e.complexity.IssueEventEvidence.Assignee == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidence.Assignee(childComplexity), true
+
+	case "IssueEventEvidence.createdAt":
+		if e.complexity.IssueEventEvidence.CreatedAt == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidence.CreatedAt(childComplexity), true
+
+	case "IssueEventEvidence.event":
+		if e.complexity.IssueEventEvidence.Event == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidence.Event(childComplexity), true
+
+	case "IssueEventEvidence.id":
+		if e.complexity.IssueEventEvidence.ID == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidence.ID(childComplexity), true
+
+	case "IssueEventEvidence.issueId":
+		if e.complexity.IssueEventEvidence.IssueID == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidence.IssueID(childComplexity), true
+
+	case "IssueEventEvidence.issueNumber":
+		if e.complexity.IssueEventEvidence.IssueNumber == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidence.IssueNumber(childComplexity), true
+
+	case "IssueEventEvidence.label":
+		if e.complexity.IssueEventEvidence.Label == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidence.Label(childComplexity), true
+
+	case "IssueEventEvidence.observedAt":
+		if e.complexity.IssueEventEvidence.ObservedAt == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidence.ObservedAt(childComplexity), true
+
+	case "IssueEventEvidence.repositoryId":
+		if e.complexity.IssueEventEvidence.RepositoryID == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidence.RepositoryID(childComplexity), true
+
+	case "IssueEventEvidence.url":
+		if e.complexity.IssueEventEvidence.URL == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidence.URL(childComplexity), true
+
+	case "IssueEventEvidenceConnection.endCursor":
+		if e.complexity.IssueEventEvidenceConnection.EndCursor == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidenceConnection.EndCursor(childComplexity), true
+
+	case "IssueEventEvidenceConnection.hasNextPage":
+		if e.complexity.IssueEventEvidenceConnection.HasNextPage == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidenceConnection.HasNextPage(childComplexity), true
+
+	case "IssueEventEvidenceConnection.nodes":
+		if e.complexity.IssueEventEvidenceConnection.Nodes == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidenceConnection.Nodes(childComplexity), true
+
+	case "IssueEventEvidenceConnection.retryAt":
+		if e.complexity.IssueEventEvidenceConnection.RetryAt == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidenceConnection.RetryAt(childComplexity), true
+
+	case "IssueEventEvidenceConnection.withheld":
+		if e.complexity.IssueEventEvidenceConnection.Withheld == nil {
+			break
+		}
+
+		return e.complexity.IssueEventEvidenceConnection.Withheld(childComplexity), true
+
+	case "IssueEventStatus.historicalGap":
+		if e.complexity.IssueEventStatus.HistoricalGap == nil {
+			break
+		}
+
+		return e.complexity.IssueEventStatus.HistoricalGap(childComplexity), true
+
+	case "IssueEventStatus.traversal":
+		if e.complexity.IssueEventStatus.Traversal == nil {
+			break
+		}
+
+		return e.complexity.IssueEventStatus.Traversal(childComplexity), true
+
 	case "MetadataStatus.failureCode":
 		if e.complexity.MetadataStatus.FailureCode == nil {
 			break
@@ -252,6 +782,142 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.MetadataStatus.State(childComplexity), true
 
+	case "PullRequestEvidence.author":
+		if e.complexity.PullRequestEvidence.Author == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.Author(childComplexity), true
+
+	case "PullRequestEvidence.closedAt":
+		if e.complexity.PullRequestEvidence.ClosedAt == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.ClosedAt(childComplexity), true
+
+	case "PullRequestEvidence.createdAt":
+		if e.complexity.PullRequestEvidence.CreatedAt == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.CreatedAt(childComplexity), true
+
+	case "PullRequestEvidence.id":
+		if e.complexity.PullRequestEvidence.ID == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.ID(childComplexity), true
+
+	case "PullRequestEvidence.mergedAt":
+		if e.complexity.PullRequestEvidence.MergedAt == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.MergedAt(childComplexity), true
+
+	case "PullRequestEvidence.number":
+		if e.complexity.PullRequestEvidence.Number == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.Number(childComplexity), true
+
+	case "PullRequestEvidence.repositoryId":
+		if e.complexity.PullRequestEvidence.RepositoryID == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.RepositoryID(childComplexity), true
+
+	case "PullRequestEvidence.state":
+		if e.complexity.PullRequestEvidence.State == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.State(childComplexity), true
+
+	case "PullRequestEvidence.title":
+		if e.complexity.PullRequestEvidence.Title == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.Title(childComplexity), true
+
+	case "PullRequestEvidence.url":
+		if e.complexity.PullRequestEvidence.URL == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.URL(childComplexity), true
+
+	case "PullRequestEvidence.updatedAt":
+		if e.complexity.PullRequestEvidence.UpdatedAt == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.UpdatedAt(childComplexity), true
+
+	case "PullRequestEvidenceConnection.endCursor":
+		if e.complexity.PullRequestEvidenceConnection.EndCursor == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidenceConnection.EndCursor(childComplexity), true
+
+	case "PullRequestEvidenceConnection.hasNextPage":
+		if e.complexity.PullRequestEvidenceConnection.HasNextPage == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidenceConnection.HasNextPage(childComplexity), true
+
+	case "PullRequestEvidenceConnection.nodes":
+		if e.complexity.PullRequestEvidenceConnection.Nodes == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidenceConnection.Nodes(childComplexity), true
+
+	case "PullRequestEvidenceConnection.retryAt":
+		if e.complexity.PullRequestEvidenceConnection.RetryAt == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidenceConnection.RetryAt(childComplexity), true
+
+	case "PullRequestEvidenceConnection.withheld":
+		if e.complexity.PullRequestEvidenceConnection.Withheld == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidenceConnection.Withheld(childComplexity), true
+
+	case "Query.commentEvidence":
+		if e.complexity.Query.CommentEvidence == nil {
+			break
+		}
+
+		args, err := ec.field_Query_commentEvidence_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.CommentEvidence(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string)), true
+
+	case "Query.issueEventEvidence":
+		if e.complexity.Query.IssueEventEvidence == nil {
+			break
+		}
+
+		args, err := ec.field_Query_issueEventEvidence_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.IssueEventEvidence(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string)), true
+
 	case "Query.issues":
 		if e.complexity.Query.Issues == nil {
 			break
@@ -264,6 +930,30 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.Query.Issues(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string)), true
 
+	case "Query.pullRequestEvidence":
+		if e.complexity.Query.PullRequestEvidence == nil {
+			break
+		}
+
+		args, err := ec.field_Query_pullRequestEvidence_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.PullRequestEvidence(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string)), true
+
+	case "Query.releaseEvidence":
+		if e.complexity.Query.ReleaseEvidence == nil {
+			break
+		}
+
+		args, err := ec.field_Query_releaseEvidence_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.ReleaseEvidence(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string)), true
+
 	case "Query.repository":
 		if e.complexity.Query.Repository == nil {
 			break
@@ -275,6 +965,18 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Query.Repository(childComplexity, args["id"].(string)), true
+
+	case "Query.reviewEvidence":
+		if e.complexity.Query.ReviewEvidence == nil {
+			break
+		}
+
+		args, err := ec.field_Query_reviewEvidence_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.ReviewEvidence(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string)), true
 
 	case "Query.selectedRepositories":
 		if e.complexity.Query.SelectedRepositories == nil {
@@ -294,6 +996,125 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Query.Viewer(childComplexity), true
+
+	case "ReleaseEvidence.author":
+		if e.complexity.ReleaseEvidence.Author == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.Author(childComplexity), true
+
+	case "ReleaseEvidence.body":
+		if e.complexity.ReleaseEvidence.Body == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.Body(childComplexity), true
+
+	case "ReleaseEvidence.createdAt":
+		if e.complexity.ReleaseEvidence.CreatedAt == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.CreatedAt(childComplexity), true
+
+	case "ReleaseEvidence.id":
+		if e.complexity.ReleaseEvidence.ID == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.ID(childComplexity), true
+
+	case "ReleaseEvidence.name":
+		if e.complexity.ReleaseEvidence.Name == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.Name(childComplexity), true
+
+	case "ReleaseEvidence.observedAt":
+		if e.complexity.ReleaseEvidence.ObservedAt == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.ObservedAt(childComplexity), true
+
+	case "ReleaseEvidence.prerelease":
+		if e.complexity.ReleaseEvidence.Prerelease == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.Prerelease(childComplexity), true
+
+	case "ReleaseEvidence.publishedAt":
+		if e.complexity.ReleaseEvidence.PublishedAt == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.PublishedAt(childComplexity), true
+
+	case "ReleaseEvidence.repositoryId":
+		if e.complexity.ReleaseEvidence.RepositoryID == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.RepositoryID(childComplexity), true
+
+	case "ReleaseEvidence.tagName":
+		if e.complexity.ReleaseEvidence.TagName == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.TagName(childComplexity), true
+
+	case "ReleaseEvidence.url":
+		if e.complexity.ReleaseEvidence.URL == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.URL(childComplexity), true
+
+	case "ReleaseEvidence.updatedAt":
+		if e.complexity.ReleaseEvidence.UpdatedAt == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidence.UpdatedAt(childComplexity), true
+
+	case "ReleaseEvidenceConnection.endCursor":
+		if e.complexity.ReleaseEvidenceConnection.EndCursor == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidenceConnection.EndCursor(childComplexity), true
+
+	case "ReleaseEvidenceConnection.hasNextPage":
+		if e.complexity.ReleaseEvidenceConnection.HasNextPage == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidenceConnection.HasNextPage(childComplexity), true
+
+	case "ReleaseEvidenceConnection.nodes":
+		if e.complexity.ReleaseEvidenceConnection.Nodes == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidenceConnection.Nodes(childComplexity), true
+
+	case "ReleaseEvidenceConnection.retryAt":
+		if e.complexity.ReleaseEvidenceConnection.RetryAt == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidenceConnection.RetryAt(childComplexity), true
+
+	case "ReleaseEvidenceConnection.withheld":
+		if e.complexity.ReleaseEvidenceConnection.Withheld == nil {
+			break
+		}
+
+		return e.complexity.ReleaseEvidenceConnection.Withheld(childComplexity), true
 
 	case "Repository.activity":
 		if e.complexity.Repository.Activity == nil {
@@ -385,6 +1206,97 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.RepositoryConnection.Withheld(childComplexity), true
+
+	case "ReviewEvidence.author":
+		if e.complexity.ReviewEvidence.Author == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidence.Author(childComplexity), true
+
+	case "ReviewEvidence.body":
+		if e.complexity.ReviewEvidence.Body == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidence.Body(childComplexity), true
+
+	case "ReviewEvidence.id":
+		if e.complexity.ReviewEvidence.ID == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidence.ID(childComplexity), true
+
+	case "ReviewEvidence.pullRequestId":
+		if e.complexity.ReviewEvidence.PullRequestID == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidence.PullRequestID(childComplexity), true
+
+	case "ReviewEvidence.repositoryId":
+		if e.complexity.ReviewEvidence.RepositoryID == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidence.RepositoryID(childComplexity), true
+
+	case "ReviewEvidence.state":
+		if e.complexity.ReviewEvidence.State == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidence.State(childComplexity), true
+
+	case "ReviewEvidence.submittedAt":
+		if e.complexity.ReviewEvidence.SubmittedAt == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidence.SubmittedAt(childComplexity), true
+
+	case "ReviewEvidence.url":
+		if e.complexity.ReviewEvidence.URL == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidence.URL(childComplexity), true
+
+	case "ReviewEvidenceConnection.endCursor":
+		if e.complexity.ReviewEvidenceConnection.EndCursor == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidenceConnection.EndCursor(childComplexity), true
+
+	case "ReviewEvidenceConnection.hasNextPage":
+		if e.complexity.ReviewEvidenceConnection.HasNextPage == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidenceConnection.HasNextPage(childComplexity), true
+
+	case "ReviewEvidenceConnection.nodes":
+		if e.complexity.ReviewEvidenceConnection.Nodes == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidenceConnection.Nodes(childComplexity), true
+
+	case "ReviewEvidenceConnection.retryAt":
+		if e.complexity.ReviewEvidenceConnection.RetryAt == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidenceConnection.RetryAt(childComplexity), true
+
+	case "ReviewEvidenceConnection.withheld":
+		if e.complexity.ReviewEvidenceConnection.Withheld == nil {
+			break
+		}
+
+		return e.complexity.ReviewEvidenceConnection.Withheld(childComplexity), true
 
 	case "Viewer.demo":
 		if e.complexity.Viewer.Demo == nil {
@@ -536,6 +1448,154 @@ func (ec *executionContext) field_Query___type_argsName(
 	return zeroVal, nil
 }
 
+func (ec *executionContext) field_Query_commentEvidence_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_commentEvidence_argsRepositoryIds(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["repositoryIds"] = arg0
+	arg1, err := ec.field_Query_commentEvidence_argsFirst(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["first"] = arg1
+	arg2, err := ec.field_Query_commentEvidence_argsAfter(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["after"] = arg2
+	return args, nil
+}
+func (ec *executionContext) field_Query_commentEvidence_argsRepositoryIds(
+	ctx context.Context,
+	rawArgs map[string]any,
+) ([]string, error) {
+	if _, ok := rawArgs["repositoryIds"]; !ok {
+		var zeroVal []string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("repositoryIds"))
+	if tmp, ok := rawArgs["repositoryIds"]; ok {
+		return ec.unmarshalNID2ᚕstringᚄ(ctx, tmp)
+	}
+
+	var zeroVal []string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_commentEvidence_argsFirst(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (int, error) {
+	if _, ok := rawArgs["first"]; !ok {
+		var zeroVal int
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("first"))
+	if tmp, ok := rawArgs["first"]; ok {
+		return ec.unmarshalNInt2int(ctx, tmp)
+	}
+
+	var zeroVal int
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_commentEvidence_argsAfter(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*string, error) {
+	if _, ok := rawArgs["after"]; !ok {
+		var zeroVal *string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("after"))
+	if tmp, ok := rawArgs["after"]; ok {
+		return ec.unmarshalOID2ᚖstring(ctx, tmp)
+	}
+
+	var zeroVal *string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_issueEventEvidence_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_issueEventEvidence_argsRepositoryIds(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["repositoryIds"] = arg0
+	arg1, err := ec.field_Query_issueEventEvidence_argsFirst(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["first"] = arg1
+	arg2, err := ec.field_Query_issueEventEvidence_argsAfter(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["after"] = arg2
+	return args, nil
+}
+func (ec *executionContext) field_Query_issueEventEvidence_argsRepositoryIds(
+	ctx context.Context,
+	rawArgs map[string]any,
+) ([]string, error) {
+	if _, ok := rawArgs["repositoryIds"]; !ok {
+		var zeroVal []string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("repositoryIds"))
+	if tmp, ok := rawArgs["repositoryIds"]; ok {
+		return ec.unmarshalNID2ᚕstringᚄ(ctx, tmp)
+	}
+
+	var zeroVal []string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_issueEventEvidence_argsFirst(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (int, error) {
+	if _, ok := rawArgs["first"]; !ok {
+		var zeroVal int
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("first"))
+	if tmp, ok := rawArgs["first"]; ok {
+		return ec.unmarshalNInt2int(ctx, tmp)
+	}
+
+	var zeroVal int
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_issueEventEvidence_argsAfter(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*string, error) {
+	if _, ok := rawArgs["after"]; !ok {
+		var zeroVal *string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("after"))
+	if tmp, ok := rawArgs["after"]; ok {
+		return ec.unmarshalOID2ᚖstring(ctx, tmp)
+	}
+
+	var zeroVal *string
+	return zeroVal, nil
+}
+
 func (ec *executionContext) field_Query_issues_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
@@ -610,6 +1670,154 @@ func (ec *executionContext) field_Query_issues_argsAfter(
 	return zeroVal, nil
 }
 
+func (ec *executionContext) field_Query_pullRequestEvidence_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_pullRequestEvidence_argsRepositoryIds(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["repositoryIds"] = arg0
+	arg1, err := ec.field_Query_pullRequestEvidence_argsFirst(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["first"] = arg1
+	arg2, err := ec.field_Query_pullRequestEvidence_argsAfter(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["after"] = arg2
+	return args, nil
+}
+func (ec *executionContext) field_Query_pullRequestEvidence_argsRepositoryIds(
+	ctx context.Context,
+	rawArgs map[string]any,
+) ([]string, error) {
+	if _, ok := rawArgs["repositoryIds"]; !ok {
+		var zeroVal []string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("repositoryIds"))
+	if tmp, ok := rawArgs["repositoryIds"]; ok {
+		return ec.unmarshalNID2ᚕstringᚄ(ctx, tmp)
+	}
+
+	var zeroVal []string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_pullRequestEvidence_argsFirst(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (int, error) {
+	if _, ok := rawArgs["first"]; !ok {
+		var zeroVal int
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("first"))
+	if tmp, ok := rawArgs["first"]; ok {
+		return ec.unmarshalNInt2int(ctx, tmp)
+	}
+
+	var zeroVal int
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_pullRequestEvidence_argsAfter(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*string, error) {
+	if _, ok := rawArgs["after"]; !ok {
+		var zeroVal *string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("after"))
+	if tmp, ok := rawArgs["after"]; ok {
+		return ec.unmarshalOID2ᚖstring(ctx, tmp)
+	}
+
+	var zeroVal *string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_releaseEvidence_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_releaseEvidence_argsRepositoryIds(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["repositoryIds"] = arg0
+	arg1, err := ec.field_Query_releaseEvidence_argsFirst(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["first"] = arg1
+	arg2, err := ec.field_Query_releaseEvidence_argsAfter(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["after"] = arg2
+	return args, nil
+}
+func (ec *executionContext) field_Query_releaseEvidence_argsRepositoryIds(
+	ctx context.Context,
+	rawArgs map[string]any,
+) ([]string, error) {
+	if _, ok := rawArgs["repositoryIds"]; !ok {
+		var zeroVal []string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("repositoryIds"))
+	if tmp, ok := rawArgs["repositoryIds"]; ok {
+		return ec.unmarshalNID2ᚕstringᚄ(ctx, tmp)
+	}
+
+	var zeroVal []string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_releaseEvidence_argsFirst(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (int, error) {
+	if _, ok := rawArgs["first"]; !ok {
+		var zeroVal int
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("first"))
+	if tmp, ok := rawArgs["first"]; ok {
+		return ec.unmarshalNInt2int(ctx, tmp)
+	}
+
+	var zeroVal int
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_releaseEvidence_argsAfter(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*string, error) {
+	if _, ok := rawArgs["after"]; !ok {
+		var zeroVal *string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("after"))
+	if tmp, ok := rawArgs["after"]; ok {
+		return ec.unmarshalOID2ᚖstring(ctx, tmp)
+	}
+
+	var zeroVal *string
+	return zeroVal, nil
+}
+
 func (ec *executionContext) field_Query_repository_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
 	var err error
 	args := map[string]any{}
@@ -635,6 +1843,80 @@ func (ec *executionContext) field_Query_repository_argsID(
 	}
 
 	var zeroVal string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_reviewEvidence_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_reviewEvidence_argsRepositoryIds(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["repositoryIds"] = arg0
+	arg1, err := ec.field_Query_reviewEvidence_argsFirst(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["first"] = arg1
+	arg2, err := ec.field_Query_reviewEvidence_argsAfter(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["after"] = arg2
+	return args, nil
+}
+func (ec *executionContext) field_Query_reviewEvidence_argsRepositoryIds(
+	ctx context.Context,
+	rawArgs map[string]any,
+) ([]string, error) {
+	if _, ok := rawArgs["repositoryIds"]; !ok {
+		var zeroVal []string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("repositoryIds"))
+	if tmp, ok := rawArgs["repositoryIds"]; ok {
+		return ec.unmarshalNID2ᚕstringᚄ(ctx, tmp)
+	}
+
+	var zeroVal []string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_reviewEvidence_argsFirst(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (int, error) {
+	if _, ok := rawArgs["first"]; !ok {
+		var zeroVal int
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("first"))
+	if tmp, ok := rawArgs["first"]; ok {
+		return ec.unmarshalNInt2int(ctx, tmp)
+	}
+
+	var zeroVal int
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_reviewEvidence_argsAfter(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*string, error) {
+	if _, ok := rawArgs["after"]; !ok {
+		var zeroVal *string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("after"))
+	if tmp, ok := rawArgs["after"]; ok {
+		return ec.unmarshalOID2ᚖstring(ctx, tmp)
+	}
+
+	var zeroVal *string
 	return zeroVal, nil
 }
 
@@ -809,6 +2091,302 @@ func (ec *executionContext) field___Type_fields_argsIncludeDeprecated(
 
 // region    **************************** field.gotpl *****************************
 
+func (ec *executionContext) _ActivityResourceStatus_phase(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_phase(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Phase, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_phase(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_boundary(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_boundary(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Boundary, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_boundary(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_catchupThrough(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_catchupThrough(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.CatchupThrough, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_catchupThrough(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_lastSuccessAt(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_lastSuccessAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.LastSuccessAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_lastSuccessAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_failureCode(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_failureCode(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.FailureCode, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_failureCode(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_jobState(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_jobState(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.JobState, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_jobState(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityResourceStatus_nextAttemptAt(ctx context.Context, field graphql.CollectedField, obj *model.ActivityResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityResourceStatus_nextAttemptAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.NextAttemptAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityResourceStatus_nextAttemptAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _ActivityStatus_synchronized(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_ActivityStatus_synchronized(ctx, field)
 	if err != nil {
@@ -887,6 +2465,1350 @@ func (ec *executionContext) _ActivityStatus_message(ctx context.Context, field g
 func (ec *executionContext) fieldContext_ActivityStatus_message(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_issues(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_issues(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Issues, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.ActivityResourceStatus)
+	fc.Result = res
+	return ec.marshalOActivityResourceStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐActivityResourceStatus(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_issues(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "phase":
+				return ec.fieldContext_ActivityResourceStatus_phase(ctx, field)
+			case "boundary":
+				return ec.fieldContext_ActivityResourceStatus_boundary(ctx, field)
+			case "catchupThrough":
+				return ec.fieldContext_ActivityResourceStatus_catchupThrough(ctx, field)
+			case "lastSuccessAt":
+				return ec.fieldContext_ActivityResourceStatus_lastSuccessAt(ctx, field)
+			case "failureCode":
+				return ec.fieldContext_ActivityResourceStatus_failureCode(ctx, field)
+			case "jobState":
+				return ec.fieldContext_ActivityResourceStatus_jobState(ctx, field)
+			case "nextAttemptAt":
+				return ec.fieldContext_ActivityResourceStatus_nextAttemptAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ActivityResourceStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_futureResources(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_futureResources(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.FutureResources, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]string)
+	fc.Result = res
+	return ec.marshalNString2ᚕstringᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_futureResources(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_pullRequests(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_pullRequests(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.PullRequests, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.ActivityResourceStatus)
+	fc.Result = res
+	return ec.marshalOActivityResourceStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐActivityResourceStatus(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_pullRequests(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "phase":
+				return ec.fieldContext_ActivityResourceStatus_phase(ctx, field)
+			case "boundary":
+				return ec.fieldContext_ActivityResourceStatus_boundary(ctx, field)
+			case "catchupThrough":
+				return ec.fieldContext_ActivityResourceStatus_catchupThrough(ctx, field)
+			case "lastSuccessAt":
+				return ec.fieldContext_ActivityResourceStatus_lastSuccessAt(ctx, field)
+			case "failureCode":
+				return ec.fieldContext_ActivityResourceStatus_failureCode(ctx, field)
+			case "jobState":
+				return ec.fieldContext_ActivityResourceStatus_jobState(ctx, field)
+			case "nextAttemptAt":
+				return ec.fieldContext_ActivityResourceStatus_nextAttemptAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ActivityResourceStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_reviews(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_reviews(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Reviews, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.ChildResourceStatus)
+	fc.Result = res
+	return ec.marshalOChildResourceStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐChildResourceStatus(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_reviews(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "complete":
+				return ec.fieldContext_ChildResourceStatus_complete(ctx, field)
+			case "pendingChildren":
+				return ec.fieldContext_ChildResourceStatus_pendingChildren(ctx, field)
+			case "lastSuccessAt":
+				return ec.fieldContext_ChildResourceStatus_lastSuccessAt(ctx, field)
+			case "failureCode":
+				return ec.fieldContext_ChildResourceStatus_failureCode(ctx, field)
+			case "nextAttemptAt":
+				return ec.fieldContext_ChildResourceStatus_nextAttemptAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ChildResourceStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_comments(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_comments(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Comments, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.ChildResourceStatus)
+	fc.Result = res
+	return ec.marshalOChildResourceStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐChildResourceStatus(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_comments(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "complete":
+				return ec.fieldContext_ChildResourceStatus_complete(ctx, field)
+			case "pendingChildren":
+				return ec.fieldContext_ChildResourceStatus_pendingChildren(ctx, field)
+			case "lastSuccessAt":
+				return ec.fieldContext_ChildResourceStatus_lastSuccessAt(ctx, field)
+			case "failureCode":
+				return ec.fieldContext_ChildResourceStatus_failureCode(ctx, field)
+			case "nextAttemptAt":
+				return ec.fieldContext_ChildResourceStatus_nextAttemptAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ChildResourceStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_releases(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_releases(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Releases, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.ActivityResourceStatus)
+	fc.Result = res
+	return ec.marshalOActivityResourceStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐActivityResourceStatus(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_releases(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "phase":
+				return ec.fieldContext_ActivityResourceStatus_phase(ctx, field)
+			case "boundary":
+				return ec.fieldContext_ActivityResourceStatus_boundary(ctx, field)
+			case "catchupThrough":
+				return ec.fieldContext_ActivityResourceStatus_catchupThrough(ctx, field)
+			case "lastSuccessAt":
+				return ec.fieldContext_ActivityResourceStatus_lastSuccessAt(ctx, field)
+			case "failureCode":
+				return ec.fieldContext_ActivityResourceStatus_failureCode(ctx, field)
+			case "jobState":
+				return ec.fieldContext_ActivityResourceStatus_jobState(ctx, field)
+			case "nextAttemptAt":
+				return ec.fieldContext_ActivityResourceStatus_nextAttemptAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ActivityResourceStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_issueEvents(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_issueEvents(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.IssueEvents, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.IssueEventStatus)
+	fc.Result = res
+	return ec.marshalOIssueEventStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐIssueEventStatus(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_issueEvents(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "traversal":
+				return ec.fieldContext_IssueEventStatus_traversal(ctx, field)
+			case "historicalGap":
+				return ec.fieldContext_IssueEventStatus_historicalGap(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type IssueEventStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ActivityStatus_archived(ctx context.Context, field graphql.CollectedField, obj *model.ActivityStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ActivityStatus_archived(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Archived, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ActivityStatus_archived(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ActivityStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ChildResourceStatus_complete(ctx context.Context, field graphql.CollectedField, obj *model.ChildResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ChildResourceStatus_complete(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Complete, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ChildResourceStatus_complete(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ChildResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ChildResourceStatus_pendingChildren(ctx context.Context, field graphql.CollectedField, obj *model.ChildResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ChildResourceStatus_pendingChildren(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.PendingChildren, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ChildResourceStatus_pendingChildren(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ChildResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ChildResourceStatus_lastSuccessAt(ctx context.Context, field graphql.CollectedField, obj *model.ChildResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ChildResourceStatus_lastSuccessAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.LastSuccessAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ChildResourceStatus_lastSuccessAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ChildResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ChildResourceStatus_failureCode(ctx context.Context, field graphql.CollectedField, obj *model.ChildResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ChildResourceStatus_failureCode(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.FailureCode, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ChildResourceStatus_failureCode(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ChildResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ChildResourceStatus_nextAttemptAt(ctx context.Context, field graphql.CollectedField, obj *model.ChildResourceStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ChildResourceStatus_nextAttemptAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.NextAttemptAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ChildResourceStatus_nextAttemptAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ChildResourceStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidence_id(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidence_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidence_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidence_repositoryId(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidence_repositoryId(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RepositoryID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidence_repositoryId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidence_issueNumber(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidence_issueNumber(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.IssueNumber, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidence_issueNumber(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidence_body(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidence_body(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Body, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidence_body(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidence_url(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidence_url(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.URL, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidence_url(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidence_createdAt(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidence_createdAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.CreatedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidence_createdAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidence_updatedAt(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidence_updatedAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.UpdatedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidence_updatedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidence_author(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidence_author(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Author, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.EvidenceActor)
+	fc.Result = res
+	return ec.marshalOEvidenceActor2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐEvidenceActor(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidence_author(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_EvidenceActor_id(ctx, field)
+			case "login":
+				return ec.fieldContext_EvidenceActor_login(ctx, field)
+			case "type":
+				return ec.fieldContext_EvidenceActor_type(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type EvidenceActor", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidenceConnection_nodes(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidenceConnection_nodes(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Nodes, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]*model.CommentEvidence)
+	fc.Result = res
+	return ec.marshalNCommentEvidence2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐCommentEvidenceᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidenceConnection_nodes(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_CommentEvidence_id(ctx, field)
+			case "repositoryId":
+				return ec.fieldContext_CommentEvidence_repositoryId(ctx, field)
+			case "issueNumber":
+				return ec.fieldContext_CommentEvidence_issueNumber(ctx, field)
+			case "body":
+				return ec.fieldContext_CommentEvidence_body(ctx, field)
+			case "url":
+				return ec.fieldContext_CommentEvidence_url(ctx, field)
+			case "createdAt":
+				return ec.fieldContext_CommentEvidence_createdAt(ctx, field)
+			case "updatedAt":
+				return ec.fieldContext_CommentEvidence_updatedAt(ctx, field)
+			case "author":
+				return ec.fieldContext_CommentEvidence_author(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type CommentEvidence", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidenceConnection_endCursor(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidenceConnection_endCursor(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.EndCursor, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOID2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidenceConnection_endCursor(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidenceConnection_hasNextPage(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidenceConnection_hasNextPage(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.HasNextPage, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidenceConnection_hasNextPage(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidenceConnection_withheld(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidenceConnection_withheld(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Withheld, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidenceConnection_withheld(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CommentEvidenceConnection_retryAt(ctx context.Context, field graphql.CollectedField, obj *model.CommentEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CommentEvidenceConnection_retryAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RetryAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CommentEvidenceConnection_retryAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CommentEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _EvidenceActor_id(ctx context.Context, field graphql.CollectedField, obj *model.EvidenceActor) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_EvidenceActor_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_EvidenceActor_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "EvidenceActor",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _EvidenceActor_login(ctx context.Context, field graphql.CollectedField, obj *model.EvidenceActor) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_EvidenceActor_login(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Login, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_EvidenceActor_login(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "EvidenceActor",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _EvidenceActor_type(ctx context.Context, field graphql.CollectedField, obj *model.EvidenceActor) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_EvidenceActor_type(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Type, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_EvidenceActor_type(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "EvidenceActor",
 		Field:      field,
 		IsMethod:   false,
 		IsResolver: false,
@@ -1297,6 +4219,836 @@ func (ec *executionContext) fieldContext_IssueConnection_retryAt(_ context.Conte
 	return fc, nil
 }
 
+func (ec *executionContext) _IssueEventEvidence_id(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidence_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidence_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidence_repositoryId(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidence_repositoryId(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RepositoryID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidence_repositoryId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidence_issueId(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidence_issueId(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.IssueID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidence_issueId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidence_issueNumber(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidence_issueNumber(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.IssueNumber, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidence_issueNumber(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidence_event(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidence_event(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Event, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidence_event(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidence_url(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidence_url(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.URL, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidence_url(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidence_createdAt(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidence_createdAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.CreatedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidence_createdAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidence_observedAt(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidence_observedAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ObservedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidence_observedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidence_actor(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidence_actor(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Actor, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.EvidenceActor)
+	fc.Result = res
+	return ec.marshalOEvidenceActor2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐEvidenceActor(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidence_actor(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_EvidenceActor_id(ctx, field)
+			case "login":
+				return ec.fieldContext_EvidenceActor_login(ctx, field)
+			case "type":
+				return ec.fieldContext_EvidenceActor_type(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type EvidenceActor", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidence_assignee(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidence_assignee(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Assignee, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.EvidenceActor)
+	fc.Result = res
+	return ec.marshalOEvidenceActor2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐEvidenceActor(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidence_assignee(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_EvidenceActor_id(ctx, field)
+			case "login":
+				return ec.fieldContext_EvidenceActor_login(ctx, field)
+			case "type":
+				return ec.fieldContext_EvidenceActor_type(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type EvidenceActor", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidence_label(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidence_label(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Label, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidence_label(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidenceConnection_nodes(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidenceConnection_nodes(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Nodes, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]*model.IssueEventEvidence)
+	fc.Result = res
+	return ec.marshalNIssueEventEvidence2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐIssueEventEvidenceᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidenceConnection_nodes(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_IssueEventEvidence_id(ctx, field)
+			case "repositoryId":
+				return ec.fieldContext_IssueEventEvidence_repositoryId(ctx, field)
+			case "issueId":
+				return ec.fieldContext_IssueEventEvidence_issueId(ctx, field)
+			case "issueNumber":
+				return ec.fieldContext_IssueEventEvidence_issueNumber(ctx, field)
+			case "event":
+				return ec.fieldContext_IssueEventEvidence_event(ctx, field)
+			case "url":
+				return ec.fieldContext_IssueEventEvidence_url(ctx, field)
+			case "createdAt":
+				return ec.fieldContext_IssueEventEvidence_createdAt(ctx, field)
+			case "observedAt":
+				return ec.fieldContext_IssueEventEvidence_observedAt(ctx, field)
+			case "actor":
+				return ec.fieldContext_IssueEventEvidence_actor(ctx, field)
+			case "assignee":
+				return ec.fieldContext_IssueEventEvidence_assignee(ctx, field)
+			case "label":
+				return ec.fieldContext_IssueEventEvidence_label(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type IssueEventEvidence", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidenceConnection_endCursor(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidenceConnection_endCursor(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.EndCursor, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOID2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidenceConnection_endCursor(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidenceConnection_hasNextPage(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidenceConnection_hasNextPage(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.HasNextPage, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidenceConnection_hasNextPage(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidenceConnection_withheld(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidenceConnection_withheld(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Withheld, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidenceConnection_withheld(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventEvidenceConnection_retryAt(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventEvidenceConnection_retryAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RetryAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventEvidenceConnection_retryAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventStatus_traversal(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventStatus_traversal(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Traversal, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.ActivityResourceStatus)
+	fc.Result = res
+	return ec.marshalOActivityResourceStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐActivityResourceStatus(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventStatus_traversal(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "phase":
+				return ec.fieldContext_ActivityResourceStatus_phase(ctx, field)
+			case "boundary":
+				return ec.fieldContext_ActivityResourceStatus_boundary(ctx, field)
+			case "catchupThrough":
+				return ec.fieldContext_ActivityResourceStatus_catchupThrough(ctx, field)
+			case "lastSuccessAt":
+				return ec.fieldContext_ActivityResourceStatus_lastSuccessAt(ctx, field)
+			case "failureCode":
+				return ec.fieldContext_ActivityResourceStatus_failureCode(ctx, field)
+			case "jobState":
+				return ec.fieldContext_ActivityResourceStatus_jobState(ctx, field)
+			case "nextAttemptAt":
+				return ec.fieldContext_ActivityResourceStatus_nextAttemptAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ActivityResourceStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _IssueEventStatus_historicalGap(ctx context.Context, field graphql.CollectedField, obj *model.IssueEventStatus) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_IssueEventStatus_historicalGap(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.HistoricalGap, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_IssueEventStatus_historicalGap(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "IssueEventStatus",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _MetadataStatus_state(ctx context.Context, field graphql.CollectedField, obj *model.MetadataStatus) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_MetadataStatus_state(ctx, field)
 	if err != nil {
@@ -1547,6 +5299,727 @@ func (ec *executionContext) fieldContext_MetadataStatus_followSuspended(_ contex
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidence_id(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidence_repositoryId(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_repositoryId(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RepositoryID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_repositoryId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidence_number(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_number(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Number, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_number(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidence_title(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_title(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Title, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_title(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidence_state(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_state(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.State, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_state(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidence_url(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_url(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.URL, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_url(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidence_createdAt(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_createdAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.CreatedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_createdAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidence_updatedAt(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_updatedAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.UpdatedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_updatedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidence_closedAt(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_closedAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ClosedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_closedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidence_mergedAt(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_mergedAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.MergedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_mergedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidence_author(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_author(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Author, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.EvidenceActor)
+	fc.Result = res
+	return ec.marshalOEvidenceActor2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐEvidenceActor(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_author(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_EvidenceActor_id(ctx, field)
+			case "login":
+				return ec.fieldContext_EvidenceActor_login(ctx, field)
+			case "type":
+				return ec.fieldContext_EvidenceActor_type(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type EvidenceActor", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidenceConnection_nodes(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidenceConnection_nodes(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Nodes, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]*model.PullRequestEvidence)
+	fc.Result = res
+	return ec.marshalNPullRequestEvidence2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐPullRequestEvidenceᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidenceConnection_nodes(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_PullRequestEvidence_id(ctx, field)
+			case "repositoryId":
+				return ec.fieldContext_PullRequestEvidence_repositoryId(ctx, field)
+			case "number":
+				return ec.fieldContext_PullRequestEvidence_number(ctx, field)
+			case "title":
+				return ec.fieldContext_PullRequestEvidence_title(ctx, field)
+			case "state":
+				return ec.fieldContext_PullRequestEvidence_state(ctx, field)
+			case "url":
+				return ec.fieldContext_PullRequestEvidence_url(ctx, field)
+			case "createdAt":
+				return ec.fieldContext_PullRequestEvidence_createdAt(ctx, field)
+			case "updatedAt":
+				return ec.fieldContext_PullRequestEvidence_updatedAt(ctx, field)
+			case "closedAt":
+				return ec.fieldContext_PullRequestEvidence_closedAt(ctx, field)
+			case "mergedAt":
+				return ec.fieldContext_PullRequestEvidence_mergedAt(ctx, field)
+			case "author":
+				return ec.fieldContext_PullRequestEvidence_author(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type PullRequestEvidence", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidenceConnection_endCursor(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidenceConnection_endCursor(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.EndCursor, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOID2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidenceConnection_endCursor(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidenceConnection_hasNextPage(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidenceConnection_hasNextPage(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.HasNextPage, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidenceConnection_hasNextPage(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidenceConnection_withheld(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidenceConnection_withheld(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Withheld, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidenceConnection_withheld(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequestEvidenceConnection_retryAt(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidenceConnection_retryAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RetryAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidenceConnection_retryAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -1803,6 +6276,341 @@ func (ec *executionContext) fieldContext_Query_issues(ctx context.Context, field
 	return fc, nil
 }
 
+func (ec *executionContext) _Query_pullRequestEvidence(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_pullRequestEvidence(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().PullRequestEvidence(rctx, fc.Args["repositoryIds"].([]string), fc.Args["first"].(int), fc.Args["after"].(*string))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*model.PullRequestEvidenceConnection)
+	fc.Result = res
+	return ec.marshalNPullRequestEvidenceConnection2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐPullRequestEvidenceConnection(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_pullRequestEvidence(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "nodes":
+				return ec.fieldContext_PullRequestEvidenceConnection_nodes(ctx, field)
+			case "endCursor":
+				return ec.fieldContext_PullRequestEvidenceConnection_endCursor(ctx, field)
+			case "hasNextPage":
+				return ec.fieldContext_PullRequestEvidenceConnection_hasNextPage(ctx, field)
+			case "withheld":
+				return ec.fieldContext_PullRequestEvidenceConnection_withheld(ctx, field)
+			case "retryAt":
+				return ec.fieldContext_PullRequestEvidenceConnection_retryAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type PullRequestEvidenceConnection", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_pullRequestEvidence_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_reviewEvidence(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_reviewEvidence(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().ReviewEvidence(rctx, fc.Args["repositoryIds"].([]string), fc.Args["first"].(int), fc.Args["after"].(*string))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*model.ReviewEvidenceConnection)
+	fc.Result = res
+	return ec.marshalNReviewEvidenceConnection2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReviewEvidenceConnection(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_reviewEvidence(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "nodes":
+				return ec.fieldContext_ReviewEvidenceConnection_nodes(ctx, field)
+			case "endCursor":
+				return ec.fieldContext_ReviewEvidenceConnection_endCursor(ctx, field)
+			case "hasNextPage":
+				return ec.fieldContext_ReviewEvidenceConnection_hasNextPage(ctx, field)
+			case "withheld":
+				return ec.fieldContext_ReviewEvidenceConnection_withheld(ctx, field)
+			case "retryAt":
+				return ec.fieldContext_ReviewEvidenceConnection_retryAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ReviewEvidenceConnection", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_reviewEvidence_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_commentEvidence(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_commentEvidence(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().CommentEvidence(rctx, fc.Args["repositoryIds"].([]string), fc.Args["first"].(int), fc.Args["after"].(*string))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*model.CommentEvidenceConnection)
+	fc.Result = res
+	return ec.marshalNCommentEvidenceConnection2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐCommentEvidenceConnection(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_commentEvidence(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "nodes":
+				return ec.fieldContext_CommentEvidenceConnection_nodes(ctx, field)
+			case "endCursor":
+				return ec.fieldContext_CommentEvidenceConnection_endCursor(ctx, field)
+			case "hasNextPage":
+				return ec.fieldContext_CommentEvidenceConnection_hasNextPage(ctx, field)
+			case "withheld":
+				return ec.fieldContext_CommentEvidenceConnection_withheld(ctx, field)
+			case "retryAt":
+				return ec.fieldContext_CommentEvidenceConnection_retryAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type CommentEvidenceConnection", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_commentEvidence_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_releaseEvidence(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_releaseEvidence(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().ReleaseEvidence(rctx, fc.Args["repositoryIds"].([]string), fc.Args["first"].(int), fc.Args["after"].(*string))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*model.ReleaseEvidenceConnection)
+	fc.Result = res
+	return ec.marshalNReleaseEvidenceConnection2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReleaseEvidenceConnection(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_releaseEvidence(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "nodes":
+				return ec.fieldContext_ReleaseEvidenceConnection_nodes(ctx, field)
+			case "endCursor":
+				return ec.fieldContext_ReleaseEvidenceConnection_endCursor(ctx, field)
+			case "hasNextPage":
+				return ec.fieldContext_ReleaseEvidenceConnection_hasNextPage(ctx, field)
+			case "withheld":
+				return ec.fieldContext_ReleaseEvidenceConnection_withheld(ctx, field)
+			case "retryAt":
+				return ec.fieldContext_ReleaseEvidenceConnection_retryAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ReleaseEvidenceConnection", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_releaseEvidence_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_issueEventEvidence(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_issueEventEvidence(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().IssueEventEvidence(rctx, fc.Args["repositoryIds"].([]string), fc.Args["first"].(int), fc.Args["after"].(*string))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(*model.IssueEventEvidenceConnection)
+	fc.Result = res
+	return ec.marshalNIssueEventEvidenceConnection2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐIssueEventEvidenceConnection(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_issueEventEvidence(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "nodes":
+				return ec.fieldContext_IssueEventEvidenceConnection_nodes(ctx, field)
+			case "endCursor":
+				return ec.fieldContext_IssueEventEvidenceConnection_endCursor(ctx, field)
+			case "hasNextPage":
+				return ec.fieldContext_IssueEventEvidenceConnection_hasNextPage(ctx, field)
+			case "withheld":
+				return ec.fieldContext_IssueEventEvidenceConnection_withheld(ctx, field)
+			case "retryAt":
+				return ec.fieldContext_IssueEventEvidenceConnection_retryAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type IssueEventEvidenceConnection", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_issueEventEvidence_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Query___type(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Query___type(ctx, field)
 	if err != nil {
@@ -1929,6 +6737,776 @@ func (ec *executionContext) fieldContext_Query___schema(_ context.Context, field
 				return ec.fieldContext___Schema_directives(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type __Schema", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_id(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_repositoryId(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_repositoryId(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RepositoryID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_repositoryId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_name(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_name(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Name, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_name(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_tagName(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_tagName(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.TagName, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_tagName(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_body(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_body(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Body, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_body(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_url(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_url(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.URL, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_url(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_createdAt(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_createdAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.CreatedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_createdAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_updatedAt(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_updatedAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.UpdatedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_updatedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_publishedAt(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_publishedAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.PublishedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_publishedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_observedAt(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_observedAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ObservedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_observedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_prerelease(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_prerelease(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Prerelease, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_prerelease(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidence_author(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidence_author(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Author, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.EvidenceActor)
+	fc.Result = res
+	return ec.marshalOEvidenceActor2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐEvidenceActor(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidence_author(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_EvidenceActor_id(ctx, field)
+			case "login":
+				return ec.fieldContext_EvidenceActor_login(ctx, field)
+			case "type":
+				return ec.fieldContext_EvidenceActor_type(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type EvidenceActor", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidenceConnection_nodes(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidenceConnection_nodes(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Nodes, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]*model.ReleaseEvidence)
+	fc.Result = res
+	return ec.marshalNReleaseEvidence2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReleaseEvidenceᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidenceConnection_nodes(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_ReleaseEvidence_id(ctx, field)
+			case "repositoryId":
+				return ec.fieldContext_ReleaseEvidence_repositoryId(ctx, field)
+			case "name":
+				return ec.fieldContext_ReleaseEvidence_name(ctx, field)
+			case "tagName":
+				return ec.fieldContext_ReleaseEvidence_tagName(ctx, field)
+			case "body":
+				return ec.fieldContext_ReleaseEvidence_body(ctx, field)
+			case "url":
+				return ec.fieldContext_ReleaseEvidence_url(ctx, field)
+			case "createdAt":
+				return ec.fieldContext_ReleaseEvidence_createdAt(ctx, field)
+			case "updatedAt":
+				return ec.fieldContext_ReleaseEvidence_updatedAt(ctx, field)
+			case "publishedAt":
+				return ec.fieldContext_ReleaseEvidence_publishedAt(ctx, field)
+			case "observedAt":
+				return ec.fieldContext_ReleaseEvidence_observedAt(ctx, field)
+			case "prerelease":
+				return ec.fieldContext_ReleaseEvidence_prerelease(ctx, field)
+			case "author":
+				return ec.fieldContext_ReleaseEvidence_author(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ReleaseEvidence", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidenceConnection_endCursor(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidenceConnection_endCursor(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.EndCursor, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOID2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidenceConnection_endCursor(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidenceConnection_hasNextPage(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidenceConnection_hasNextPage(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.HasNextPage, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidenceConnection_hasNextPage(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidenceConnection_withheld(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidenceConnection_withheld(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Withheld, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidenceConnection_withheld(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReleaseEvidenceConnection_retryAt(ctx context.Context, field graphql.CollectedField, obj *model.ReleaseEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReleaseEvidenceConnection_retryAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RetryAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReleaseEvidenceConnection_retryAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReleaseEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
 		},
 	}
 	return fc, nil
@@ -2296,6 +7874,22 @@ func (ec *executionContext) fieldContext_Repository_activity(_ context.Context, 
 				return ec.fieldContext_ActivityStatus_synchronized(ctx, field)
 			case "message":
 				return ec.fieldContext_ActivityStatus_message(ctx, field)
+			case "issues":
+				return ec.fieldContext_ActivityStatus_issues(ctx, field)
+			case "futureResources":
+				return ec.fieldContext_ActivityStatus_futureResources(ctx, field)
+			case "pullRequests":
+				return ec.fieldContext_ActivityStatus_pullRequests(ctx, field)
+			case "reviews":
+				return ec.fieldContext_ActivityStatus_reviews(ctx, field)
+			case "comments":
+				return ec.fieldContext_ActivityStatus_comments(ctx, field)
+			case "releases":
+				return ec.fieldContext_ActivityStatus_releases(ctx, field)
+			case "issueEvents":
+				return ec.fieldContext_ActivityStatus_issueEvents(ctx, field)
+			case "archived":
+				return ec.fieldContext_ActivityStatus_archived(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type ActivityStatus", field.Name)
 		},
@@ -2525,6 +8119,595 @@ func (ec *executionContext) _RepositoryConnection_retryAt(ctx context.Context, f
 func (ec *executionContext) fieldContext_RepositoryConnection_retryAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "RepositoryConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidence_id(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidence_id(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidence_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidence_repositoryId(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidence_repositoryId(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RepositoryID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidence_repositoryId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidence_pullRequestId(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidence_pullRequestId(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.PullRequestID, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidence_pullRequestId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidence_state(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidence_state(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.State, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidence_state(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidence_body(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidence_body(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Body, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidence_body(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidence_url(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidence_url(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.URL, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidence_url(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidence_submittedAt(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidence_submittedAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.SubmittedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidence_submittedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidence_author(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidence_author(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Author, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.EvidenceActor)
+	fc.Result = res
+	return ec.marshalOEvidenceActor2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐEvidenceActor(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidence_author(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_EvidenceActor_id(ctx, field)
+			case "login":
+				return ec.fieldContext_EvidenceActor_login(ctx, field)
+			case "type":
+				return ec.fieldContext_EvidenceActor_type(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type EvidenceActor", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidenceConnection_nodes(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidenceConnection_nodes(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Nodes, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]*model.ReviewEvidence)
+	fc.Result = res
+	return ec.marshalNReviewEvidence2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReviewEvidenceᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidenceConnection_nodes(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "id":
+				return ec.fieldContext_ReviewEvidence_id(ctx, field)
+			case "repositoryId":
+				return ec.fieldContext_ReviewEvidence_repositoryId(ctx, field)
+			case "pullRequestId":
+				return ec.fieldContext_ReviewEvidence_pullRequestId(ctx, field)
+			case "state":
+				return ec.fieldContext_ReviewEvidence_state(ctx, field)
+			case "body":
+				return ec.fieldContext_ReviewEvidence_body(ctx, field)
+			case "url":
+				return ec.fieldContext_ReviewEvidence_url(ctx, field)
+			case "submittedAt":
+				return ec.fieldContext_ReviewEvidence_submittedAt(ctx, field)
+			case "author":
+				return ec.fieldContext_ReviewEvidence_author(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ReviewEvidence", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidenceConnection_endCursor(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidenceConnection_endCursor(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.EndCursor, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOID2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidenceConnection_endCursor(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidenceConnection_hasNextPage(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidenceConnection_hasNextPage(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.HasNextPage, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidenceConnection_hasNextPage(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidenceConnection_withheld(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidenceConnection_withheld(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Withheld, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidenceConnection_withheld(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidenceConnection",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ReviewEvidenceConnection_retryAt(ctx context.Context, field graphql.CollectedField, obj *model.ReviewEvidenceConnection) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_ReviewEvidenceConnection_retryAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RetryAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_ReviewEvidenceConnection_retryAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ReviewEvidenceConnection",
 		Field:      field,
 		IsMethod:   false,
 		IsResolver: false,
@@ -4582,6 +10765,63 @@ func (ec *executionContext) fieldContext___Type_isOneOf(_ context.Context, field
 
 // region    **************************** object.gotpl ****************************
 
+var activityResourceStatusImplementors = []string{"ActivityResourceStatus"}
+
+func (ec *executionContext) _ActivityResourceStatus(ctx context.Context, sel ast.SelectionSet, obj *model.ActivityResourceStatus) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, activityResourceStatusImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ActivityResourceStatus")
+		case "phase":
+			out.Values[i] = ec._ActivityResourceStatus_phase(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "boundary":
+			out.Values[i] = ec._ActivityResourceStatus_boundary(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "catchupThrough":
+			out.Values[i] = ec._ActivityResourceStatus_catchupThrough(ctx, field, obj)
+		case "lastSuccessAt":
+			out.Values[i] = ec._ActivityResourceStatus_lastSuccessAt(ctx, field, obj)
+		case "failureCode":
+			out.Values[i] = ec._ActivityResourceStatus_failureCode(ctx, field, obj)
+		case "jobState":
+			out.Values[i] = ec._ActivityResourceStatus_jobState(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "nextAttemptAt":
+			out.Values[i] = ec._ActivityResourceStatus_nextAttemptAt(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
 var activityStatusImplementors = []string{"ActivityStatus"}
 
 func (ec *executionContext) _ActivityStatus(ctx context.Context, sel ast.SelectionSet, obj *model.ActivityStatus) graphql.Marshaler {
@@ -4600,6 +10840,251 @@ func (ec *executionContext) _ActivityStatus(ctx context.Context, sel ast.Selecti
 			}
 		case "message":
 			out.Values[i] = ec._ActivityStatus_message(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "issues":
+			out.Values[i] = ec._ActivityStatus_issues(ctx, field, obj)
+		case "futureResources":
+			out.Values[i] = ec._ActivityStatus_futureResources(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "pullRequests":
+			out.Values[i] = ec._ActivityStatus_pullRequests(ctx, field, obj)
+		case "reviews":
+			out.Values[i] = ec._ActivityStatus_reviews(ctx, field, obj)
+		case "comments":
+			out.Values[i] = ec._ActivityStatus_comments(ctx, field, obj)
+		case "releases":
+			out.Values[i] = ec._ActivityStatus_releases(ctx, field, obj)
+		case "issueEvents":
+			out.Values[i] = ec._ActivityStatus_issueEvents(ctx, field, obj)
+		case "archived":
+			out.Values[i] = ec._ActivityStatus_archived(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var childResourceStatusImplementors = []string{"ChildResourceStatus"}
+
+func (ec *executionContext) _ChildResourceStatus(ctx context.Context, sel ast.SelectionSet, obj *model.ChildResourceStatus) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, childResourceStatusImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ChildResourceStatus")
+		case "complete":
+			out.Values[i] = ec._ChildResourceStatus_complete(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "pendingChildren":
+			out.Values[i] = ec._ChildResourceStatus_pendingChildren(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "lastSuccessAt":
+			out.Values[i] = ec._ChildResourceStatus_lastSuccessAt(ctx, field, obj)
+		case "failureCode":
+			out.Values[i] = ec._ChildResourceStatus_failureCode(ctx, field, obj)
+		case "nextAttemptAt":
+			out.Values[i] = ec._ChildResourceStatus_nextAttemptAt(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var commentEvidenceImplementors = []string{"CommentEvidence"}
+
+func (ec *executionContext) _CommentEvidence(ctx context.Context, sel ast.SelectionSet, obj *model.CommentEvidence) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, commentEvidenceImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("CommentEvidence")
+		case "id":
+			out.Values[i] = ec._CommentEvidence_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "repositoryId":
+			out.Values[i] = ec._CommentEvidence_repositoryId(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "issueNumber":
+			out.Values[i] = ec._CommentEvidence_issueNumber(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "body":
+			out.Values[i] = ec._CommentEvidence_body(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "url":
+			out.Values[i] = ec._CommentEvidence_url(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "createdAt":
+			out.Values[i] = ec._CommentEvidence_createdAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "updatedAt":
+			out.Values[i] = ec._CommentEvidence_updatedAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "author":
+			out.Values[i] = ec._CommentEvidence_author(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var commentEvidenceConnectionImplementors = []string{"CommentEvidenceConnection"}
+
+func (ec *executionContext) _CommentEvidenceConnection(ctx context.Context, sel ast.SelectionSet, obj *model.CommentEvidenceConnection) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, commentEvidenceConnectionImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("CommentEvidenceConnection")
+		case "nodes":
+			out.Values[i] = ec._CommentEvidenceConnection_nodes(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "endCursor":
+			out.Values[i] = ec._CommentEvidenceConnection_endCursor(ctx, field, obj)
+		case "hasNextPage":
+			out.Values[i] = ec._CommentEvidenceConnection_hasNextPage(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "withheld":
+			out.Values[i] = ec._CommentEvidenceConnection_withheld(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "retryAt":
+			out.Values[i] = ec._CommentEvidenceConnection_retryAt(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var evidenceActorImplementors = []string{"EvidenceActor"}
+
+func (ec *executionContext) _EvidenceActor(ctx context.Context, sel ast.SelectionSet, obj *model.EvidenceActor) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, evidenceActorImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("EvidenceActor")
+		case "id":
+			out.Values[i] = ec._EvidenceActor_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "login":
+			out.Values[i] = ec._EvidenceActor_login(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "type":
+			out.Values[i] = ec._EvidenceActor_type(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
@@ -4733,6 +11218,180 @@ func (ec *executionContext) _IssueConnection(ctx context.Context, sel ast.Select
 	return out
 }
 
+var issueEventEvidenceImplementors = []string{"IssueEventEvidence"}
+
+func (ec *executionContext) _IssueEventEvidence(ctx context.Context, sel ast.SelectionSet, obj *model.IssueEventEvidence) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, issueEventEvidenceImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("IssueEventEvidence")
+		case "id":
+			out.Values[i] = ec._IssueEventEvidence_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "repositoryId":
+			out.Values[i] = ec._IssueEventEvidence_repositoryId(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "issueId":
+			out.Values[i] = ec._IssueEventEvidence_issueId(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "issueNumber":
+			out.Values[i] = ec._IssueEventEvidence_issueNumber(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "event":
+			out.Values[i] = ec._IssueEventEvidence_event(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "url":
+			out.Values[i] = ec._IssueEventEvidence_url(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "createdAt":
+			out.Values[i] = ec._IssueEventEvidence_createdAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "observedAt":
+			out.Values[i] = ec._IssueEventEvidence_observedAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "actor":
+			out.Values[i] = ec._IssueEventEvidence_actor(ctx, field, obj)
+		case "assignee":
+			out.Values[i] = ec._IssueEventEvidence_assignee(ctx, field, obj)
+		case "label":
+			out.Values[i] = ec._IssueEventEvidence_label(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var issueEventEvidenceConnectionImplementors = []string{"IssueEventEvidenceConnection"}
+
+func (ec *executionContext) _IssueEventEvidenceConnection(ctx context.Context, sel ast.SelectionSet, obj *model.IssueEventEvidenceConnection) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, issueEventEvidenceConnectionImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("IssueEventEvidenceConnection")
+		case "nodes":
+			out.Values[i] = ec._IssueEventEvidenceConnection_nodes(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "endCursor":
+			out.Values[i] = ec._IssueEventEvidenceConnection_endCursor(ctx, field, obj)
+		case "hasNextPage":
+			out.Values[i] = ec._IssueEventEvidenceConnection_hasNextPage(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "withheld":
+			out.Values[i] = ec._IssueEventEvidenceConnection_withheld(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "retryAt":
+			out.Values[i] = ec._IssueEventEvidenceConnection_retryAt(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var issueEventStatusImplementors = []string{"IssueEventStatus"}
+
+func (ec *executionContext) _IssueEventStatus(ctx context.Context, sel ast.SelectionSet, obj *model.IssueEventStatus) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, issueEventStatusImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("IssueEventStatus")
+		case "traversal":
+			out.Values[i] = ec._IssueEventStatus_traversal(ctx, field, obj)
+		case "historicalGap":
+			out.Values[i] = ec._IssueEventStatus_historicalGap(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
 var metadataStatusImplementors = []string{"MetadataStatus"}
 
 func (ec *executionContext) _MetadataStatus(ctx context.Context, sel ast.SelectionSet, obj *model.MetadataStatus) graphql.Marshaler {
@@ -4765,6 +11424,139 @@ func (ec *executionContext) _MetadataStatus(ctx context.Context, sel ast.Selecti
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var pullRequestEvidenceImplementors = []string{"PullRequestEvidence"}
+
+func (ec *executionContext) _PullRequestEvidence(ctx context.Context, sel ast.SelectionSet, obj *model.PullRequestEvidence) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, pullRequestEvidenceImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("PullRequestEvidence")
+		case "id":
+			out.Values[i] = ec._PullRequestEvidence_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "repositoryId":
+			out.Values[i] = ec._PullRequestEvidence_repositoryId(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "number":
+			out.Values[i] = ec._PullRequestEvidence_number(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "title":
+			out.Values[i] = ec._PullRequestEvidence_title(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "state":
+			out.Values[i] = ec._PullRequestEvidence_state(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "url":
+			out.Values[i] = ec._PullRequestEvidence_url(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "createdAt":
+			out.Values[i] = ec._PullRequestEvidence_createdAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "updatedAt":
+			out.Values[i] = ec._PullRequestEvidence_updatedAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "closedAt":
+			out.Values[i] = ec._PullRequestEvidence_closedAt(ctx, field, obj)
+		case "mergedAt":
+			out.Values[i] = ec._PullRequestEvidence_mergedAt(ctx, field, obj)
+		case "author":
+			out.Values[i] = ec._PullRequestEvidence_author(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var pullRequestEvidenceConnectionImplementors = []string{"PullRequestEvidenceConnection"}
+
+func (ec *executionContext) _PullRequestEvidenceConnection(ctx context.Context, sel ast.SelectionSet, obj *model.PullRequestEvidenceConnection) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, pullRequestEvidenceConnectionImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("PullRequestEvidenceConnection")
+		case "nodes":
+			out.Values[i] = ec._PullRequestEvidenceConnection_nodes(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "endCursor":
+			out.Values[i] = ec._PullRequestEvidenceConnection_endCursor(ctx, field, obj)
+		case "hasNextPage":
+			out.Values[i] = ec._PullRequestEvidenceConnection_hasNextPage(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "withheld":
+			out.Values[i] = ec._PullRequestEvidenceConnection_withheld(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "retryAt":
+			out.Values[i] = ec._PullRequestEvidenceConnection_retryAt(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -4889,6 +11681,116 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "pullRequestEvidence":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_pullRequestEvidence(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "reviewEvidence":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_reviewEvidence(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "commentEvidence":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_commentEvidence(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "releaseEvidence":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_releaseEvidence(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "issueEventEvidence":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_issueEventEvidence(ctx, field)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "__type":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___type(ctx, field)
@@ -4897,6 +11799,147 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___schema(ctx, field)
 			})
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var releaseEvidenceImplementors = []string{"ReleaseEvidence"}
+
+func (ec *executionContext) _ReleaseEvidence(ctx context.Context, sel ast.SelectionSet, obj *model.ReleaseEvidence) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, releaseEvidenceImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ReleaseEvidence")
+		case "id":
+			out.Values[i] = ec._ReleaseEvidence_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "repositoryId":
+			out.Values[i] = ec._ReleaseEvidence_repositoryId(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "name":
+			out.Values[i] = ec._ReleaseEvidence_name(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "tagName":
+			out.Values[i] = ec._ReleaseEvidence_tagName(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "body":
+			out.Values[i] = ec._ReleaseEvidence_body(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "url":
+			out.Values[i] = ec._ReleaseEvidence_url(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "createdAt":
+			out.Values[i] = ec._ReleaseEvidence_createdAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "updatedAt":
+			out.Values[i] = ec._ReleaseEvidence_updatedAt(ctx, field, obj)
+		case "publishedAt":
+			out.Values[i] = ec._ReleaseEvidence_publishedAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "observedAt":
+			out.Values[i] = ec._ReleaseEvidence_observedAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "prerelease":
+			out.Values[i] = ec._ReleaseEvidence_prerelease(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "author":
+			out.Values[i] = ec._ReleaseEvidence_author(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var releaseEvidenceConnectionImplementors = []string{"ReleaseEvidenceConnection"}
+
+func (ec *executionContext) _ReleaseEvidenceConnection(ctx context.Context, sel ast.SelectionSet, obj *model.ReleaseEvidenceConnection) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, releaseEvidenceConnectionImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ReleaseEvidenceConnection")
+		case "nodes":
+			out.Values[i] = ec._ReleaseEvidenceConnection_nodes(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "endCursor":
+			out.Values[i] = ec._ReleaseEvidenceConnection_endCursor(ctx, field, obj)
+		case "hasNextPage":
+			out.Values[i] = ec._ReleaseEvidenceConnection_hasNextPage(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "withheld":
+			out.Values[i] = ec._ReleaseEvidenceConnection_withheld(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "retryAt":
+			out.Values[i] = ec._ReleaseEvidenceConnection_retryAt(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -5021,6 +12064,130 @@ func (ec *executionContext) _RepositoryConnection(ctx context.Context, sel ast.S
 			}
 		case "retryAt":
 			out.Values[i] = ec._RepositoryConnection_retryAt(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var reviewEvidenceImplementors = []string{"ReviewEvidence"}
+
+func (ec *executionContext) _ReviewEvidence(ctx context.Context, sel ast.SelectionSet, obj *model.ReviewEvidence) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, reviewEvidenceImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ReviewEvidence")
+		case "id":
+			out.Values[i] = ec._ReviewEvidence_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "repositoryId":
+			out.Values[i] = ec._ReviewEvidence_repositoryId(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "pullRequestId":
+			out.Values[i] = ec._ReviewEvidence_pullRequestId(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "state":
+			out.Values[i] = ec._ReviewEvidence_state(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "body":
+			out.Values[i] = ec._ReviewEvidence_body(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "url":
+			out.Values[i] = ec._ReviewEvidence_url(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "submittedAt":
+			out.Values[i] = ec._ReviewEvidence_submittedAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "author":
+			out.Values[i] = ec._ReviewEvidence_author(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var reviewEvidenceConnectionImplementors = []string{"ReviewEvidenceConnection"}
+
+func (ec *executionContext) _ReviewEvidenceConnection(ctx context.Context, sel ast.SelectionSet, obj *model.ReviewEvidenceConnection) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, reviewEvidenceConnectionImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ReviewEvidenceConnection")
+		case "nodes":
+			out.Values[i] = ec._ReviewEvidenceConnection_nodes(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "endCursor":
+			out.Values[i] = ec._ReviewEvidenceConnection_endCursor(ctx, field, obj)
+		case "hasNextPage":
+			out.Values[i] = ec._ReviewEvidenceConnection_hasNextPage(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "withheld":
+			out.Values[i] = ec._ReviewEvidenceConnection_withheld(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "retryAt":
+			out.Values[i] = ec._ReviewEvidenceConnection_retryAt(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -5449,6 +12616,74 @@ func (ec *executionContext) marshalNBoolean2bool(ctx context.Context, sel ast.Se
 	return res
 }
 
+func (ec *executionContext) marshalNCommentEvidence2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐCommentEvidenceᚄ(ctx context.Context, sel ast.SelectionSet, v []*model.CommentEvidence) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNCommentEvidence2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐCommentEvidence(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNCommentEvidence2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐCommentEvidence(ctx context.Context, sel ast.SelectionSet, v *model.CommentEvidence) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._CommentEvidence(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNCommentEvidenceConnection2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐCommentEvidenceConnection(ctx context.Context, sel ast.SelectionSet, v model.CommentEvidenceConnection) graphql.Marshaler {
+	return ec._CommentEvidenceConnection(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNCommentEvidenceConnection2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐCommentEvidenceConnection(ctx context.Context, sel ast.SelectionSet, v *model.CommentEvidenceConnection) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._CommentEvidenceConnection(ctx, sel, v)
+}
+
 func (ec *executionContext) unmarshalNID2string(ctx context.Context, v any) (string, error) {
 	res, err := graphql.UnmarshalID(v)
 	return res, graphql.ErrorOnPath(ctx, err)
@@ -5579,6 +12814,210 @@ func (ec *executionContext) marshalNIssueConnection2ᚖgithubᚗcomᚋrepoorbit�
 	return ec._IssueConnection(ctx, sel, v)
 }
 
+func (ec *executionContext) marshalNIssueEventEvidence2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐIssueEventEvidenceᚄ(ctx context.Context, sel ast.SelectionSet, v []*model.IssueEventEvidence) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNIssueEventEvidence2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐIssueEventEvidence(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNIssueEventEvidence2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐIssueEventEvidence(ctx context.Context, sel ast.SelectionSet, v *model.IssueEventEvidence) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._IssueEventEvidence(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNIssueEventEvidenceConnection2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐIssueEventEvidenceConnection(ctx context.Context, sel ast.SelectionSet, v model.IssueEventEvidenceConnection) graphql.Marshaler {
+	return ec._IssueEventEvidenceConnection(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNIssueEventEvidenceConnection2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐIssueEventEvidenceConnection(ctx context.Context, sel ast.SelectionSet, v *model.IssueEventEvidenceConnection) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._IssueEventEvidenceConnection(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNPullRequestEvidence2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐPullRequestEvidenceᚄ(ctx context.Context, sel ast.SelectionSet, v []*model.PullRequestEvidence) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNPullRequestEvidence2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐPullRequestEvidence(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNPullRequestEvidence2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐPullRequestEvidence(ctx context.Context, sel ast.SelectionSet, v *model.PullRequestEvidence) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._PullRequestEvidence(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNPullRequestEvidenceConnection2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐPullRequestEvidenceConnection(ctx context.Context, sel ast.SelectionSet, v model.PullRequestEvidenceConnection) graphql.Marshaler {
+	return ec._PullRequestEvidenceConnection(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNPullRequestEvidenceConnection2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐPullRequestEvidenceConnection(ctx context.Context, sel ast.SelectionSet, v *model.PullRequestEvidenceConnection) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._PullRequestEvidenceConnection(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNReleaseEvidence2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReleaseEvidenceᚄ(ctx context.Context, sel ast.SelectionSet, v []*model.ReleaseEvidence) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNReleaseEvidence2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReleaseEvidence(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNReleaseEvidence2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReleaseEvidence(ctx context.Context, sel ast.SelectionSet, v *model.ReleaseEvidence) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._ReleaseEvidence(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNReleaseEvidenceConnection2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReleaseEvidenceConnection(ctx context.Context, sel ast.SelectionSet, v model.ReleaseEvidenceConnection) graphql.Marshaler {
+	return ec._ReleaseEvidenceConnection(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNReleaseEvidenceConnection2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReleaseEvidenceConnection(ctx context.Context, sel ast.SelectionSet, v *model.ReleaseEvidenceConnection) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._ReleaseEvidenceConnection(ctx, sel, v)
+}
+
 func (ec *executionContext) marshalNRepository2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐRepositoryᚄ(ctx context.Context, sel ast.SelectionSet, v []*model.Repository) graphql.Marshaler {
 	ret := make(graphql.Array, len(v))
 	var wg sync.WaitGroup
@@ -5647,6 +13086,74 @@ func (ec *executionContext) marshalNRepositoryConnection2ᚖgithubᚗcomᚋrepoo
 	return ec._RepositoryConnection(ctx, sel, v)
 }
 
+func (ec *executionContext) marshalNReviewEvidence2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReviewEvidenceᚄ(ctx context.Context, sel ast.SelectionSet, v []*model.ReviewEvidence) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNReviewEvidence2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReviewEvidence(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNReviewEvidence2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReviewEvidence(ctx context.Context, sel ast.SelectionSet, v *model.ReviewEvidence) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._ReviewEvidence(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNReviewEvidenceConnection2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReviewEvidenceConnection(ctx context.Context, sel ast.SelectionSet, v model.ReviewEvidenceConnection) graphql.Marshaler {
+	return ec._ReviewEvidenceConnection(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNReviewEvidenceConnection2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐReviewEvidenceConnection(ctx context.Context, sel ast.SelectionSet, v *model.ReviewEvidenceConnection) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._ReviewEvidenceConnection(ctx, sel, v)
+}
+
 func (ec *executionContext) unmarshalNString2string(ctx context.Context, v any) (string, error) {
 	res, err := graphql.UnmarshalString(v)
 	return res, graphql.ErrorOnPath(ctx, err)
@@ -5661,6 +13168,36 @@ func (ec *executionContext) marshalNString2string(ctx context.Context, sel ast.S
 		}
 	}
 	return res
+}
+
+func (ec *executionContext) unmarshalNString2ᚕstringᚄ(ctx context.Context, v any) ([]string, error) {
+	var vSlice []any
+	vSlice = graphql.CoerceList(v)
+	var err error
+	res := make([]string, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNString2string(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func (ec *executionContext) marshalNString2ᚕstringᚄ(ctx context.Context, sel ast.SelectionSet, v []string) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	for i := range v {
+		ret[i] = ec.marshalNString2string(ctx, sel, v[i])
+	}
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
 }
 
 func (ec *executionContext) marshalN__Directive2githubᚗcomᚋ99designsᚋgqlgenᚋgraphqlᚋintrospectionᚐDirective(ctx context.Context, sel ast.SelectionSet, v introspection.Directive) graphql.Marshaler {
@@ -5916,6 +13453,13 @@ func (ec *executionContext) marshalN__TypeKind2string(ctx context.Context, sel a
 	return res
 }
 
+func (ec *executionContext) marshalOActivityResourceStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐActivityResourceStatus(ctx context.Context, sel ast.SelectionSet, v *model.ActivityResourceStatus) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._ActivityResourceStatus(ctx, sel, v)
+}
+
 func (ec *executionContext) unmarshalOBoolean2bool(ctx context.Context, v any) (bool, error) {
 	res, err := graphql.UnmarshalBoolean(v)
 	return res, graphql.ErrorOnPath(ctx, err)
@@ -5946,6 +13490,20 @@ func (ec *executionContext) marshalOBoolean2ᚖbool(ctx context.Context, sel ast
 	return res
 }
 
+func (ec *executionContext) marshalOChildResourceStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐChildResourceStatus(ctx context.Context, sel ast.SelectionSet, v *model.ChildResourceStatus) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._ChildResourceStatus(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalOEvidenceActor2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐEvidenceActor(ctx context.Context, sel ast.SelectionSet, v *model.EvidenceActor) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._EvidenceActor(ctx, sel, v)
+}
+
 func (ec *executionContext) unmarshalOID2ᚖstring(ctx context.Context, v any) (*string, error) {
 	if v == nil {
 		return nil, nil
@@ -5962,6 +13520,13 @@ func (ec *executionContext) marshalOID2ᚖstring(ctx context.Context, sel ast.Se
 	_ = ctx
 	res := graphql.MarshalID(*v)
 	return res
+}
+
+func (ec *executionContext) marshalOIssueEventStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐIssueEventStatus(ctx context.Context, sel ast.SelectionSet, v *model.IssueEventStatus) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._IssueEventStatus(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalOMetadataStatus2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐMetadataStatus(ctx context.Context, sel ast.SelectionSet, v *model.MetadataStatus) graphql.Marshaler {
