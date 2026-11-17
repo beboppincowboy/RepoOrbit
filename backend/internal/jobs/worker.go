@@ -100,23 +100,17 @@ func (f fence) Commit(ctx context.Context, fn func(tx pgx.Tx) error) error {
 }
 
 func (f fence) commit(ctx context.Context, fn func(tx pgx.Tx) error) error {
-	tx, err := f.w.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	// FOR SHARE keeps a reclaiming worker from taking the row until this transaction ends.
-	_, err = db.New(tx).CheckClaim(ctx, db.CheckClaimParams{ID: f.job.ID, Generation: f.job.Generation, Now: ts(f.w.now())})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrLostClaim
-	}
-	if err != nil {
-		return err
-	}
-	if err = fn(tx); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return db.InTx(ctx, f.w.Pool, func(tx pgx.Tx) error {
+		// FOR SHARE keeps a reclaiming worker from taking the row until this transaction ends.
+		_, err := db.New(tx).CheckClaim(ctx, db.CheckClaimParams{ID: f.job.ID, Generation: f.job.Generation, Now: ts(f.w.now())})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrLostClaim
+		}
+		if err != nil {
+			return err
+		}
+		return fn(tx)
+	})
 }
 
 // runOnce claims and runs a single job to completion; false means nothing was due.

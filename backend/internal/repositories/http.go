@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
@@ -150,18 +151,13 @@ func (s *Service) Installed(w http.ResponseWriter, r *http.Request) {
 // storeInstallation saves a connected installation and runs OnEligibilityChange in one transaction, so work paused
 // for lack of access resumes with it.
 func (s *Service) storeInstallation(ctx context.Context, userID int64, in githubapp.Installation) error {
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := s.Queries.WithTx(tx).UpsertInstallation(ctx, db.UpsertInstallationParams{UserID: userID, InstallationID: in.ID, AccountLogin: in.Account.Login}); err != nil {
-		return err
-	}
-	if s.OnEligibilityChange != nil {
-		if err := s.OnEligibilityChange(ctx, tx, userID); err != nil {
+	return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
+		if err := s.Queries.WithTx(tx).UpsertInstallation(ctx, db.UpsertInstallationParams{UserID: userID, InstallationID: in.ID, AccountLogin: in.Account.Login}); err != nil {
 			return err
 		}
-	}
-	return tx.Commit(ctx)
+		if s.OnEligibilityChange != nil {
+			return s.OnEligibilityChange(ctx, tx, userID)
+		}
+		return nil
+	})
 }
