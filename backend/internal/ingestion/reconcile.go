@@ -1,0 +1,243 @@
+package ingestion
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"math/rand/v2"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/jobs"
+)
+
+// Fixed operating limits (no tuning controls until measurements justify them).
+const (
+	MetadataPollInterval  = 15 * time.Minute
+	StarReconcileInterval = time.Hour
+	jitterFraction        = 0.1 // each period varies by up to +-10%
+	enqueueSpreadDivisor  = 15  // due times spread over interval/15 (one minute of a poll)
+)
+
+// ErrNoCredential means the user has no usable GitHub credential. The star handler turns it into a pause:
+// no remote call is retried and no attempt is spent.
+var ErrNoCredential = errors.New("ingestion: no usable credential")
+
+// StarRefresh is the outcome of re-reading one user's stars from GitHub.
+type StarRefresh struct {
+	// Completed is true only when every page was read and the snapshot was replaced. A failed refresh keeps the previous snapshot.
+	Completed bool
+	RetryAt   *time.Time // set when GitHub rate limited the refresh
+}
+
+// StarRefresher re-reads a user's stars and replaces the snapshot only when complete (the existing
+// repositories.Service snapshot replacement). It returns ErrNoCredential when the user is signed out or revoked.
+// Makes GitHub calls. The worker wiring adapts repositories.Service to this; it lives outside this package
+// because repositories depends on ingestion.
+type StarRefresher interface {
+	RefreshStars(ctx context.Context, userID int64) (StarRefresh, error)
+}
+
+// SchedulerDeps is everything StartScheduler needs. Sleep and Rand default to real time and math/rand.
+type SchedulerDeps struct {
+	Pool   *pgxpool.Pool
+	Worker *jobs.Worker // the star reconcile handler is registered here; the caller runs the worker
+	Stars  StarRefresher
+	Clock  jobs.Clock
+	Sleep  func(ctx context.Context, d time.Duration) error
+	Rand   func() float64 // [0,1)
+}
+
+func userKey(id int64) string { return "user:" + strconv.FormatInt(id, 10) }
+
+// RecheckEligibility resumes paused work that a user's eligibility change may unblock: refreshes of the repositories
+// they actively follow and their own star reconcile. Call it inside the transaction of the sign-in, reselection,
+// completed star refresh, or installation change. Never revives dead work (jobs.Resume only unparks paused jobs)
+// and makes no remote call. Writes job rows via tx.
+func RecheckEligibility(ctx context.Context, tx pgx.Tx, userID int64, now time.Time) error {
+	ids, err := db.New(tx).ListEligibleRepositoryIDsForUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := jobs.Resume(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(id), now); err != nil {
+			return err
+		}
+	}
+	return jobs.Resume(ctx, tx, jobs.KindStarReconcile, userKey(userID), now)
+}
+
+// StarReconcileHandler refreshes one user's stars. A completed refresh suspends the user's starred selections that
+// are no longer starred (the Selection stays) and restores ones that are again, then rechecks paused work. A failed
+// refresh changes nothing. No credential pauses without spending an attempt; a rate limit defers without one too.
+func StarReconcileHandler(stars StarRefresher, clock jobs.Clock) jobs.Handler {
+	return func(ctx context.Context, job jobs.Job, fence jobs.Fence) error {
+		userID, err := strconv.ParseInt(strings.TrimPrefix(job.Key, "user:"), 10, 64)
+		if err != nil || !strings.HasPrefix(job.Key, "user:") {
+			return jobs.Permanent(fmt.Errorf("bad star reconcile key %q", job.Key))
+		}
+		res, err := stars.RefreshStars(ctx, userID)
+		switch {
+		case errors.Is(err, ErrNoCredential):
+			return &jobs.Pause{Reason: "no usable credential"}
+		case err != nil:
+			return err
+		case !res.Completed && res.RetryAt != nil:
+			return &jobs.Defer{Until: *res.RetryAt, Reason: "rate limited"}
+		case !res.Completed:
+			return errors.New("star refresh incomplete") // backoff retry; the previous snapshot and eligibility stay
+		}
+		now := clock.Now()
+		return fence.Commit(ctx, func(tx pgx.Tx) error {
+			q := db.New(tx)
+			if err := q.SuspendUnstarredFollows(ctx, db.SuspendUnstarredFollowsParams{UserID: userID, Now: pgtype.Timestamptz{Time: now, Valid: true}}); err != nil {
+				return err
+			}
+			if err := q.RestoreStarredFollows(ctx, userID); err != nil {
+				return err
+			}
+			return RecheckEligibility(ctx, tx, userID, now)
+		})
+	}
+}
+
+// jittered returns base varied by up to +-jitterFraction.
+func jittered(base time.Duration, rnd func() float64) time.Duration {
+	return time.Duration(float64(base) * (1 + (rnd()*2-1)*jitterFraction))
+}
+
+// duty is one periodic job of the scheduler.
+type duty struct {
+	name  string
+	every time.Duration
+	run   func(ctx context.Context, now time.Time) error
+	next  time.Time
+}
+
+// runDuties runs each duty at startup and then every period (jittered), until ctx ends. A failing run is logged and
+// retried next period; it never stops the loop.
+func runDuties(ctx context.Context, clock jobs.Clock, sleep func(context.Context, time.Duration) error, rnd func() float64, duties []*duty) {
+	start := clock.Now()
+	for _, d := range duties {
+		d.next = start
+	}
+	for ctx.Err() == nil {
+		now := clock.Now()
+		earliest := duties[0].next
+		for _, d := range duties {
+			if d.next.Before(earliest) {
+				earliest = d.next
+			}
+		}
+		if wait := earliest.Sub(now); wait > 0 {
+			if sleep(ctx, wait) != nil {
+				return
+			}
+			now = clock.Now()
+		}
+		for _, d := range duties {
+			if d.next.After(now) {
+				continue
+			}
+			if err := d.run(ctx, now); err != nil && ctx.Err() == nil {
+				log.Printf("ingestion: %s reconciliation failed: %v", d.name, err)
+			}
+			d.next = now.Add(jittered(d.every, rnd))
+		}
+	}
+}
+
+// StartScheduler registers the star reconcile handler on the worker and starts the periodic reconciliation loop:
+// at startup and then every 15 minutes it schedules refreshes of every followed repository and resumes paused ones;
+// hourly it schedules star reconciliation for users who follow starred repositories. Due times are spread by jitter.
+// It only writes job rows (Enqueue never revives dead work); the jobs worker executes them, two at a time. The
+// returned channel closes when the loop has stopped (ctx done).
+func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
+	if d.Sleep == nil {
+		d.Sleep = func(ctx context.Context, w time.Duration) error {
+			t := time.NewTimer(w)
+			defer t.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-t.C:
+				return nil
+			}
+		}
+	}
+	if d.Rand == nil {
+		d.Rand = rand.Float64
+	}
+	d.Worker.Register(jobs.KindStarReconcile, StarReconcileHandler(d.Stars, d.Clock))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runDuties(ctx, d.Clock, d.Sleep, d.Rand, []*duty{
+			{name: "metadata poll", every: MetadataPollInterval, run: d.pollMetadata},
+			{name: "star", every: StarReconcileInterval, run: d.scheduleStars},
+		})
+	}()
+	return done
+}
+
+// pollMetadata enqueues a refresh for every followed repository (jittered due time) and resumes paused ones.
+// Dead repositories stay dead: Enqueue records intent only, Resume ignores them.
+func (d SchedulerDeps) pollMetadata(ctx context.Context, now time.Time) error {
+	return d.inTx(ctx, func(tx pgx.Tx) error {
+		ids, err := db.New(tx).ListFollowedRepositoryIDs(ctx)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			at := now.Add(spread(MetadataPollInterval, d.Rand))
+			if err := jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(id), at); err != nil {
+				return err
+			}
+			if err := jobs.Resume(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(id), at); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (d SchedulerDeps) scheduleStars(ctx context.Context, now time.Time) error {
+	return d.inTx(ctx, func(tx pgx.Tx) error {
+		ids, err := db.New(tx).ListStarFollowerIDs(ctx)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			at := now.Add(spread(StarReconcileInterval, d.Rand))
+			if err := jobs.Enqueue(ctx, tx, jobs.KindStarReconcile, userKey(id), at); err != nil {
+				return err
+			}
+			if err := jobs.Resume(ctx, tx, jobs.KindStarReconcile, userKey(id), at); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func spread(interval time.Duration, rnd func() float64) time.Duration {
+	return time.Duration(rnd() * float64(interval) / enqueueSpreadDivisor)
+}
+
+func (d SchedulerDeps) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := d.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
