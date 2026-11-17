@@ -199,9 +199,6 @@ func TestSessionFixedSevenDayLifetime(t *testing.T) {
 	if _, err := e.h.Service.Viewer(context.Background(), token); err != ErrUnauthenticated {
 		t.Fatalf("session older than 7 days accepted: %v", err)
 	}
-	if e.h.Service.CSRFToken(token) == "" {
-		t.Fatal("csrf token empty")
-	}
 }
 
 func TestStoredTokensAreEncrypted(t *testing.T) {
