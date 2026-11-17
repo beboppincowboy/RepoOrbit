@@ -191,7 +191,7 @@ func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
 // pollMetadata enqueues a refresh for every followed repository (jittered due time) and resumes paused ones.
 // Dead repositories stay dead: Enqueue records intent only, Resume ignores them.
 func (d SchedulerDeps) pollMetadata(ctx context.Context, now time.Time) error {
-	return d.inTx(ctx, func(tx pgx.Tx) error {
+	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
 		ids, err := db.New(tx).ListFollowedRepositoryIDs(ctx)
 		if err != nil {
 			return err
@@ -201,7 +201,7 @@ func (d SchedulerDeps) pollMetadata(ctx context.Context, now time.Time) error {
 }
 
 func (d SchedulerDeps) scheduleStars(ctx context.Context, now time.Time) error {
-	return d.inTx(ctx, func(tx pgx.Tx) error {
+	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
 		ids, err := db.New(tx).ListStarFollowerIDs(ctx)
 		if err != nil {
 			return err
@@ -227,16 +227,4 @@ func (d SchedulerDeps) enqueueAndResume(ctx context.Context, tx pgx.Tx, kind job
 
 func spread(interval time.Duration, rnd func() float64) time.Duration {
 	return time.Duration(rnd() * float64(interval) / enqueueSpreadDivisor)
-}
-
-func (d SchedulerDeps) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
-	tx, err := d.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := fn(tx); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
 }

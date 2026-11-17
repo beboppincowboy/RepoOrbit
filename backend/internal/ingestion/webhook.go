@@ -147,59 +147,53 @@ func (d WebhookDeps) accept(ctx context.Context, id, event string, k whKind, p w
 	if d.Clock != nil {
 		now = d.Clock.Now()
 	}
-	tx, err := d.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	q := db.New(tx)
-	n, err := q.InsertWebhookDelivery(ctx, db.InsertWebhookDeliveryParams{DeliveryID: id, Event: event, ReceivedAt: pgtype.Timestamptz{Time: now, Valid: true}})
-	if err != nil {
-		return err
-	}
-	if n == 0 { // duplicate: already accepted, no second work
-		return tx.Commit(ctx)
-	}
-	switch {
-	case k == whOrdinary:
-		if p.Repository.ID <= 0 {
-			return errWebhookPayload{}
+	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		n, err := q.InsertWebhookDelivery(ctx, db.InsertWebhookDeliveryParams{DeliveryID: id, Event: event, ReceivedAt: pgtype.Timestamptz{Time: now, Valid: true}})
+		if err != nil {
+			return err
 		}
-		_, err = d.refresh(ctx, tx, p.Repository.ID)
-	case event == "repository":
-		if p.Repository.ID <= 0 {
-			return errWebhookPayload{}
+		if n == 0 { // duplicate: already accepted, no second work
+			return nil
 		}
-		// Both take effect at commit, so their order here is only lock order: the repository's job row first, then the
-		// fence rows, the same order a refresh commit takes them in (claim check, then StillCurrent). The refresh is a
-		// no-op when the repository is unselected.
-		if _, err = d.refresh(ctx, tx, p.Repository.ID); err == nil {
-			err = d.bump(ctx, tx, accessfence.ScopeRepository, p.Repository.ID)
-		}
-	case event == "github_app_authorization":
-		var uid int64
-		uid, err = q.GetUserIDByGithubID(ctx, p.Sender.ID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			err = nil // no such user here: nothing to invalidate
-		} else if err == nil {
-			// Bump first (cached reads stop), then end the credential: jobs find no token and pause without spending
-			// attempts. Same order and queries as auth.Service.Revoke, in this delivery's transaction.
-			if err = d.bump(ctx, tx, accessfence.ScopeUser, uid); err == nil {
-				if err = q.DeleteUserSessions(ctx, uid); err == nil {
-					err = q.ClearUserTokens(ctx, uid)
+		switch {
+		case k == whOrdinary:
+			if p.Repository.ID <= 0 {
+				return errWebhookPayload{}
+			}
+			_, err = d.refresh(ctx, tx, p.Repository.ID)
+		case event == "repository":
+			if p.Repository.ID <= 0 {
+				return errWebhookPayload{}
+			}
+			// Both take effect at commit, so their order here is only lock order: the repository's job row first, then the
+			// fence rows, the same order a refresh commit takes them in (claim check, then StillCurrent). The refresh is a
+			// no-op when the repository is unselected.
+			if _, err = d.refresh(ctx, tx, p.Repository.ID); err == nil {
+				err = d.bump(ctx, tx, accessfence.ScopeRepository, p.Repository.ID)
+			}
+		case event == "github_app_authorization":
+			var uid int64
+			uid, err = q.GetUserIDByGithubID(ctx, p.Sender.ID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				err = nil // no such user here: nothing to invalidate
+			} else if err == nil {
+				// Bump first (cached reads stop), then end the credential: jobs find no token and pause without spending
+				// attempts. Same order and queries as auth.Service.Revoke, in this delivery's transaction.
+				if err = d.bump(ctx, tx, accessfence.ScopeUser, uid); err == nil {
+					if err = q.DeleteUserSessions(ctx, uid); err == nil {
+						err = q.ClearUserTokens(ctx, uid)
+					}
 				}
 			}
+		default: // installation, installation_repositories
+			if p.Installation.ID <= 0 {
+				return errWebhookPayload{}
+			}
+			err = d.bump(ctx, tx, accessfence.ScopeInstallation, p.Installation.ID)
 		}
-	default: // installation, installation_repositories
-		if p.Installation.ID <= 0 {
-			return errWebhookPayload{}
-		}
-		err = d.bump(ctx, tx, accessfence.ScopeInstallation, p.Installation.ID)
-	}
-	if err != nil {
 		return err
-	}
-	return tx.Commit(ctx)
+	})
 }
 
 func validWebhookSignature(secret, body []byte, header string) bool {

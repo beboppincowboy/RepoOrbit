@@ -108,26 +108,22 @@ func (s *Service) CompleteLogin(ctx context.Context, queryState, cookieState, co
 	}
 	// The user, the session and the sign-in hook commit together: no half sign-in, and work paused for a missing
 	// credential resumes with the credential that just arrived.
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback(ctx)
-	q := s.Queries.WithTx(tx)
-	userID, err := q.UpsertUser(ctx, db.UpsertUserParams{GithubID: gh.ID, Login: gh.Login, AccessTokenEnc: access, RefreshTokenEnc: refresh, AccessExpiresAt: timestamptz(tokens.AccessExpiresAt), RefreshExpiresAt: timestamptz(tokens.RefreshExpiresAt)})
-	if err != nil {
-		return "", err
-	}
-	now := s.now()
-	if err = q.CreateSession(ctx, db.CreateSessionParams{TokenHash: sha256Digest(token), UserID: userID, CreatedAt: timestamptz(now), ExpiresAt: timestamptz(now.Add(SessionLifetime))}); err != nil {
-		return "", err
-	}
-	if s.OnSignIn != nil {
-		if err = s.OnSignIn(ctx, tx, userID); err != nil {
-			return "", err
+	err = db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
+		q := s.Queries.WithTx(tx)
+		userID, err := q.UpsertUser(ctx, db.UpsertUserParams{GithubID: gh.ID, Login: gh.Login, AccessTokenEnc: access, RefreshTokenEnc: refresh, AccessExpiresAt: timestamptz(tokens.AccessExpiresAt), RefreshExpiresAt: timestamptz(tokens.RefreshExpiresAt)})
+		if err != nil {
+			return err
 		}
-	}
-	if err = tx.Commit(ctx); err != nil {
+		now := s.now()
+		if err = q.CreateSession(ctx, db.CreateSessionParams{TokenHash: sha256Digest(token), UserID: userID, CreatedAt: timestamptz(now), ExpiresAt: timestamptz(now.Add(SessionLifetime))}); err != nil {
+			return err
+		}
+		if s.OnSignIn != nil {
+			return s.OnSignIn(ctx, tx, userID)
+		}
+		return nil
+	})
+	if err != nil {
 		return "", err
 	}
 	return token, nil
@@ -158,69 +154,63 @@ func (s *Service) CSRFToken(sessionToken string) string { return csrfToken(s.Key
 // The user row stays locked for the whole refresh, so concurrent callers wait and then reuse the
 // new token instead of spending the (single-use, rotated) refresh token twice.
 // ponytail: holds a row lock across one HTTP call; fine at local scale, move to an advisory lock if it contends.
-func (s *Service) AccessToken(ctx context.Context, userID int64) (string, error) {
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback(ctx)
-	q := s.Queries.WithTx(tx)
-	row, err := q.LockUserTokens(ctx, userID)
-	if err != nil {
-		return "", err
-	}
-	if len(row.AccessTokenEnc) == 0 {
-		return "", ErrUnauthenticated // revoked
-	}
-	access, err := open(s.Key, row.AccessTokenEnc)
-	if err != nil {
-		return "", err
-	}
-	if !row.AccessExpiresAt.Valid || row.AccessExpiresAt.Time.After(s.now().Add(refreshSkew)) {
-		return access, nil
-	}
-	if len(row.RefreshTokenEnc) == 0 {
-		return "", ErrUnauthenticated
-	}
-	refresh, err := open(s.Key, row.RefreshTokenEnc)
-	if err != nil {
-		return "", err
-	}
-	tokens, err := s.GitHub.Refresh(ctx, refresh)
-	if err != nil {
-		return "", fmt.Errorf("refresh: %w", err)
-	}
-	newAccess, err := seal(s.Key, tokens.AccessToken)
-	if err != nil {
-		return "", err
-	}
-	newRefresh, err := seal(s.Key, tokens.RefreshToken)
-	if err != nil {
-		return "", err
-	}
-	if err = q.UpdateUserTokens(ctx, db.UpdateUserTokensParams{ID: userID, AccessTokenEnc: newAccess, RefreshTokenEnc: newRefresh, AccessExpiresAt: timestamptz(tokens.AccessExpiresAt), RefreshExpiresAt: timestamptz(tokens.RefreshExpiresAt)}); err != nil {
-		return "", err
-	}
-	return tokens.AccessToken, tx.Commit(ctx)
+func (s *Service) AccessToken(ctx context.Context, userID int64) (token string, err error) {
+	err = db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
+		q := s.Queries.WithTx(tx)
+		row, err := q.LockUserTokens(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if len(row.AccessTokenEnc) == 0 {
+			return ErrUnauthenticated // revoked
+		}
+		access, err := open(s.Key, row.AccessTokenEnc)
+		if err != nil {
+			return err
+		}
+		if !row.AccessExpiresAt.Valid || row.AccessExpiresAt.Time.After(s.now().Add(refreshSkew)) {
+			token = access
+			return nil
+		}
+		if len(row.RefreshTokenEnc) == 0 {
+			return ErrUnauthenticated
+		}
+		refresh, err := open(s.Key, row.RefreshTokenEnc)
+		if err != nil {
+			return err
+		}
+		tokens, err := s.GitHub.Refresh(ctx, refresh)
+		if err != nil {
+			return fmt.Errorf("refresh: %w", err)
+		}
+		newAccess, err := seal(s.Key, tokens.AccessToken)
+		if err != nil {
+			return err
+		}
+		newRefresh, err := seal(s.Key, tokens.RefreshToken)
+		if err != nil {
+			return err
+		}
+		if err = q.UpdateUserTokens(ctx, db.UpdateUserTokensParams{ID: userID, AccessTokenEnc: newAccess, RefreshTokenEnc: newRefresh, AccessExpiresAt: timestamptz(tokens.AccessExpiresAt), RefreshExpiresAt: timestamptz(tokens.RefreshExpiresAt)}); err != nil {
+			return err
+		}
+		token = tokens.AccessToken
+		return nil
+	})
+	return token, err
 }
 
 // Revoke ends every session of a user and wipes their stored GitHub tokens. Call it when GitHub
 // reports the user's token is no longer valid.
 func (s *Service) Revoke(ctx context.Context, userID int64) error {
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	q := s.Queries.WithTx(tx)
-	if err = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeUser, userID); err != nil { // before cleanup: cached reads must stop first
-		return err
-	}
-	if err = q.DeleteUserSessions(ctx, userID); err != nil {
-		return err
-	}
-	if err = q.ClearUserTokens(ctx, userID); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
+		q := s.Queries.WithTx(tx)
+		if err := accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeUser, userID); err != nil { // before cleanup: cached reads must stop first
+			return err
+		}
+		if err := q.DeleteUserSessions(ctx, userID); err != nil {
+			return err
+		}
+		return q.ClearUserTokens(ctx, userID)
+	})
 }

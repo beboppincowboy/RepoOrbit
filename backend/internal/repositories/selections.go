@@ -52,31 +52,28 @@ const (
 // storeSelection upserts repo's metadata and the user's selection of it, plus durable scheduling (OnSelect), in one transaction. Fails (loudly) if repo's id collides
 // with a demo row, which is never overwritten.
 func (s *Service) storeSelection(ctx context.Context, userID int64, repo githubapp.Repo, source string) error {
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	q := s.Queries.WithTx(tx)
-	if _, err := q.UpsertRepository(ctx, db.UpsertRepositoryParams{ID: repo.ID, Name: repo.FullName, Description: repo.Description, IsPrivate: repo.Private}); errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("repository %d collides with a demo row", repo.ID)
-	} else if err != nil {
-		return err
-	}
-	if err := q.UpsertSelection(ctx, db.UpsertSelectionParams{UserID: userID, RepositoryID: repo.ID, Source: source, SelectedAt: pgtype.Timestamptz{Time: s.now(), Valid: true}}); err != nil {
-		return err
-	}
-	if s.OnSelect != nil {
-		if err := s.OnSelect(ctx, tx, repo.ID); err != nil {
+	return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
+		q := s.Queries.WithTx(tx)
+		if _, err := q.UpsertRepository(ctx, db.UpsertRepositoryParams{ID: repo.ID, Name: repo.FullName, Description: repo.Description, IsPrivate: repo.Private}); errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("repository %d collides with a demo row", repo.ID)
+		} else if err != nil {
 			return err
 		}
-	}
-	if s.OnEligibilityChange != nil { // a reselect may be what unblocks paused work (never dead work)
-		if err := s.OnEligibilityChange(ctx, tx, userID); err != nil {
+		if err := q.UpsertSelection(ctx, db.UpsertSelectionParams{UserID: userID, RepositoryID: repo.ID, Source: source, SelectedAt: pgtype.Timestamptz{Time: s.now(), Valid: true}}); err != nil {
 			return err
 		}
-	}
-	return tx.Commit(ctx)
+		if s.OnSelect != nil {
+			if err := s.OnSelect(ctx, tx, repo.ID); err != nil {
+				return err
+			}
+		}
+		if s.OnEligibilityChange != nil { // a reselect may be what unblocks paused work (never dead work)
+			if err := s.OnEligibilityChange(ctx, tx, userID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // Deselect marks the user's own selection deselected, for either source (also unfollows). It touches only that

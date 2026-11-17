@@ -142,15 +142,7 @@ func (s *Service) refreshStars(ctx context.Context, userID int64, out *StarredPa
 		out.RefreshFailed, out.RetryAt = true, f.RetryAt
 		return nil
 	}
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := s.StoreStars(ctx, tx, userID, f.Repos); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error { return s.StoreStars(ctx, tx, userID, f.Repos) })
 }
 
 // StoreStars replaces the user's star snapshot with repos (a complete FetchStars result) inside the caller's
