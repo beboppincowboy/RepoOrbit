@@ -25,8 +25,8 @@ type recorder struct {
 	refreshErr error
 }
 
-func (r *recorder) deps(pool *pgxpool.Pool) Deps {
-	return Deps{
+func (r *recorder) deps(pool *pgxpool.Pool) WebhookDeps {
+	return WebhookDeps{
 		Pool:   pool,
 		Secret: testSecret,
 		refresh: func(_ context.Context, _ pgx.Tx, id int64) (bool, error) {
@@ -223,7 +223,7 @@ func TestRealFenceBumpBlocksInFlightCommit(t *testing.T) {
 		}
 		return ok
 	}
-	h := WebhookHandler(Deps{Pool: pool, Secret: testSecret})
+	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
 	for i, tc := range []struct{ event, body string }{
 		{"installation", `{"action":"created","installation":{"id":7}}`},
 		{"installation", `{"action":"deleted","installation":{"id":7}}`},
@@ -262,7 +262,7 @@ func TestRealRefreshOnlyForSelectedRepositories(t *testing.T) {
 	if notImplemented(err) {
 		t.Skip("needs U3a/U3b: " + err.Error())
 	}
-	h := WebhookHandler(Deps{Pool: pool, Secret: testSecret})
+	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
 	w := post(h, testSecret, "push", "real-1", pushBody, "")
 	if w.Code != 200 {
 		t.Fatalf("status %d %s", w.Code, w.Body.String())
