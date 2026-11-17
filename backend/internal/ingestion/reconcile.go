@@ -24,16 +24,17 @@ const (
 	enqueueSpreadDivisor  = 15  // due times spread over interval/15 (one minute of a poll)
 )
 
-// ErrNoCredential means the user has no usable GitHub credential. The star handler turns it into a pause:
-// no remote call is retried and no attempt is spent.
+// ErrNoCredential means the user has no usable GitHub credential (repositories.ErrSignedOut, mapped by the worker's
+// adapter). The star handler turns it into a pause: no remote call is retried and no attempt is spent.
 var ErrNoCredential = errors.New("ingestion: no usable credential")
 
 // StarFetch is the outcome of reading a user's stars from GitHub, without storing them.
 type StarFetch struct {
 	Repos []githubapp.Repo
-	// Completed is true only when every page was read. A failed fetch stores nothing and keeps the previous snapshot.
-	Completed bool
-	RetryAt   *time.Time // set when GitHub rate limited the fetch
+	// Complete is true only when every page was read (the same word as repositories.StarFetch). A failed fetch stores
+	// nothing and keeps the previous snapshot.
+	Complete bool
+	RetryAt  *time.Time // set when GitHub rate limited the fetch
 }
 
 // StarRefresher splits re-reading stars from storing them so the job can commit the snapshot, follow eligibility and
@@ -59,8 +60,9 @@ type SchedulerDeps struct {
 func userKey(id int64) string { return "user:" + strconv.FormatInt(id, 10) }
 
 // RecheckEligibility resumes paused work that a user's eligibility change may unblock: refreshes of the repositories
-// they actively follow and their own star reconcile. Call it inside the transaction of the sign-in, reselection,
-// completed star refresh, or installation change. Never revives dead work (jobs.Resume only unparks paused jobs)
+// they actively follow and their own star reconcile. A job that is running right now is marked pending instead, so a
+// Pause it is about to return re-queues it. Call it inside the transaction of the sign-in, reselection, completed star
+// store, or installation change. Never revives dead work (jobs.Resume only unparks paused jobs and flags running ones)
 // and makes no remote call. Writes job rows via tx.
 func RecheckEligibility(ctx context.Context, tx pgx.Tx, userID int64, now time.Time) error {
 	ids, err := db.New(tx).ListEligibleRepositoryIDsForUser(ctx, userID)
@@ -90,7 +92,7 @@ func StarReconcileHandler(stars StarRefresher, clock jobs.Clock, q *db.Queries) 
 			return &jobs.Defer{RetryAt: until, Reason: "rate limited"} // pace the credential: no GitHub call at all
 		}
 		res, err := stars.FetchStars(ctx, userID)
-		if err == nil && !res.Completed && res.RetryAt != nil {
+		if err == nil && !res.Complete && res.RetryAt != nil {
 			throttleCredential(ctx, q, userID, *res.RetryAt)
 		}
 		switch {
@@ -98,9 +100,9 @@ func StarReconcileHandler(stars StarRefresher, clock jobs.Clock, q *db.Queries) 
 			return &jobs.Pause{Reason: "no usable credential"}
 		case err != nil:
 			return err
-		case !res.Completed && res.RetryAt != nil:
+		case !res.Complete && res.RetryAt != nil:
 			return &jobs.Defer{RetryAt: *res.RetryAt, Reason: "rate limited"}
-		case !res.Completed:
+		case !res.Complete:
 			return errors.New("star refresh incomplete") // backoff retry; the previous snapshot and eligibility stay
 		}
 		return fence.Commit(ctx, func(tx pgx.Tx) error { return stars.StoreStars(ctx, tx, userID, res.Repos) })

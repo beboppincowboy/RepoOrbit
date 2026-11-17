@@ -191,7 +191,7 @@ func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
 	svc.OnEligibilityChange = func(ctx context.Context, tx pgx.Tx, userID int64) error {
 		return RecheckEligibility(ctx, tx, userID, now)
 	}
-	stars := &realStore{fakeStars: fakeStars{res: StarFetch{Completed: true, Repos: []githubapp.Repo{{ID: 10, FullName: "o/r"}}}}, svc: svc}
+	stars := &realStore{fakeStars: fakeStars{res: StarFetch{Complete: true, Repos: []githubapp.Repo{{ID: 10, FullName: "o/r"}}}}, svc: svc}
 	// Lost claim after a successful fetch: nothing is written.
 	if err := StarReconcileHandler(stars, &fakeClock{now: now}, nil)(ctx, jobs.Job{Key: "user:1"}, onceFence{lost: true}); !errors.Is(err, jobs.ErrLostClaim) {
 		t.Fatalf("lost claim: %v", err)

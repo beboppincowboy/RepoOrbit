@@ -660,7 +660,7 @@ func TestCredentialThrottleIsSharedAcrossJobKindsAndRestarts(t *testing.T) {
 	if err := e.run(e.fence(), id); !errors.As(err, &d) {
 		t.Fatalf("metadata rate limit: %v", err)
 	}
-	stars := &extStars{res: ingestion.StarFetch{Completed: true}}
+	stars := &extStars{res: ingestion.StarFetch{Complete: true}}
 	q := db.New(e.pool)
 	h := ingestion.StarReconcileHandler(stars, wallClock{}, q)
 	d = nil

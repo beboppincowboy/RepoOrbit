@@ -125,7 +125,7 @@ func (f onceFence) Commit(_ context.Context, fn func(pgx.Tx) error) error {
 
 // The snapshot is stored only inside the claim-fenced commit: a worker that lost its claim after fetching stores nothing.
 func TestStarHandlerStoresOnlyInsideTheClaimFence(t *testing.T) {
-	stars := &fakeStars{res: StarFetch{Completed: true}}
+	stars := &fakeStars{res: StarFetch{Complete: true}}
 	h := StarReconcileHandler(stars, &fakeClock{}, nil)
 	if err := h(context.Background(), jobs.Job{Key: "user:7"}, onceFence{lost: true}); !errors.Is(err, jobs.ErrLostClaim) {
 		t.Fatalf("lost claim: %v", err)
