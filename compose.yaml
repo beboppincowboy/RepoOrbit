@@ -1,0 +1,54 @@
+services:
+  db:
+    image: postgres:17.5-alpine
+    environment:
+      POSTGRES_USER: repoorbit
+      POSTGRES_PASSWORD: repoorbit
+      POSTGRES_DB: repoorbit
+    ports: ["127.0.0.1:54329:5432"]
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U repoorbit -d repoorbit"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  api:
+    build: ./backend
+    command: ["/app/api"]
+    environment:
+      DATABASE_URL: postgres://repoorbit:repoorbit@db:5432/repoorbit?sslmode=disable
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  worker:
+    build: ./backend
+    command: ["/app/worker"]
+    environment:
+      DATABASE_URL: postgres://repoorbit:repoorbit@db:5432/repoorbit?sslmode=disable
+    depends_on:
+      db: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8081/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  web:
+    build:
+      context: ./apps/web
+      args:
+        API_ORIGIN: http://api:8080
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+volumes:
+  postgres_data:
