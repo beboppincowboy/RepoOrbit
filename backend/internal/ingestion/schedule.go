@@ -61,6 +61,16 @@ func RequestActivity(ctx context.Context, tx pgx.Tx, repoID int64, now time.Time
 	if _, err := tx.Exec(ctx, `INSERT INTO activity_resources (repository_id, resource, boundary) SELECT $1, 'pull_requests', boundary FROM activity_resources WHERE repository_id=$1 AND resource='issues' ON CONFLICT DO NOTHING`, repoID); err != nil {
 		return err
 	}
+	for _, resource := range []string{"releases", "issue_events"} {
+		if _, err := tx.Exec(ctx, `INSERT INTO activity_resources (repository_id, resource, boundary) SELECT $1, $2, boundary FROM activity_resources WHERE repository_id=$1 AND resource='issues' ON CONFLICT DO NOTHING`, repoID, resource); err != nil {
+			return err
+		}
+	}
+	for _, kind := range []jobs.Kind{jobs.KindActivityReleases, jobs.KindActivityIssueEvents} {
+		if err := jobs.Enqueue(ctx, tx, kind, repoKey(repoID), now); err != nil {
+			return err
+		}
+	}
 	if err := jobs.Enqueue(ctx, tx, jobs.KindActivityIssues, repoKey(repoID), now); err != nil {
 		return err
 	}

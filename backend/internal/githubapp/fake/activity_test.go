@@ -48,3 +48,49 @@ func TestActivityPaginationAndAuthorization(t *testing.T) {
 		t.Fatalf("comments=%v err=%v", comments, err)
 	}
 }
+
+func TestReleaseAndEventPaginationAndPrivateAccess(t *testing.T) {
+	s := New("client", "secret")
+	s.access["token"] = "alice"
+	s.access["other"] = "bob"
+	id := s.AddRepo("alice", "project", true)
+	s.Install("alice", 1, id)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	releases := make([]ReleaseFixture, 101)
+	events := make([]IssueEventFixture, 101)
+	for i := range releases {
+		releases[i] = ReleaseFixture{ID: int64(i + 1), TagName: "v1", HTMLURL: "url", CreatedAt: now, PublishedAt: &now}
+		events[i] = IssueEventFixture{ID: int64(i + 1), Event: "closed", URL: "url", CreatedAt: now, Issue: &EventIssueFixture{ID: 2, Number: 3}}
+	}
+	s.SetReleases(id, releases...)
+	s.SetIssueEvents(id, events...)
+	server := httptest.NewServer(s.Handler())
+	defer server.Close()
+	c := githubapp.New("", "", "", server.URL, "")
+	ctx := context.Background()
+	for _, fetch := range []func(context.Context, string, string, string) (int, string, error){
+		func(ctx context.Context, token, name, cursor string) (int, string, error) {
+			x, n, e := c.FetchReleasesCursor(ctx, token, name, cursor)
+			return len(x), n, e
+		},
+		func(ctx context.Context, token, name, cursor string) (int, string, error) {
+			x, n, e := c.FetchIssueEventsCursor(ctx, token, name, cursor)
+			return len(x), n, e
+		},
+	} {
+		n, cursor, err := fetch(ctx, "token", "alice/project", "")
+		if err != nil || n != 100 || cursor == "" {
+			t.Fatalf("first=%d cursor=%q err=%v", n, cursor, err)
+		}
+		n, next, err := fetch(ctx, "token", "alice/project", cursor)
+		if err != nil || n != 1 || next != "" {
+			t.Fatalf("second=%d next=%q err=%v", n, next, err)
+		}
+		if _, _, err := fetch(ctx, "other", "alice/project", ""); err == nil {
+			t.Fatal("private data accessible")
+		}
+		if _, _, err := fetch(ctx, "invalid", "alice/project", ""); err == nil {
+			t.Fatal("invalid token accepted")
+		}
+	}
+}
