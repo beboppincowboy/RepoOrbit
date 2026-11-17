@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
@@ -71,6 +72,12 @@ func RecheckEligibility(ctx context.Context, tx pgx.Tx, userID int64, now time.T
 	}
 	for _, id := range ids {
 		if err := jobs.Resume(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(id), now); err != nil {
+			return err
+		}
+		if err := jobs.Resume(ctx, tx, jobs.KindActivityIssues, repoKey(id), now); err != nil {
+			return err
+		}
+		if err := RequestActivity(ctx, tx, id, now); err != nil {
 			return err
 		}
 	}
@@ -192,6 +199,9 @@ func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
 // Dead repositories stay dead: Enqueue records intent only, Resume ignores them.
 func (d SchedulerDeps) pollMetadata(ctx context.Context, now time.Time) error {
 	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
+		if err := accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeGlobal, 0); err != nil {
+			return err
+		}
 		ids, err := db.New(tx).ListFollowedRepositoryIDs(ctx)
 		if err != nil {
 			return err

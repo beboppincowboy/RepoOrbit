@@ -14,6 +14,55 @@ type AccessFence struct {
 	Epoch     int64
 }
 
+type ActivityCleanup struct {
+	RepositoryID int64
+	Version      int64
+}
+
+type ActivityIssue struct {
+	SourceID     int64
+	RepositoryID int64
+	Number       int64
+	Title        string
+	State        string
+	HtmlUrl      string
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+	ClosedAt     pgtype.Timestamptz
+	AuthorID     int64
+	AuthorLogin  string
+	AuthorType   string
+}
+
+type ActivityIssueAssignee struct {
+	IssueID  int64
+	SourceID int64
+	Login    string
+	Type     string
+}
+
+type ActivityIssueLabel struct {
+	IssueID  int64
+	SourceID int64
+	Name     string
+}
+
+type ActivityResource struct {
+	RepositoryID  int64
+	Resource      string
+	Boundary      pgtype.Timestamptz
+	Phase         string
+	Page          int32
+	Cursor        string
+	Generation    int64
+	Watermark     pgtype.Timestamptz
+	ScanStartedAt pgtype.Timestamptz
+	PreviousScan  []int64
+	CurrentScan   []int64
+	LastSuccessAt pgtype.Timestamptz
+	LastErrorCode pgtype.Text
+}
+
 type CredentialThrottle struct {
 	UserID     int64
 	RetryAfter pgtype.Timestamptz

@@ -2,6 +2,7 @@ package ingestion
 
 import (
 	"context"
+	"crypto/rsa"
 	"errors"
 	"fmt"
 	"log"
@@ -52,15 +53,21 @@ type RepoFetcher interface {
 
 // Deps are the collaborators of the metadata refresh handler.
 type Deps struct {
-	Pool   *pgxpool.Pool
-	GitHub RepoFetcher
-	Tokens TokenSource
-	Access AccessChecker
-	Clock  jobs.Clock
+	Pool      *pgxpool.Pool
+	GitHub    RepoFetcher
+	Tokens    TokenSource
+	Access    AccessChecker
+	Clock     jobs.Clock
+	Inventory AppInventory
+	AppKey    *rsa.PrivateKey
 }
 
 // Register wires the handler into a worker.
-func (d *Deps) Register(w *jobs.Worker) { w.Register(jobs.KindRepoMetadataRefresh, d.RefreshMetadata) }
+func (d *Deps) Register(w *jobs.Worker) {
+	w.Register(jobs.KindRepoMetadataRefresh, d.RefreshMetadata)
+	w.Register(jobs.KindActivityCleanup, d.CleanupPrivate)
+	w.Register(jobs.KindActivityIssues, d.SyncIssues)
+}
 
 func (d *Deps) throttledUntil(ctx context.Context, userID int64) time.Time {
 	return credentialThrottledUntil(ctx, db.New(d.Pool), userID)
@@ -215,6 +222,9 @@ func (d *Deps) commit(ctx context.Context, fence jobs.ClaimFence, repoID, uid in
 			// Record only the tightened flag and re-run through the private path.
 			privatized = true
 			if err := q.MarkRepositoryPrivate(ctx, repoID); err != nil {
+				return err
+			}
+			if err := accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeRepository, repoID); err != nil {
 				return err
 			}
 		} else {

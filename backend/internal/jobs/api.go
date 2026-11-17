@@ -17,7 +17,9 @@ type Kind string
 
 const (
 	KindRepoMetadataRefresh Kind = "repo_metadata_refresh" // Key "repo:<repositories.id>"
-	KindStarReconcile       Kind = "star_reconcile"        // Key "user:<users.id>"
+	KindActivityIssues      Kind = "activity_issues"
+	KindActivityCleanup     Kind = "activity_cleanup"
+	KindStarReconcile       Kind = "star_reconcile" // Key "user:<users.id>"
 )
 
 // Clock is injected everywhere timing matters.

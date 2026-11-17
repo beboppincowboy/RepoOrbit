@@ -41,7 +41,8 @@ const bumpSQL = `INSERT INTO access_fences (scope, subject_id, epoch) VALUES ($1
 // InvalidateAccess durably invalidates access for a subject by incrementing its epoch, and the global permissions
 // version, inside the caller's transaction (before any slower cleanup). The global row is locked first, then the
 // subject row, the same order StillCurrent takes them. Never grants access.
-func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) error {
+// BumpAccess fences observed authorization restoration without scheduling cleanup.
+func BumpAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) error {
 	if _, err := tx.Exec(ctx, bumpSQL, string(ScopeGlobal), int64(0)); err != nil {
 		return err
 	}
@@ -49,6 +50,26 @@ func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int
 		return nil
 	}
 	_, err := tx.Exec(ctx, bumpSQL, string(scope), subjectID)
+	return err
+}
+
+func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) error {
+	if err := BumpAccess(ctx, tx, scope, subjectID); err != nil {
+		return err
+	}
+	// A durable row is independent of a worker claim and records concurrent invalidations.
+	_, err := tx.Exec(ctx, `WITH targets AS (
+		INSERT INTO activity_cleanup (repository_id)
+		SELECT id FROM repositories WHERE NOT is_demo AND
+        (($1 = 'repository' AND id = $2) OR ($1 <> 'repository' AND is_private))
+		ON CONFLICT (repository_id) DO UPDATE SET version = activity_cleanup.version + 1
+		RETURNING repository_id
+	)
+	INSERT INTO jobs (kind, key, state, run_at)
+	SELECT 'activity_cleanup', 'repo:' || repository_id, 'queued', now() FROM targets
+	ON CONFLICT (kind, key) DO UPDATE SET
+	 run_at = CASE WHEN jobs.state = 'queued' THEN LEAST(jobs.run_at, EXCLUDED.run_at) ELSE jobs.run_at END,
+	 pending = CASE WHEN jobs.state = 'queued' THEN jobs.pending ELSE true END, updated_at = now()`, string(scope), subjectID)
 	return err
 }
 

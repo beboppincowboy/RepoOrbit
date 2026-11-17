@@ -166,6 +166,12 @@ func (d WebhookDeps) accept(ctx context.Context, id, event string, k whKind, p w
 			if p.Repository.ID <= 0 {
 				return errWebhookPayload{}
 			}
+			// Tighten visibility before scheduling cleanup when GitHub reports privatization.
+			if p.Action == "privatized" {
+				if err = q.MarkRepositoryPrivate(ctx, p.Repository.ID); err != nil {
+					return err
+				}
+			}
 			// Both take effect at commit, so their order here is only lock order: the repository's job row first, then the
 			// fence rows, the same order a refresh commit takes them in (claim check, then StillCurrent). The refresh is a
 			// no-op when the repository is unselected.
