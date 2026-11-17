@@ -25,10 +25,12 @@ type Config struct {
 	AppSlug string // GITHUB_APP_SLUG
 	// TokenKey is the 32-byte AES-GCM key for stored GitHub tokens (real mode only).
 	TokenKey []byte // TOKEN_ENCRYPTION_KEY, base64
+	// WebhookSecret is the GitHub App webhook secret used to verify X-Hub-Signature-256 (real mode only, required).
+	WebhookSecret []byte // WEBHOOK_SECRET
 }
 
 // LoadConfig reads and validates the environment. It returns an error naming the bad variable; in Demo mode it
-// skips the real-mode checks (TOKEN_ENCRYPTION_KEY, APP_URL shape).
+// skips the real-mode checks (TOKEN_ENCRYPTION_KEY, WEBHOOK_SECRET, APP_URL shape).
 func LoadConfig() (Config, error) {
 	cfg := Config{
 		DatabaseURL:  os.Getenv("DATABASE_URL"),
@@ -55,6 +57,9 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("TOKEN_ENCRYPTION_KEY must be 32 random bytes, base64-encoded")
 	}
 	cfg.TokenKey = key
+	if cfg.WebhookSecret = []byte(os.Getenv("WEBHOOK_SECRET")); len(cfg.WebhookSecret) == 0 {
+		return Config{}, fmt.Errorf("WEBHOOK_SECRET is required in real mode (the GitHub App webhook secret)")
+	}
 	if u, err := url.Parse(cfg.AppURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" {
 		return Config{}, fmt.Errorf("APP_URL must be an origin such as https://example.com")
 	}
