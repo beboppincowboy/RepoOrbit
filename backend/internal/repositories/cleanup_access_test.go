@@ -1,3 +1,5 @@
+//go:build integration
+
 package repositories
 
 import (
@@ -8,6 +10,7 @@ import (
 
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
+	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
 
 type cleanupTokens struct{ err error }
@@ -25,7 +28,8 @@ func TestPrivatePresenceRequiresAuthoritativeListing(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	service := &Service{GitHub: githubapp.New("", "", "", server.URL, ""), TokenSource: cleanupTokens{}}
+	_, pool := testutil.Database(t)
+	service := &Service{Pool: pool, GitHub: githubapp.New("", "", "", server.URL, ""), TokenSource: cleanupTokens{}}
 	if d := service.CheckPrivatePresence(context.Background(), 1, 1); !d.Unverified {
 		t.Fatalf("owned listing alone cannot prove private installation access: %+v", d)
 	}
@@ -50,7 +54,8 @@ func TestPrivatePresenceRejectsNullLists(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	service := &Service{GitHub: githubapp.New("", "", "", server.URL, ""), TokenSource: cleanupTokens{}}
+	_, pool := testutil.Database(t)
+	service := &Service{Pool: pool, GitHub: githubapp.New("", "", "", server.URL, ""), TokenSource: cleanupTokens{}}
 	if d := service.CheckPrivatePresence(context.Background(), 1, 2); !d.Unverified {
 		t.Fatalf("null listing cannot prove absence: %+v", d)
 	}
