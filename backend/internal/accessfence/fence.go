@@ -19,7 +19,13 @@ const (
 	ScopeUser         Scope = "user"         // GitHub authorization revoked / signed out of GitHub
 	ScopeInstallation Scope = "installation" // installation deleted/suspended, repos removed
 	ScopeRepository   Scope = "repository"   // repository deleted/privatized/transferred
+	// ScopeGlobal is one monotonic permissions version (subject 0) bumped by every InvalidateAccess and tracked by every
+	// TakeSnapshot. It is the one row a bump and a private commit always contend on, so they serialize even when the
+	// bumped subject was never saved locally.
+	ScopeGlobal Scope = "global"
 )
+
+var globalKey = key{ScopeGlobal, 0}
 
 // DB is what pgxpool.Pool and pgx.Tx both provide.
 type DB interface {
@@ -27,11 +33,20 @@ type DB interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// InvalidateAccess durably invalidates access for a subject by incrementing its epoch, inside the
-// caller's transaction (before any slower cleanup). Never grants access.
+const bumpSQL = `INSERT INTO access_fences (scope, subject_id, epoch) VALUES ($1, $2, 1)
+	ON CONFLICT (scope, subject_id) DO UPDATE SET epoch = access_fences.epoch + 1`
+
+// InvalidateAccess durably invalidates access for a subject by incrementing its epoch, and the global permissions
+// version, inside the caller's transaction (before any slower cleanup). The global row is locked first, then the
+// subject row, the same order StillCurrent takes them. Never grants access.
 func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) error {
-	_, err := tx.Exec(ctx, `INSERT INTO access_fences (scope, subject_id, epoch) VALUES ($1, $2, 1)
-		ON CONFLICT (scope, subject_id) DO UPDATE SET epoch = access_fences.epoch + 1`, string(scope), subjectID)
+	if _, err := tx.Exec(ctx, bumpSQL, string(ScopeGlobal), int64(0)); err != nil {
+		return err
+	}
+	if scope == ScopeGlobal {
+		return nil
+	}
+	_, err := tx.Exec(ctx, bumpSQL, string(scope), subjectID)
 	return err
 }
 
@@ -140,7 +155,7 @@ func TakeSnapshot(ctx context.Context, q pgx.Tx, userID, repoID int64) (Snapshot
 	if err != nil {
 		return Snapshot{}, err
 	}
-	ks = append(ks, key{ScopeRepository, repoID})
+	ks = append(ks, key{ScopeRepository, repoID}, globalKey)
 	var s Snapshot
 	for _, k := range ks {
 		if _, err := q.Exec(ctx, `INSERT INTO access_fences (scope, subject_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, string(k.scope), k.id); err != nil {
@@ -189,6 +204,12 @@ func TakeSnapshotForUser(ctx context.Context, q DB, userID int64) (Snapshot, err
 // StillCurrent reports, inside the commit transaction, that no tracked epoch moved since TakeSnapshot. It waits for any
 // in-flight InvalidateAccess. Private commits and cached private reads must check it; false means withhold the update.
 func (s Snapshot) StillCurrent(ctx context.Context, tx pgx.Tx) (bool, error) {
+	if _, tracked := s.epochs[ScopeGlobal]; tracked {
+		// Global row first, in its own statement: the order InvalidateAccess takes its locks, so the two cannot deadlock.
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM access_fences WHERE scope = 'global' AND subject_id = 0 FOR SHARE`); err != nil {
+			return false, err
+		}
+	}
 	live, err := s.current(ctx, tx, true)
 	if err != nil {
 		return false, err
