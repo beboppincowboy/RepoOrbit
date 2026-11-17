@@ -9,7 +9,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
 )
 
-// activityStatus is the honest activity answer: until activity ingestion (U4) exists nothing is synchronized, whatever
+// activityStatus is the honest activity answer: until activity ingestion exists nothing is synchronized, whatever
 // the metadata refresh did. Demo rows are seeded samples, not GitHub data.
 func activityStatus(demo, selected bool) *model.ActivityStatus {
 	if demo {

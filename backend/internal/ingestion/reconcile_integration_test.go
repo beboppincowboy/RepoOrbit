@@ -152,11 +152,8 @@ func TestFailedRefreshPreservesEligibility(t *testing.T) {
 	}
 }
 
-func skipIfNoQueue(t *testing.T, err error) {
+func noErr(t *testing.T, err error) {
 	t.Helper()
-	if errors.Is(err, jobs.ErrNotImplemented) {
-		t.Skip("needs U3a queue")
-	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,8 +184,8 @@ func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
 	f.star(1, 11)
 	now := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
 	tx, _ := f.begin()
-	skipIfNoQueue(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(10), now))
-	skipIfNoQueue(t, tx.Commit(ctx))
+	noErr(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(10), now))
+	noErr(t, tx.Commit(ctx))
 	f.exec(`UPDATE jobs SET state='paused'`)
 	svc := &repositories.Service{Queries: f.q, Pool: f.pool, Now: func() time.Time { return now }}
 	svc.OnEligibilityChange = func(ctx context.Context, tx pgx.Tx, userID int64) error {
@@ -209,7 +206,7 @@ func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
 	}
 	// Held claim: snapshot replaced, unstarred follow suspended, paused work resumed.
 	err := StarReconcileHandler(stars, &fakeClock{now: now}, nil)(ctx, jobs.Job{Key: "user:1"}, txFence{f.pool})
-	skipIfNoQueue(t, err)
+	noErr(t, err)
 	if f.suspended(1, 10) || !f.suspended(1, 11) {
 		t.Fatal("suspension wrong")
 	}
@@ -231,14 +228,14 @@ func TestPollAndRecheckDoNotReviveDeadWork(t *testing.T) {
 	f.selection(1, 10, "owned")
 	now := time.Now()
 	tx, _ := f.begin()
-	skipIfNoQueue(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(10), now))
-	skipIfNoQueue(t, tx.Commit(ctx))
+	noErr(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(10), now))
+	noErr(t, tx.Commit(ctx))
 	f.exec(`UPDATE jobs SET state='dead'`)
 	d := SchedulerDeps{Pool: f.pool, Rand: func() float64 { return 0 }}
-	skipIfNoQueue(t, d.pollMetadata(ctx, now))
+	noErr(t, d.pollMetadata(ctx, now))
 	tx, _ = f.begin()
-	skipIfNoQueue(t, RecheckEligibility(ctx, tx, 1, now))
-	skipIfNoQueue(t, tx.Commit(ctx))
+	noErr(t, RecheckEligibility(ctx, tx, 1, now))
+	noErr(t, tx.Commit(ctx))
 	if got := f.jobState(jobs.KindRepoMetadataRefresh, repoKey(10)); got != "dead" {
 		t.Fatalf("dead job became %s", got)
 	}
@@ -258,17 +255,17 @@ func TestRecheckResumesPausedWorkOnlyForTheUsersRepositories(t *testing.T) {
 	now := time.Now()
 	tx, _ := f.begin()
 	for _, id := range []int64{10, 11} {
-		skipIfNoQueue(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(id), now))
+		noErr(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(id), now))
 	}
-	skipIfNoQueue(t, tx.Commit(ctx))
+	noErr(t, tx.Commit(ctx))
 	f.exec(`UPDATE jobs SET state='paused'`)
 	tx, _ = f.begin()
-	skipIfNoQueue(t, RecheckEligibility(ctx, tx, 1, now))
-	skipIfNoQueue(t, tx.Commit(ctx))
+	noErr(t, RecheckEligibility(ctx, tx, 1, now))
+	noErr(t, tx.Commit(ctx))
 	if a, b := f.jobState(jobs.KindRepoMetadataRefresh, repoKey(10)), f.jobState(jobs.KindRepoMetadataRefresh, repoKey(11)); a != "queued" || b != "paused" {
 		t.Fatalf("states %s %s", a, b)
 	}
-	skipIfNoQueue(t, SchedulerDeps{Pool: f.pool, Rand: func() float64 { return 0 }}.pollMetadata(ctx, now))
+	noErr(t, SchedulerDeps{Pool: f.pool, Rand: func() float64 { return 0 }}.pollMetadata(ctx, now))
 	if b := f.jobState(jobs.KindRepoMetadataRefresh, repoKey(11)); b != "queued" {
 		t.Fatalf("poll did not recover missed signal: %s", b)
 	}
@@ -291,8 +288,8 @@ func TestLoadMetadataStatusesFromJobsAndSync(t *testing.T) {
 		t.Fatalf("%+v", s)
 	}
 	tx, _ := f.begin()
-	skipIfNoQueue(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(11), time.Now()))
-	skipIfNoQueue(t, tx.Commit(ctx))
+	noErr(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(11), time.Now()))
+	noErr(t, tx.Commit(ctx))
 	f.exec(`UPDATE jobs SET state='paused'`)
 	got, _ = LoadMetadataStatuses(ctx, f.q, 1, []int64{11})
 	if !got[11].Paused || got[11].State != "paused" {

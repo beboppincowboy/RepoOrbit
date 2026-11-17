@@ -170,9 +170,11 @@ func (d WebhookDeps) accept(ctx context.Context, id, event string, k whKind, p w
 		if p.Repository.ID <= 0 {
 			return errWebhookPayload{}
 		}
-		// Invalidate first, then reconcile the current state; the refresh is a no-op when unselected.
-		if err = d.bump(ctx, tx, accessfence.ScopeRepository, p.Repository.ID); err == nil {
-			_, err = d.refresh(ctx, tx, p.Repository.ID)
+		// Both take effect at commit, so their order here is only lock order: the repository's job row first, then the
+		// fence rows, the same order a refresh commit takes them in (claim check, then StillCurrent). The refresh is a
+		// no-op when the repository is unselected.
+		if _, err = d.refresh(ctx, tx, p.Repository.ID); err == nil {
+			err = d.bump(ctx, tx, accessfence.ScopeRepository, p.Repository.ID)
 		}
 	case event == "github_app_authorization":
 		var uid int64
@@ -204,8 +206,12 @@ func validWebhookSignature(secret, body []byte, header string) bool {
 	if len(secret) == 0 {
 		return false
 	}
-	got, err := hex.DecodeString(strings.TrimPrefix(header, "sha256="))
-	if err != nil || !strings.HasPrefix(header, "sha256=") {
+	digest, ok := strings.CutPrefix(header, "sha256=")
+	if !ok {
+		return false
+	}
+	got, err := hex.DecodeString(digest)
+	if err != nil {
 		return false
 	}
 	m := hmac.New(sha256.New, secret)

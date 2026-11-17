@@ -1,5 +1,5 @@
 // Package ingestion owns repository synchronization: scheduling shared metadata refreshes and running them
-// with an eligible selecting user's credential. It imports no issue or activity data (that is U4).
+// with an eligible selecting user's credential. It imports no issue or activity data (activity ingestion does not exist yet).
 package ingestion
 
 import (

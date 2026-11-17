@@ -4,7 +4,6 @@ package graph
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -42,9 +41,7 @@ func TestAttachMetadataStatus(t *testing.T) {
 	}
 	tx, _ := pool.Begin(ctx)
 	defer tx.Rollback(ctx)
-	if err := jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, "repo:10", time.Now()); errors.Is(err, jobs.ErrNotImplemented) {
-		t.Skip("needs U3a queue")
-	} else if err != nil {
+	if err := jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, "repo:10", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE jobs SET state='paused'`); err != nil {

@@ -9,6 +9,11 @@ ON CONFLICT (kind, key) DO UPDATE SET
 UPDATE jobs SET state = 'queued', run_at = sqlc.arg(run_at), pending = false, lease_until = NULL, updated_at = now()
 WHERE kind = $1 AND key = $2 AND state = 'paused';
 
+-- name: MarkRunningPending :exec
+-- A resume that lands while the job runs is remembered as pending: a later Pause then re-queues the job instead of
+-- parking it. Only running rows change; dead and paused rows are untouched (the dead-work barrier).
+UPDATE jobs SET pending = true, updated_at = now() WHERE kind = $1 AND key = $2 AND state = 'running';
+
 -- name: RequeueJob :execrows
 UPDATE jobs SET state = 'queued', run_at = sqlc.arg(run_at), pending = false, attempts = 0, lease_until = NULL, last_error = '', updated_at = now()
 WHERE kind = $1 AND key = $2 AND state = 'dead';

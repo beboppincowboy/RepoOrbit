@@ -7,10 +7,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
+	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
 
@@ -50,10 +52,6 @@ func count(t *testing.T, pool *pgxpool.Pool, table string) int {
 		t.Fatal(err)
 	}
 	return n
-}
-
-func notImplemented(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "not implemented")
 }
 
 const pushBody = `{"repository":{"id":42},"installation":{"id":7}}`
@@ -203,9 +201,6 @@ func TestRealFenceBumpBlocksInFlightCommit(t *testing.T) {
 		}
 		defer tx.Rollback(ctx)
 		s, err := accessfence.TakeSnapshot(ctx, tx, uid, repoID)
-		if notImplemented(err) {
-			t.Skip("needs U3b: " + err.Error())
-		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -235,9 +230,6 @@ func TestRealFenceBumpBlocksInFlightCommit(t *testing.T) {
 			t.Fatalf("case %d: snapshot invalid before any event", i)
 		}
 		if w := post(h, testSecret, tc.event, "fence-"+string(rune('a'+i)), tc.body, ""); w.Code != 200 {
-			if notImplemented(errors.New(w.Body.String())) {
-				t.Skip("needs U3b: " + w.Body.String())
-			}
 			t.Fatalf("case %d: status %d %s", i, w.Code, w.Body.String())
 		}
 		if valid(s) {
@@ -259,9 +251,6 @@ func TestRealRefreshOnlyForSelectedRepositories(t *testing.T) {
 	}
 	_, err = RequestMetadataRefresh(ctx, tx, 42)
 	tx.Rollback(ctx)
-	if notImplemented(err) {
-		t.Skip("needs U3a/U3b: " + err.Error())
-	}
 	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
 	w := post(h, testSecret, "push", "real-1", pushBody, "")
 	if w.Code != 200 {
@@ -347,5 +336,71 @@ func TestAuthorizationRevocationCleanupFailureRollsBack(t *testing.T) {
 	}
 	if n := count(t, pool, "webhook_deliveries") + count(t, pool, "access_fences"); n != 0 {
 		t.Fatalf("bump or delivery row survived the rollback (%d rows)", n)
+	}
+}
+
+// A repository security webhook (fence bump, then enqueue on the repo's job row) must take locks in the same order as
+// a private refresh commit (job row, then fence rows), or the two deadlock. The refresh side is replayed by hand:
+// it holds the job row FOR SHARE (the claim check), lets the webhook run, then checks the permissions version.
+func TestRepositoryWebhookAndRefreshCommitNeverDeadlock(t *testing.T) {
+	_, pool := testutil.Database(t)
+	ctx := context.Background()
+	var uid int64
+	if err := pool.QueryRow(ctx, `INSERT INTO users (github_id, login, access_token_enc) VALUES (555, 'octo', '\x01') RETURNING id`).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO repositories (id, name, description, is_private) VALUES (42, 'o/r', '', true)`,
+		`INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES (` + "1" + `, 42, 'owned', now())`,
+	} {
+		if _, err := pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, _ := pool.Begin(ctx)
+	if err := jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, "repo:42", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
+	for i := 0; i < 5; i++ {
+		var snap accessfence.Snapshot
+		snapTx, _ := pool.Begin(ctx)
+		snap, err := accessfence.TakeSnapshot(ctx, snapTx, uid, 42)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = snapTx.Commit(ctx)
+		refresh := make(chan error, 1)
+		held := make(chan struct{})
+		go func() {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				refresh <- err
+				return
+			}
+			defer tx.Rollback(ctx)
+			if _, err := tx.Exec(ctx, `SELECT 1 FROM jobs WHERE kind = 'repo_metadata_refresh' AND key = 'repo:42' FOR SHARE`); err != nil {
+				refresh <- err
+				return
+			}
+			close(held)
+			time.Sleep(300 * time.Millisecond) // the webhook runs now
+			if _, err := snap.StillCurrent(ctx, tx); err != nil {
+				refresh <- err
+				return
+			}
+			refresh <- tx.Commit(ctx)
+		}()
+		<-held
+		w := post(h, testSecret, "repository", "dl-"+string(rune('a'+i)), `{"action":"privatized","repository":{"id":42}}`, "")
+		if w.Code != 200 {
+			t.Fatalf("round %d: webhook status %d %s", i, w.Code, w.Body.String())
+		}
+		if err := <-refresh; err != nil {
+			t.Fatalf("round %d: refresh commit: %v", i, err)
+		}
 	}
 }

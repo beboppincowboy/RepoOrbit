@@ -54,11 +54,10 @@ type Service struct {
 }
 
 type entry struct {
-	mu     sync.Mutex // held during a fetch so concurrent callers share it instead of repeating it
-	set    *visibleSet
-	at     time.Time
-	snap   accessfence.Snapshot // fence epochs from before the fetch; a bump since then ends the cached set
-	fenced bool
+	mu   sync.Mutex // held during a fetch so concurrent callers share it instead of repeating it
+	set  *visibleSet
+	at   time.Time
+	snap accessfence.Snapshot // fence epochs from before the fetch; a bump since then ends the cached set
 }
 
 // visibleSet is everything GitHub says the user can reach with the app: their own repositories plus those in
@@ -136,12 +135,12 @@ func (s *Service) visible(ctx context.Context, userID int64, token string, fresh
 	e := s.entry(userID)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !fresh && e.set != nil && s.now().Sub(e.at) < s.ttl() && s.fenceHolds(ctx, e) {
+	if !fresh && e.set != nil && s.now().Sub(e.at) < s.ttl() && s.fenceHolds(ctx, e.snap) {
 		return e.set
 	}
 	snap, snapErr := s.takeFence(ctx, userID)
 	set := s.fetchVisible(ctx, userID, token)
-	if snapErr != nil || !s.fenceHolds(ctx, &entry{snap: snap, fenced: true}) {
+	if snapErr != nil || !s.fenceHolds(ctx, snap) {
 		// An authorization change committed while this listing was being fetched (or the fence could not be read):
 		// nothing fetched before it may be served, even once. Withhold as unverified and cache nothing.
 		e.set = nil
@@ -149,7 +148,7 @@ func (s *Service) visible(ctx context.Context, userID int64, token string, fresh
 	}
 	// Incomplete listings are cached too (for the same TTL): they only withhold content, and re-fetching on every
 	// request would hammer a GitHub that is rate limiting or failing. Writes (fresh) always look again.
-	e.set, e.at, e.snap, e.fenced = set, s.now(), snap, s.Pool != nil
+	e.set, e.at, e.snap = set, s.now(), snap
 	return set
 }
 
@@ -161,15 +160,13 @@ func (s *Service) takeFence(ctx context.Context, userID int64) (accessfence.Snap
 	return accessfence.TakeSnapshotForUser(ctx, s.Pool, userID)
 }
 
-// fenceHolds reports whether no authorization change happened since the cached set was fetched. Fails closed.
-func (s *Service) fenceHolds(ctx context.Context, e *entry) bool {
+// fenceHolds reports whether no authorization change happened since snap was taken. Fails closed on a read error.
+// Without a pool there is no fence.
+func (s *Service) fenceHolds(ctx context.Context, snap accessfence.Snapshot) bool {
 	if s.Pool == nil {
 		return true
 	}
-	if !e.fenced {
-		return false
-	}
-	ok, err := e.snap.Current(ctx, s.Pool)
+	ok, err := snap.Current(ctx, s.Pool)
 	return ok && err == nil
 }
 

@@ -195,6 +195,22 @@ func (q *Queries) KillJob(ctx context.Context, arg KillJobParams) (int64, error)
 	return result.RowsAffected(), nil
 }
 
+const markRunningPending = `-- name: MarkRunningPending :exec
+UPDATE jobs SET pending = true, updated_at = now() WHERE kind = $1 AND key = $2 AND state = 'running'
+`
+
+type MarkRunningPendingParams struct {
+	Kind string
+	Key  string
+}
+
+// A resume that lands while the job runs is remembered as pending: a later Pause then re-queues the job instead of
+// parking it. Only running rows change; dead and paused rows are untouched (the dead-work barrier).
+func (q *Queries) MarkRunningPending(ctx context.Context, arg MarkRunningPendingParams) error {
+	_, err := q.db.Exec(ctx, markRunningPending, arg.Kind, arg.Key)
+	return err
+}
+
 const pauseJob = `-- name: PauseJob :execrows
 UPDATE jobs SET state = CASE WHEN pending THEN 'queued' ELSE 'paused' END,
  run_at = CASE WHEN pending THEN $3 ELSE run_at END,
