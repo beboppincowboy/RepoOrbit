@@ -42,7 +42,7 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 			transient = true
 			continue
 		}
-		snap, err := d.takeFence(ctx, uid, repoID)
+		snap, err := accessfence.Take(ctx, d.Pool, uid, repoID)
 		if err != nil {
 			return err
 		}

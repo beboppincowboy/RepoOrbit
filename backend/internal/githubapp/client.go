@@ -138,6 +138,7 @@ type Repo struct {
 	FullName    string `json:"full_name"`
 	Description string `json:"description"` // GitHub sends null for none
 	Private     bool   `json:"private"`
+	Archived    bool   `json:"archived"`
 	Owner       struct {
 		ID    int64  `json:"id"`
 		Login string `json:"login"`

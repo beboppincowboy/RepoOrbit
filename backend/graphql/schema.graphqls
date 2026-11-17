@@ -36,3 +36,5 @@ type IssueEventEvidenceConnection { nodes: [IssueEventEvidence!]!, endCursor: ID
 type IssueEventStatus { traversal: ActivityResourceStatus, historicalGap: Boolean! }
 extend type ActivityStatus { releases: ActivityResourceStatus, issueEvents: IssueEventStatus }
 extend type Query { releaseEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): ReleaseEvidenceConnection!, issueEventEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): IssueEventEvidenceConnection! }
+
+extend type ActivityStatus { archived: Boolean! }

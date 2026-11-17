@@ -236,6 +236,9 @@ func (d *Deps) commit(ctx context.Context, fence jobs.ClaimFence, repoID, uid in
 			if err := q.UpdateRepositoryMetadata(ctx, db.UpdateRepositoryMetadataParams{ID: repoID, Name: r.FullName, Description: r.Description, IsPrivate: r.Private}); err != nil {
 				return err
 			}
+			if _, err := tx.Exec(ctx, `UPDATE repositories SET archived=$2 WHERE id=$1 AND is_demo=false`, repoID, r.Archived); err != nil {
+				return err
+			}
 			if err := q.RecordSyncSuccess(ctx, db.RecordSyncSuccessParams{RepositoryID: repoID, LastSuccessAt: pgtype.Timestamptz{Time: d.Clock.Now(), Valid: true}}); err != nil {
 				return err
 			}
