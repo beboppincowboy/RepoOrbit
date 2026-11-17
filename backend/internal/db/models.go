@@ -22,6 +22,21 @@ type Issue struct {
 	State        string
 }
 
+type Job struct {
+	ID         int64
+	Kind       string
+	Key        string
+	State      string
+	RunAt      pgtype.Timestamptz
+	Pending    bool
+	Attempts   int32
+	Generation int64
+	LeaseUntil pgtype.Timestamptz
+	StartedAt  pgtype.Timestamptz
+	LastError  string
+	UpdatedAt  pgtype.Timestamptz
+}
+
 type OauthState struct {
 	StateHash    []byte
 	CodeVerifier string
