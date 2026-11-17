@@ -145,7 +145,7 @@ func TestFailedRefreshPreservesEligibility(t *testing.T) {
 	f.repo(10)
 	f.selection(1, 10, "starred") // not in any snapshot, yet must stay eligible after a failure
 	for _, s := range []*fakeStars{{}, {err: errors.New("net")}, {err: ErrNoCredential}} {
-		_ = StarReconcileHandler(s, &fakeClock{now: time.Now()})(context.Background(), jobs.Job{Key: "user:1"}, nil)
+		_ = StarReconcileHandler(s, &fakeClock{now: time.Now()}, nil)(context.Background(), jobs.Job{Key: "user:1"}, nil)
 	}
 	if f.suspended(1, 10) {
 		t.Fatal("failed refresh suspended eligibility")
@@ -196,7 +196,7 @@ func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
 	}
 	stars := &realStore{fakeStars: fakeStars{res: StarFetch{Completed: true, Repos: []githubapp.Repo{{ID: 10, FullName: "o/r"}}}}, svc: svc}
 	// Lost claim after a successful fetch: nothing is written.
-	if err := StarReconcileHandler(stars, &fakeClock{now: now})(ctx, jobs.Job{Key: "user:1"}, onceFence{lost: true}); !errors.Is(err, jobs.ErrLostClaim) {
+	if err := StarReconcileHandler(stars, &fakeClock{now: now}, nil)(ctx, jobs.Job{Key: "user:1"}, onceFence{lost: true}); !errors.Is(err, jobs.ErrLostClaim) {
 		t.Fatalf("lost claim: %v", err)
 	}
 	if f.suspended(1, 11) || f.jobState(jobs.KindRepoMetadataRefresh, repoKey(10)) != "paused" {
@@ -208,7 +208,7 @@ func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
 		t.Fatalf("a lost claim replaced the snapshot (%d rows)", n)
 	}
 	// Held claim: snapshot replaced, unstarred follow suspended, paused work resumed.
-	err := StarReconcileHandler(stars, &fakeClock{now: now})(ctx, jobs.Job{Key: "user:1"}, txFence{f.pool})
+	err := StarReconcileHandler(stars, &fakeClock{now: now}, nil)(ctx, jobs.Job{Key: "user:1"}, txFence{f.pool})
 	skipIfNoQueue(t, err)
 	if f.suspended(1, 10) || !f.suspended(1, 11) {
 		t.Fatal("suspension wrong")
@@ -307,4 +307,29 @@ func (f *fixture) begin() (pgx.Tx, error) {
 		f.t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
 	}
 	return tx, err
+}
+
+// The stored retry-after only moves later, and a past one never throttles.
+func TestCredentialThrottleKeepsTheLaterTimeAndIgnoresThePast(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.user(1)
+	now := time.Now().Truncate(time.Second)
+	if !credentialThrottledUntil(ctx, f.q, 1).IsZero() {
+		t.Fatal("no row must mean not throttled")
+	}
+	throttleCredential(ctx, f.q, 1, now.Add(2*time.Hour))
+	throttleCredential(ctx, f.q, 1, now.Add(time.Hour)) // earlier: must not shorten the pause
+	if got := credentialThrottledUntil(ctx, f.q, 1); !got.Equal(now.Add(2 * time.Hour)) {
+		t.Fatalf("until = %v, want the later time", got)
+	}
+	throttleCredential(ctx, f.q, 1, now.Add(3*time.Hour))
+	if got := credentialThrottledUntil(ctx, f.q, 1); !got.Equal(now.Add(3 * time.Hour)) {
+		t.Fatalf("until = %v, want the newer later time", got)
+	}
+	throttleCredential(ctx, f.q, 1, now.Add(-time.Hour))
+	f.exec(`UPDATE credential_throttle SET retry_after = $1`, now.Add(-time.Hour))
+	if until := credentialThrottledUntil(ctx, f.q, 1); until.After(now) {
+		t.Fatalf("a past retry-after throttles: %v", until)
+	}
 }

@@ -79,14 +79,21 @@ func RecheckEligibility(ctx context.Context, tx pgx.Tx, userID int64, now time.T
 // StarReconcileHandler refreshes one user's stars. It fetches first (no write), then stores the completed snapshot,
 // suspends the user's starred selections that are no longer starred (the Selection stays), restores ones that are
 // again, and rechecks paused work, all inside one claim-fenced commit: a worker that lost its claim writes nothing.
-// A failed fetch changes nothing. No credential pauses without spending an attempt; a rate limit defers without one too.
-func StarReconcileHandler(stars StarRefresher, clock jobs.Clock) jobs.Handler {
+// A failed fetch changes nothing. No credential pauses without spending an attempt; a rate limit defers without one too
+// and is shared with the metadata refresh through the credential throttle (q nil means no throttle store).
+func StarReconcileHandler(stars StarRefresher, clock jobs.Clock, q *db.Queries) jobs.Handler {
 	return func(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) error {
 		userID, err := strconv.ParseInt(strings.TrimPrefix(job.Key, "user:"), 10, 64)
 		if err != nil || !strings.HasPrefix(job.Key, "user:") {
 			return jobs.Permanent(fmt.Errorf("bad star reconcile key %q", job.Key))
 		}
+		if until := credentialThrottledUntil(ctx, q, userID); until.After(clock.Now()) {
+			return &jobs.Defer{RetryAt: until, Reason: "rate limited"} // pace the credential: no GitHub call at all
+		}
 		res, err := stars.FetchStars(ctx, userID)
+		if err == nil && !res.Completed && res.RetryAt != nil {
+			throttleCredential(ctx, q, userID, *res.RetryAt)
+		}
 		switch {
 		case errors.Is(err, ErrNoCredential):
 			return &jobs.Pause{Reason: "no usable credential"}
@@ -168,7 +175,7 @@ func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
 	if d.Rand == nil {
 		d.Rand = rand.Float64
 	}
-	d.Worker.Register(jobs.KindStarReconcile, StarReconcileHandler(d.Stars, d.Clock))
+	d.Worker.Register(jobs.KindStarReconcile, StarReconcileHandler(d.Stars, d.Clock, db.New(d.Pool)))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

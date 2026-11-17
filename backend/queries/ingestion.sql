@@ -37,3 +37,11 @@ ON CONFLICT (repository_id) DO UPDATE SET last_success_at = EXCLUDED.last_succes
 -- name: RecordSyncError :exec
 INSERT INTO repository_sync (repository_id, last_error_code) VALUES ($1, $2)
 ON CONFLICT (repository_id) DO UPDATE SET last_error_code = EXCLUDED.last_error_code;
+
+-- name: GetCredentialThrottle :one
+SELECT retry_after FROM credential_throttle WHERE user_id = $1;
+
+-- name: SetCredentialThrottle :exec
+-- Keeps the later time: an earlier retry-after never shortens a pause another job kind recorded.
+INSERT INTO credential_throttle (user_id, retry_after) VALUES ($1, $2)
+ON CONFLICT (user_id) DO UPDATE SET retry_after = GREATEST(credential_throttle.retry_after, EXCLUDED.retry_after);
