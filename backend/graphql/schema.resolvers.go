@@ -8,8 +8,10 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
+	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/platform"
@@ -68,7 +70,11 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 	for i, row := range rows {
 		ids[i] = row.ID
 	}
-	checks := r.RepoAccess.Check(ctx, userID, ids, false)
+	readFence, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, userID)
+	if err != nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+	checks := r.RepoAccess.Check(ctx, userID, ids, true)
 	for _, row := range rows {
 		cursorID := strconv.FormatInt(row.ID, 10)
 		result.EndCursor = &cursorID
@@ -83,6 +89,11 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 	}
 	if err := r.attachMetadataStatus(ctx, userID, result.Nodes); err != nil {
 		return nil, fmt.Errorf("database unavailable")
+	}
+	current, err := readFence.Current(ctx, r.RepoAccess.Pool)
+	if err != nil || !current {
+		result.Withheld += len(result.Nodes)
+		result.Nodes = []*model.Repository{}
 	}
 	return result, nil
 }
@@ -110,7 +121,11 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 	if err != nil {
 		return nil, err
 	}
-	d := r.RepoAccess.CheckOne(ctx, userID, repoID, false)
+	readFence, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, userID)
+	if err != nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+	d := r.RepoAccess.CheckOne(ctx, userID, repoID, true)
 	if d.Unverified {
 		return nil, unverifiedError(d.RetryAt)
 	}
@@ -126,6 +141,10 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 		if err := r.attachMetadataStatus(ctx, userID, []*model.Repository{repo}); err != nil {
 			return nil, fmt.Errorf("database unavailable")
 		}
+	}
+	current, err := readFence.Current(ctx, r.RepoAccess.Pool)
+	if err != nil || !current {
+		return nil, unverifiedError(time.Time{})
 	}
 	return repo, nil
 }
@@ -154,17 +173,23 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 	ctx, cancel := platform.WithRequestDeadline(ctx)
 	defer cancel()
 	result := &model.IssueConnection{Nodes: []*model.Issue{}}
+	var readFence accessfence.Snapshot
 	if !r.Demo {
 		// Only the user's selected repositories, and only those still verified, can contribute issues.
 		userID, err := r.userID(ctx)
 		if err != nil {
 			return nil, err
 		}
+		readFence, err = accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, userID)
+		if err != nil {
+			return nil, fmt.Errorf("database unavailable")
+		}
 		if ids, err = r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: userID, RepositoryIds: ids}); err != nil {
 			return nil, fmt.Errorf("database unavailable")
 		}
+		checks := r.RepoAccess.Check(ctx, userID, ids, true)
 		allowed := ids[:0:0]
-		for repoID, d := range r.RepoAccess.Check(ctx, userID, ids, false) {
+		for repoID, d := range checks {
 			if d.Allowed {
 				allowed = append(allowed, repoID)
 			}
@@ -181,6 +206,13 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
+	if !r.Demo {
+		current, err := readFence.Current(ctx, r.RepoAccess.Pool)
+		if err != nil || !current {
+			result.Withheld += len(ids)
+			return result, nil
+		}
+	}
 	result.HasNextPage = len(rows) > n
 	rows = rows[:min(len(rows), n)]
 	for _, row := range rows {
@@ -189,6 +221,31 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 		result.EndCursor = &id
 	}
 	return result, nil
+}
+
+// PullRequestEvidence is the resolver for the pullRequestEvidence field.
+func (r *queryResolver) PullRequestEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.PullRequestEvidenceConnection, error) {
+	return r.pullRequests(ctx, repositoryIds, first, after)
+}
+
+// ReviewEvidence is the resolver for the reviewEvidence field.
+func (r *queryResolver) ReviewEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.ReviewEvidenceConnection, error) {
+	return r.reviews(ctx, repositoryIds, first, after)
+}
+
+// CommentEvidence is the resolver for the commentEvidence field.
+func (r *queryResolver) CommentEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.CommentEvidenceConnection, error) {
+	return r.comments(ctx, repositoryIds, first, after)
+}
+
+// ReleaseEvidence is the resolver for the releaseEvidence field.
+func (r *queryResolver) ReleaseEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.ReleaseEvidenceConnection, error) {
+	return r.releases(ctx, repositoryIds, first, after)
+}
+
+// IssueEventEvidence is the resolver for the issueEventEvidence field.
+func (r *queryResolver) IssueEventEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.IssueEventEvidenceConnection, error) {
+	return r.issueEvents(ctx, repositoryIds, first, after)
 }
 
 // Query returns QueryResolver implementation.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -137,6 +138,7 @@ type Repo struct {
 	FullName    string `json:"full_name"`
 	Description string `json:"description"` // GitHub sends null for none
 	Private     bool   `json:"private"`
+	Archived    bool   `json:"archived"`
 	Owner       struct {
 		ID    int64  `json:"id"`
 		Login string `json:"login"`
@@ -179,6 +181,9 @@ func (c *Client) get(ctx context.Context, token, path string, out any) (hasNext 
 func (c *Client) FetchOwnedRepos(ctx context.Context, token string, page, perPage int) (repos []Repo, hasNext bool, err error) {
 	var out []Repo
 	next, err := c.get(ctx, token, fmt.Sprintf("/user/repos?affiliation=owner&sort=full_name&per_page=%d&page=%d", perPage, page), &out)
+	if err == nil && out == nil {
+		return nil, false, fmt.Errorf("github: invalid repository listing")
+	}
 	return out, next, err
 }
 
@@ -188,6 +193,9 @@ func (c *Client) FetchInstallations(ctx context.Context, token string, page int)
 		Installations []Installation `json:"installations"`
 	}
 	next, err := c.get(ctx, token, fmt.Sprintf("/user/installations?per_page=100&page=%d", page), &out)
+	if err == nil && out.Installations == nil {
+		return nil, false, fmt.Errorf("github: invalid installation listing")
+	}
 	return out.Installations, next, err
 }
 
@@ -197,6 +205,9 @@ func (c *Client) FetchInstallationRepos(ctx context.Context, token string, insta
 		Repositories []Repo `json:"repositories"`
 	}
 	next, err := c.get(ctx, token, fmt.Sprintf("/user/installations/%d/repositories?per_page=100&page=%d", installationID, page), &out)
+	if err == nil && out.Repositories == nil {
+		return nil, false, fmt.Errorf("github: invalid installation repository listing")
+	}
 	return out.Repositories, next, err
 }
 
@@ -212,4 +223,117 @@ func (c *Client) FetchStarredRepos(ctx context.Context, token string, page, perP
 	var out []Repo
 	next, err := c.get(ctx, token, fmt.Sprintf("/user/starred?per_page=%d&page=%d", perPage, page), &out)
 	return out, next, err
+}
+
+// IssueUser identifies an issue author or assignee, including GitHub's bot classification.
+type IssueUser struct {
+	ID    int64  `json:"id"`
+	Login string `json:"login"`
+	Type  string `json:"type"`
+}
+
+// Issue is source evidence returned by GitHub's issues endpoint. PullRequest is non-nil for PR-shaped entries.
+type Issue struct {
+	ID        int64      `json:"id"`
+	Number    int64      `json:"number"`
+	Title     string     `json:"title"`
+	State     string     `json:"state"`
+	HTMLURL   string     `json:"html_url"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ClosedAt  *time.Time `json:"closed_at"`
+	User      *IssueUser `json:"user"`
+	Labels    []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	} `json:"labels"`
+	Assignees   []IssueUser      `json:"assignees"`
+	PullRequest *json.RawMessage `json:"pull_request"`
+}
+
+// FetchIssuesCursor follows GitHub's advertised next link after validating its origin and endpoint.
+// The cursor contains only its query, so a verified repository rename retains the stable identity.
+func (c *Client) FetchIssuesCursor(ctx context.Context, token, fullName, cursor string) ([]Issue, string, error) {
+	parts := strings.Split(fullName, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, "", fmt.Errorf("github: invalid repository")
+	}
+	endpoint, err := url.Parse(c.APIURL + "/repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + "/issues")
+	if err != nil {
+		return nil, "", fmt.Errorf("github: invalid issue endpoint")
+	}
+	if cursor == "" {
+		cursor = "state=all&per_page=100"
+	}
+	params, err := url.ParseQuery(cursor)
+	if err != nil || strings.ContainsAny(cursor, "#\r\n") || params.Get("state") != "all" {
+		return nil, "", fmt.Errorf("github: invalid issue cursor")
+	}
+	requestURL := *endpoint
+	requestURL.RawQuery = cursor
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("github: invalid issue request")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("github: issue request failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", apiError(resp)
+	}
+	var items []Issue
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&items); err != nil || items == nil {
+		return nil, "", fmt.Errorf("github: invalid issue listing")
+	}
+	next := ""
+	for _, link := range strings.Split(resp.Header.Get("Link"), ",") {
+		fields := strings.Split(link, ";")
+		if strings.TrimSpace(link) == "" {
+			continue
+		}
+		if len(fields) < 2 {
+			return nil, "", fmt.Errorf("github: invalid issue pagination")
+		}
+		isNext, hasRel := false, false
+		for _, field := range fields[1:] {
+			key, value, ok := strings.Cut(strings.TrimSpace(field), "=")
+			if ok && strings.EqualFold(strings.TrimSpace(key), "rel") {
+				hasRel = true
+				for _, relation := range strings.Fields(strings.Trim(strings.TrimSpace(value), `"`)) {
+					if relation == "next" {
+						isNext = true
+					}
+				}
+			}
+		}
+		if !hasRel {
+			return nil, "", fmt.Errorf("github: invalid issue pagination")
+		}
+		if !isNext {
+			continue
+		}
+		raw := strings.TrimSpace(fields[0])
+		if len(raw) < 2 || raw[0] != '<' || raw[len(raw)-1] != '>' {
+			return nil, "", fmt.Errorf("github: invalid issue pagination")
+		}
+		target, err := url.Parse(raw[1 : len(raw)-1])
+		if err != nil {
+			return nil, "", fmt.Errorf("github: invalid issue pagination")
+		}
+		target = requestURL.ResolveReference(target)
+		if target.Scheme != endpoint.Scheme || target.Host != endpoint.Host || target.Path != endpoint.Path || target.User != nil || target.Fragment != "" || target.RawQuery == "" || next != "" {
+			return nil, "", fmt.Errorf("github: unsafe issue pagination")
+		}
+		params, err := url.ParseQuery(target.RawQuery)
+		if err != nil || params.Get("state") != "all" {
+			return nil, "", fmt.Errorf("github: invalid issue pagination")
+		}
+		next = target.RawQuery
+	}
+	return items, next, nil
 }

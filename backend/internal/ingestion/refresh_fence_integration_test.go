@@ -21,6 +21,13 @@ func TestPrivateRefreshNeedsLiveAccessAndFenceValid(t *testing.T) {
 	id := e.gh.AddRepo("alice", "secret", true)
 	e.gh.Install("alice", 9, id)
 	e.store(a, id, true)
+	// Discovering a previously unknown installation advances the access fence; the stale attempt retries.
+	if err := e.run(e.fence(), id); err != nil {
+		var deferred *jobs.Defer
+		if !errors.As(err, &deferred) {
+			t.Fatal(err)
+		}
+	}
 	if err := e.run(e.fence(), id); err != nil || e.name(id) != "alice/secret" {
 		t.Fatalf("private refresh with access: %v %q", err, e.name(id))
 	}

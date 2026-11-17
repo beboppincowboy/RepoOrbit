@@ -1,7 +1,10 @@
 package platform
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"net/url"
 	"os"
@@ -26,7 +29,8 @@ type Config struct {
 	// TokenKey is the 32-byte AES-GCM key for stored GitHub tokens (real mode only).
 	TokenKey []byte // TOKEN_ENCRYPTION_KEY, base64
 	// WebhookSecret is the GitHub App webhook secret used to verify X-Hub-Signature-256 (real mode only, required).
-	WebhookSecret []byte // WEBHOOK_SECRET
+	WebhookSecret []byte          // WEBHOOK_SECRET
+	AppPrivateKey *rsa.PrivateKey // GITHUB_APP_PRIVATE_KEY_FILE
 }
 
 // LoadConfig reads and validates the environment. It returns an error naming the bad variable; in Demo mode it
@@ -63,6 +67,31 @@ func LoadConfig() (Config, error) {
 	if u, err := url.Parse(cfg.AppURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" {
 		return Config{}, fmt.Errorf("APP_URL must be an origin such as https://example.com")
 	}
+	keyPEM, err := os.ReadFile(os.Getenv("GITHUB_APP_PRIVATE_KEY_FILE"))
+	if err != nil {
+		return Config{}, fmt.Errorf("GITHUB_APP_PRIVATE_KEY_FILE must point to a readable RSA private key")
+	}
+	block, rest := pem.Decode(keyPEM)
+	if block == nil || len(strings.TrimSpace(string(rest))) != 0 {
+		return Config{}, fmt.Errorf("GITHUB_APP_PRIVATE_KEY_FILE must contain an RSA private key")
+	}
+	var privateKey *rsa.PrivateKey
+	if block.Type == "RSA PRIVATE KEY" {
+		privateKey, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+	} else if block.Type == "PRIVATE KEY" {
+		var parsed any
+		parsed, err = x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err == nil {
+			privateKey, _ = parsed.(*rsa.PrivateKey)
+		}
+	} else {
+		err = fmt.Errorf("invalid key type")
+	}
+	if err != nil || privateKey == nil || privateKey.Validate() != nil {
+		return Config{}, fmt.Errorf("GITHUB_APP_PRIVATE_KEY_FILE must contain a valid RSA private key")
+	}
+	cfg.AppPrivateKey = privateKey
+
 	return cfg, nil
 }
 

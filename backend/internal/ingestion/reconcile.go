@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
@@ -71,6 +72,51 @@ func RecheckEligibility(ctx context.Context, tx pgx.Tx, userID int64, now time.T
 	}
 	for _, id := range ids {
 		if err := jobs.Resume(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(id), now); err != nil {
+			return err
+		}
+		if err := jobs.Resume(ctx, tx, jobs.KindActivityIssues, repoKey(id), now); err != nil {
+			return err
+		}
+		if err := jobs.Resume(ctx, tx, jobs.KindActivityPullRequests, repoKey(id), now); err != nil {
+			return err
+		}
+		for _, kind := range eventStreamKinds {
+			if err := jobs.Resume(ctx, tx, kind, repoKey(id), now); err != nil {
+				return err
+			}
+		}
+		rows, err := tx.Query(ctx, `SELECT resource, parent_id FROM activity_children WHERE repository_id=$1 AND NOT complete`, id)
+		if err != nil {
+			return err
+		}
+		type child struct {
+			resource string
+			id       int64
+		}
+		var children []child
+		for rows.Next() {
+			var c child
+			if err := rows.Scan(&c.resource, &c.id); err != nil {
+				rows.Close()
+				return err
+			}
+			children = append(children, c)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, c := range children {
+			kind := jobs.KindActivityComments
+			if c.resource == "reviews" {
+				kind = jobs.KindActivityReviews
+			}
+			if err := jobs.Resume(ctx, tx, kind, childKey(id, c.id), now); err != nil {
+				return err
+			}
+		}
+		if err := RequestActivity(ctx, tx, id, now); err != nil {
 			return err
 		}
 	}
@@ -182,6 +228,7 @@ func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
 		defer close(done)
 		runDuties(ctx, d.Clock, d.Sleep, d.Rand, []*duty{
 			{name: "metadata poll", every: MetadataPollInterval, run: d.pollMetadata},
+			{name: "activity poll", every: MetadataPollInterval, run: d.pollActivity},
 			{name: "star", every: StarReconcileInterval, run: d.scheduleStars},
 		})
 	}()
@@ -192,6 +239,9 @@ func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
 // Dead repositories stay dead: Enqueue records intent only, Resume ignores them.
 func (d SchedulerDeps) pollMetadata(ctx context.Context, now time.Time) error {
 	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
+		if err := accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeGlobal, 0); err != nil {
+			return err
+		}
 		ids, err := db.New(tx).ListFollowedRepositoryIDs(ctx)
 		if err != nil {
 			return err
@@ -227,4 +277,28 @@ func (d SchedulerDeps) enqueueAndResume(ctx context.Context, tx pgx.Tx, kind job
 
 func spread(interval time.Duration, rnd func() float64) time.Duration {
 	return time.Duration(rnd() * float64(interval) / enqueueSpreadDivisor)
+}
+
+// pollActivity repairs missed webhooks: every followed repository's caught-up streams are reopened for a catch-up
+// scan at a jittered time, and paused streams resume. Public and private repositories take the same path; access
+// is re-verified by the jobs themselves. Dead streams stay dead.
+func (d SchedulerDeps) pollActivity(ctx context.Context, now time.Time) error {
+	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
+		ids, err := db.New(tx).ListFollowedRepositoryIDs(ctx)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			at := now.Add(spread(MetadataPollInterval, d.Rand))
+			if _, err := SignalActivity(ctx, tx, id, at); err != nil {
+				return err
+			}
+			for _, kind := range activityParentKinds {
+				if err := jobs.Resume(ctx, tx, kind, repoKey(id), at); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
 }

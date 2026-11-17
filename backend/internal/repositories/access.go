@@ -48,6 +48,9 @@ type Service struct {
 	// snapshot, a selection, a connected installation), so paused work the change unblocks (ingestion.RecheckEligibility)
 	// resumes atomically with it. Nil does nothing.
 	OnEligibilityChange func(ctx context.Context, tx pgx.Tx, userID int64) error
+	// SignalActivity runs inside the refresh transaction and returns an ingestion.ActivityOutcome string
+	// ("accepted", "coalesced", "dead", "ineligible"). Nil makes the refresh route answer 404.
+	SignalActivity func(ctx context.Context, tx pgx.Tx, repoID int64) (string, error)
 
 	mu      sync.Mutex
 	entries map[int64]*entry
@@ -135,21 +138,27 @@ func (s *Service) visible(ctx context.Context, userID int64, token string, fresh
 	e := s.entry(userID)
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.set != nil && e.set.retryAt.After(s.now()) && s.fenceHolds(ctx, e.snap) {
+		return &visibleSet{repos: map[int64]githubapp.Repo{}, complete: false, retryAt: e.set.retryAt}
+	}
 	if !fresh && e.set != nil && s.now().Sub(e.at) < s.ttl() && s.fenceHolds(ctx, e.snap) {
 		return e.set
 	}
-	snap, snapErr := accessfence.TakeSnapshotForUser(ctx, s.Pool, userID)
-	set := s.fetchVisible(ctx, userID, token)
-	if snapErr != nil || !s.fenceHolds(ctx, snap) {
-		// An authorization change committed while this listing was being fetched (or the fence could not be read):
-		// nothing fetched before it may be served, even once. Withhold as unverified and cache nothing.
-		e.set = nil
-		return &visibleSet{repos: map[int64]githubapp.Repo{}, complete: false}
+	for attempt := 0; attempt < 2; attempt++ {
+		snap, snapErr := accessfence.TakeSnapshotForUser(ctx, s.Pool, userID)
+		set, selfBump := s.fetchVisible(ctx, userID, token, snap)
+		if snapErr == nil && s.fenceHolds(ctx, snap) {
+			e.set, e.at, e.snap = set, s.now(), snap
+			return set
+		}
+		if !selfBump {
+			break
+		}
 	}
-	// Incomplete listings are cached too (for the same TTL): they only withhold content, and re-fetching on every
-	// request would hammer a GitHub that is rate limiting or failing. Writes (fresh) always look again.
-	e.set, e.at, e.snap = set, s.now(), snap
-	return set
+	// An authorization change committed while this listing was being fetched (or the fence could not be read):
+	// nothing fetched before it may be served, even once. Withhold as unverified and cache nothing.
+	e.set = nil
+	return &visibleSet{repos: map[int64]githubapp.Repo{}, complete: false}
 }
 
 // fenceHolds reports whether no authorization change happened since snap was taken. Fails closed on a read error.
@@ -159,7 +168,7 @@ func (s *Service) fenceHolds(ctx context.Context, snap accessfence.Snapshot) boo
 }
 
 // ponytail: the lock is held across several HTTP calls; fine for one local user, switch to singleflight if it contends.
-func (s *Service) fetchVisible(ctx context.Context, userID int64, token string) *visibleSet {
+func (s *Service) fetchVisible(ctx context.Context, userID int64, token string, snap accessfence.Snapshot) (*visibleSet, bool) {
 	set := &visibleSet{repos: map[int64]githubapp.Repo{}, complete: true}
 	fail := func(err error) {
 		set.complete = false
@@ -179,7 +188,11 @@ func (s *Service) fetchVisible(ctx context.Context, userID int64, token string) 
 	owned, ok, err := collect(func(p int) ([]githubapp.Repo, bool, error) {
 		return s.GitHub.FetchOwnedRepos(ctx, token, p, githubPerPage)
 	})
-	add(owned)
+	for _, repo := range owned {
+		if !repo.Private {
+			set.repos[repo.ID] = repo
+		}
+	}
 	if err != nil {
 		fail(err)
 	} else if !ok {
@@ -188,7 +201,7 @@ func (s *Service) fetchVisible(ctx context.Context, userID int64, token string) 
 	installs, ok, err := collect(func(p int) ([]githubapp.Installation, bool, error) { return s.GitHub.FetchInstallations(ctx, token, p) })
 	if err != nil {
 		fail(err)
-		return set
+		return set, false
 	}
 	if !ok {
 		set.complete = false
@@ -206,24 +219,77 @@ func (s *Service) fetchVisible(ctx context.Context, userID int64, token string) 
 			set.complete = false
 		}
 	}
-	if set.complete { // only a complete listing proves an installation is gone
-		if err := s.syncInstallations(ctx, userID, installs, ids); err != nil {
-			log.Printf("repositories: installation sync failed: %v", err)
+	if set.complete {
+		changed, err := s.syncInstallations(ctx, userID, installs, ids, snap)
+		if err != nil {
+			return &visibleSet{repos: map[int64]githubapp.Repo{}, complete: false}, false
 		}
+		return set, changed
 	}
-	return set
+	return set, false
 }
 
-func (s *Service) syncInstallations(ctx context.Context, userID int64, installs []githubapp.Installation, ids []int64) error {
-	if err := s.Queries.PruneInstallations(ctx, db.PruneInstallationsParams{UserID: userID, Keep: ids}); err != nil {
-		return err
+func (s *Service) syncInstallations(ctx context.Context, userID int64, installs []githubapp.Installation, ids []int64, snap accessfence.Snapshot) (bool, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return false, err
 	}
-	for _, in := range installs {
-		if err := s.Queries.UpsertInstallation(ctx, db.UpsertInstallationParams{UserID: userID, InstallationID: in.ID, AccountLogin: in.Account.Login}); err != nil {
-			return err
+	defer tx.Rollback(ctx)
+	// The global row serializes membership changes with purge and invalidation.
+	if _, err = tx.Exec(ctx, `INSERT INTO access_fences(scope,subject_id) VALUES('global',0) ON CONFLICT DO NOTHING`); err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(ctx, `SELECT 1 FROM access_fences WHERE scope='global' AND subject_id=0 FOR UPDATE`); err != nil {
+		return false, err
+	}
+	current, err := snap.Current(ctx, tx)
+	if err != nil || !current {
+		return false, errors.New("access changed during listing")
+	}
+	rows, err := tx.Query(ctx, `SELECT installation_id FROM installations WHERE user_id=$1`, userID)
+	if err != nil {
+		return false, err
+	}
+	existing := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return false, err
+		}
+		existing[id] = true
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return false, err
+	}
+	changed := len(existing) != len(ids)
+	for _, id := range ids {
+		if !existing[id] {
+			changed = true
 		}
 	}
-	return nil
+	if changed {
+		if err = accessfence.BumpAccess(ctx, tx, accessfence.ScopeUser, userID); err != nil {
+			return false, err
+		}
+	}
+	q := s.Queries.WithTx(tx)
+	if err = q.PruneInstallations(ctx, db.PruneInstallationsParams{UserID: userID, Keep: ids}); err != nil {
+		return false, err
+	}
+	for _, in := range installs {
+		if err = q.UpsertInstallation(ctx, db.UpsertInstallationParams{UserID: userID, InstallationID: in.ID, AccountLogin: in.Account.Login}); err != nil {
+			return false, err
+		}
+	}
+	if changed && s.OnEligibilityChange != nil {
+		if err := s.OnEligibilityChange(ctx, tx, userID); err != nil {
+			return false, err
+		}
+	}
+	return changed, tx.Commit(ctx)
 }
 
 // prepare returns a token and the visible set, or verdictForAll (non-nil) when neither is available: the same
@@ -314,6 +380,9 @@ func (s *Service) CheckOne(ctx context.Context, userID, id int64, fresh bool) De
 	if verdictForAll != nil {
 		return *verdictForAll
 	}
+	if set.retryAt.After(s.now()) {
+		return Decision{Unverified: true, RetryAt: set.retryAt}
+	}
 	if r, ok := set.lookup(id); ok {
 		return Decision{Allowed: true, Repo: r}
 	}
@@ -341,4 +410,26 @@ func (s *Service) lookupOne(ctx context.Context, userID int64, token string, set
 		return Decision{Unverified: true, RetryAt: set.retryAt}
 	}
 	return Decision{Allowed: true, Repo: r}
+}
+
+// CheckPrivatePresence checks one user's installation-visible repositories for cleanup. A denial is
+// authoritative only for this user; callers must also check every other possible user and installation.
+// Missing credentials and incomplete listings are unverified, never evidence for deletion.
+func (s *Service) CheckPrivatePresence(ctx context.Context, userID, repoID int64) Decision {
+	token, err := s.TokenSource.AccessToken(ctx, userID)
+	if err != nil {
+		return Decision{Unverified: true}
+	}
+	set := s.visible(ctx, userID, token, true)
+	if set.tokenRejected {
+		s.revoke(ctx, userID)
+		return Decision{Unverified: true}
+	}
+	if repo, ok := set.lookup(repoID); ok {
+		return Decision{Allowed: true, Repo: repo}
+	}
+	if !set.complete {
+		return Decision{Unverified: true, RetryAt: set.retryAt}
+	}
+	return Decision{}
 }

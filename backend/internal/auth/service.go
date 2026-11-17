@@ -114,6 +114,9 @@ func (s *Service) CompleteLogin(ctx context.Context, queryState, cookieState, co
 		if err != nil {
 			return err
 		}
+		if err = accessfence.BumpAccess(ctx, tx, accessfence.ScopeUser, userID); err != nil {
+			return err
+		}
 		now := s.now()
 		if err = q.CreateSession(ctx, db.CreateSessionParams{TokenHash: sha256Digest(token), UserID: userID, CreatedAt: timestamptz(now), ExpiresAt: timestamptz(now.Add(SessionLifetime))}); err != nil {
 			return err

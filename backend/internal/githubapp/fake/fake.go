@@ -3,6 +3,8 @@
 package fake
 
 import (
+	"crypto"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -11,6 +13,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +21,7 @@ import (
 
 type Server struct {
 	ClientID, ClientSecret string
+	AppPublicKey           *rsa.PublicKey
 	// RefreshDelay widens the window for concurrent-refresh tests.
 	RefreshDelay time.Duration
 	// SetupURL is where the fake app-install page sends the browser, e.g. http://app.test/auth/github/installed.
@@ -33,8 +37,14 @@ type Server struct {
 	repos        map[int64]*repo
 	installs     map[int64]*install
 	stars        map[string]map[int64]bool // login -> starred repository IDs
-	limitedUntil time.Time                 // API calls fail with a rate limit until this time
-	failing      bool                      // API calls fail with 502
+	issues       map[int64][]IssueFixture
+	pulls        map[int64][]PullRequestFixture
+	reviews      map[int64]map[int64][]ReviewFixture
+	comments     map[int64]map[int64][]CommentFixture
+	releases     map[int64][]ReleaseFixture
+	issueEvents  map[int64][]IssueEventFixture
+	limitedUntil time.Time // API calls fail with a rate limit until this time
+	failing      bool      // API calls fail with 502
 	hits         map[string]int
 }
 
@@ -42,6 +52,33 @@ type repo struct {
 	id                int64
 	owner, name, desc string
 	private           bool
+}
+
+// IssueFixture is the source data returned by GitHub's issues endpoint.
+type IssueFixture struct {
+	ID          int64        `json:"id"`
+	Number      int64        `json:"number"`
+	Title       string       `json:"title"`
+	State       string       `json:"state"`
+	HTMLURL     string       `json:"html_url"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
+	ClosedAt    *time.Time   `json:"closed_at"`
+	User        IssueActor   `json:"user"`
+	Labels      []IssueLabel `json:"labels"`
+	Assignees   []IssueActor `json:"assignees"`
+	PullRequest bool         `json:"-"`
+}
+
+type IssueActor struct {
+	ID    int64  `json:"id"`
+	Login string `json:"login"`
+	Type  string `json:"type"`
+}
+
+type IssueLabel struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
 }
 
 // install is a GitHub App installation visible to one user, covering a fixed set of repositories.
@@ -54,7 +91,7 @@ type install struct {
 type grant struct{ challenge, login string }
 
 func New(clientID, clientSecret string) *Server {
-	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, stars: map[string]map[int64]bool{}, hits: map[string]int{}}
+	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, stars: map[string]map[int64]bool{}, issues: map[int64][]IssueFixture{}, pulls: map[int64][]PullRequestFixture{}, reviews: map[int64]map[int64][]ReviewFixture{}, comments: map[int64]map[int64][]CommentFixture{}, releases: map[int64][]ReleaseFixture{}, issueEvents: map[int64][]IssueEventFixture{}, hits: map[string]int{}}
 }
 
 // Refreshes reports how many refresh-token exchanges were accepted.
@@ -71,12 +108,21 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/login/oauth/authorize", s.authorize)
 	mux.HandleFunc("/login/oauth/access_token", s.token)
+	mux.HandleFunc("/app/installations", s.appAPI(s.appInstallations))
+	mux.HandleFunc("/app/installations/{id}/access_tokens", s.appAPI(s.appInstallationToken))
+	mux.HandleFunc("/installation/repositories", s.appAPI(s.appRepositories))
 	mux.HandleFunc("/user", s.api(s.user))
 	mux.HandleFunc("/user/repos", s.api(s.userRepos))
 	mux.HandleFunc("/user/starred", s.api(s.userStarred))
 	mux.HandleFunc("/user/installations", s.api(s.userInstallations))
 	mux.HandleFunc("/user/installations/{id}/repositories", s.api(s.installationRepos))
 	mux.HandleFunc("/repositories/{id}", s.api(s.repoByID))
+	mux.HandleFunc("/repos/{owner}/{repo}/issues", s.api(s.repoIssues))
+	mux.HandleFunc("/repos/{owner}/{repo}/releases", s.api(s.repoActivity))
+	mux.HandleFunc("/repos/{owner}/{repo}/issues/events", s.api(s.repoActivity))
+	mux.HandleFunc("/repos/{owner}/{repo}/pulls", s.api(s.repoActivity))
+	mux.HandleFunc("/repos/{owner}/{repo}/pulls/{number}/reviews", s.api(s.repoActivity))
+	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/comments", s.api(s.repoActivity))
 	mux.HandleFunc("/apps/{slug}/installations/new", s.installNew)
 	return mux
 }
@@ -233,6 +279,13 @@ func (s *Server) Unstar(login string, id int64) {
 	delete(s.stars[login], id)
 }
 
+// SetIssues replaces the fixture issue list for a repository. Fixture order is preserved across pages.
+func (s *Server) SetIssues(repoID int64, issues ...IssueFixture) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issues[repoID] = append([]IssueFixture(nil), issues...)
+}
+
 func (s *Server) SetPrivate(id int64, private bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -310,9 +363,13 @@ func page[T any](w http.ResponseWriter, r *http.Request, items []T) []T {
 	if pg < 1 {
 		pg = 1
 	}
-	lo, hi := min((pg-1)*per, len(items)), min(pg*per, len(items))
+	lo := len(items)
+	if pg-1 <= len(items)/per {
+		lo = (pg - 1) * per
+	}
+	hi := min(lo+per, len(items))
 	if hi < len(items) {
-		w.Header().Set("Link", `<https://api.github.test/next>; rel="next"`)
+		w.Header().Set("Link", fmt.Sprintf(`<%s?page=%d&per_page=%d>; rel="next"`, r.URL.Path, pg+1, per))
 	}
 	return items[lo:hi]
 }
@@ -392,6 +449,57 @@ func (s *Server) repoByID(w http.ResponseWriter, r *http.Request, login string) 
 	http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 }
 
+func (s *Server) repoIssues(w http.ResponseWriter, r *http.Request, login string) {
+	if r.URL.Query().Get("state") != "all" {
+		http.Error(w, `{"message":"Bad Request"}`, http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	var id int64
+	var found bool
+	for repoID, x := range s.repos {
+		if x.owner == r.PathValue("owner") && x.name == r.PathValue("repo") {
+			id, found = repoID, s.canRead(login, x)
+			break
+		}
+	}
+	if !found {
+		s.mu.Unlock()
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		return
+	}
+	items := append([]IssueFixture(nil), s.issues[id]...)
+	s.mu.Unlock()
+
+	per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+	pg, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if per < 1 || per > 100 {
+		per = 30
+	}
+	if pg < 1 {
+		pg = 1
+	}
+	lo, hi := min((pg-1)*per, len(items)), min(pg*per, len(items))
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if hi < len(items) {
+		w.Header().Set("Link", fmt.Sprintf(`<%s://%s%s?state=all&per_page=%d&page=%d>; rel="next"`, scheme, r.Host, r.URL.Path, per, pg+1))
+	}
+	out := make([]map[string]any, 0, hi-lo)
+	for _, issue := range items[lo:hi] {
+		entry := map[string]any{"id": issue.ID, "number": issue.Number, "title": issue.Title, "state": issue.State,
+			"html_url": issue.HTMLURL, "created_at": issue.CreatedAt, "updated_at": issue.UpdatedAt, "closed_at": issue.ClosedAt, "user": issue.User,
+			"labels": issue.Labels, "assignees": issue.Assignees}
+		if issue.PullRequest {
+			entry["pull_request"] = map[string]string{"url": fmt.Sprintf("%s://%s/repos/%s/%s/pulls/%d", scheme, r.Host, r.PathValue("owner"), r.PathValue("repo"), issue.Number)}
+		}
+		out = append(out, entry)
+	}
+	writeJSON(w, out)
+}
+
 // installNew stands in for GitHub's app-install page: ?as=<login> installs the app on every private
 // repository that login owns, then returns the browser to the setup URL like GitHub does.
 func (s *Server) installNew(w http.ResponseWriter, r *http.Request) {
@@ -428,4 +536,97 @@ func asLogin(r *http.Request) string {
 		return c.Value
 	}
 	return ""
+}
+
+// appAuthorized validates the app JWT using the configured public key.
+func (s *Server) appAuthorized(r *http.Request) bool {
+	parts := strings.Split(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), ".")
+	if len(parts) != 3 || s.AppPublicKey == nil {
+		return false
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return false
+	}
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if rsa.VerifyPKCS1v15(s.AppPublicKey, crypto.SHA256, digest[:], signature) != nil {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	var claims struct {
+		Iss string `json:"iss"`
+		Iat int64  `json:"iat"`
+		Exp int64  `json:"exp"`
+	}
+	return json.Unmarshal(payload, &claims) == nil && claims.Iss == s.ClientID && claims.Iat <= time.Now().Unix() && claims.Exp > time.Now().Unix()
+}
+func (s *Server) appInstallations(w http.ResponseWriter, r *http.Request) {
+	if !s.appAuthorized(r) {
+		http.Error(w, "unauthorized", 401)
+		return
+	}
+	s.mu.Lock()
+	ids := make([]int64, 0, len(s.installs))
+	for id := range s.installs {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	items := []map[string]any{}
+	for _, id := range ids {
+		items = append(items, map[string]any{"id": id, "suspended_at": nil})
+	}
+	writeJSON(w, page(w, r, items))
+}
+func (s *Server) appInstallationToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || !s.appAuthorized(r) {
+		http.Error(w, "unauthorized", 401)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	s.mu.Lock()
+	_, ok := s.installs[id]
+	s.mu.Unlock()
+	if err != nil || !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, map[string]any{"token": fmt.Sprintf("installation_%d", id)})
+}
+func (s *Server) appRepositories(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer installation_")
+	id, err := strconv.ParseInt(token, 10, 64)
+	s.mu.Lock()
+	in, ok := s.installs[id]
+	if err != nil || !ok {
+		s.mu.Unlock()
+		http.Error(w, "unauthorized", 401)
+		return
+	}
+	items := s.sortedRepos(func(x *repo) bool { return in.repos[x.id] })
+	s.mu.Unlock()
+	writeJSON(w, map[string]any{"total_count": len(items), "repositories": page(w, r, items)})
+}
+
+func (s *Server) appAPI(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.hits[r.URL.Path]++
+		limited, failing := s.limitedUntil, s.failing
+		s.mu.Unlock()
+		if time.Now().Before(limited) {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(limited.Unix(), 10))
+			http.Error(w, "rate limited", http.StatusForbidden)
+			return
+		}
+		if failing {
+			http.Error(w, "unavailable", http.StatusBadGateway)
+			return
+		}
+		h(w, r)
+	}
 }
