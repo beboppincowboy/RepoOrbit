@@ -1,0 +1,273 @@
+//go:build integration
+
+package ingestion
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/jobs"
+	"github.com/repoorbit/repoorbit/backend/internal/testutil"
+)
+
+// txFence is a stand-in jobs.Fence over a real transaction (the real claim check belongs to U3a).
+type txFence struct{ pool *pgxpool.Pool }
+
+func (f txFence) Commit(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+type fixture struct {
+	t    *testing.T
+	pool *pgxpool.Pool
+	q    *db.Queries
+}
+
+func newFixture(t *testing.T) *fixture {
+	_, pool := testutil.Database(t)
+	return &fixture{t, pool, db.New(pool)}
+}
+
+func (f *fixture) exec(sql string, args ...any) {
+	f.t.Helper()
+	if _, err := f.pool.Exec(context.Background(), sql, args...); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *fixture) user(id int64) {
+	f.exec(`INSERT INTO users (id, github_id, login, access_token_enc) VALUES ($1, $1, 'u', '\x00')`, id)
+}
+
+func (f *fixture) repo(id int64) {
+	f.exec(`INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES ($1, 'o/r', '', false, false)`, id)
+}
+
+func (f *fixture) selection(user, repo int64, source string) {
+	f.exec(`INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES ($1,$2,$3,now())`, user, repo, source)
+}
+
+func (f *fixture) star(user, repo int64) {
+	f.exec(`INSERT INTO stars (user_id, repository_id, full_name, description, is_private) VALUES ($1,$2,'o/r','',false)`, user, repo)
+}
+
+func (f *fixture) suspended(user, repo int64) bool {
+	f.t.Helper()
+	var s bool
+	if err := f.pool.QueryRow(context.Background(), `SELECT follow_suspended_at IS NOT NULL FROM selections WHERE user_id=$1 AND repository_id=$2`, user, repo).Scan(&s); err != nil {
+		f.t.Fatal(err)
+	}
+	return s
+}
+
+func (f *fixture) jobState(kind jobs.Kind, key string) string {
+	f.t.Helper()
+	var s string
+	if err := f.pool.QueryRow(context.Background(), `SELECT state FROM jobs WHERE kind=$1 AND key=$2`, string(kind), key).Scan(&s); err != nil {
+		f.t.Fatal(err)
+	}
+	return s
+}
+
+// Unstar semantics, queries only (no queue needed): suspend a starred selection that left the snapshot without
+// deleting it; never touch owned ones; restore when starred again.
+func TestUnstarSuspendsFollowWithoutDeletingSelection(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.user(1)
+	for _, id := range []int64{10, 11, 12} {
+		f.repo(id)
+	}
+	f.selection(1, 10, "starred") // still starred
+	f.selection(1, 11, "starred") // unstarred
+	f.selection(1, 12, "owned")   // not a star at all
+	f.star(1, 10)
+	now := time.Now()
+	if err := f.q.SuspendUnstarredFollows(ctx, db.SuspendUnstarredFollowsParams{UserID: 1, Now: sTs(now)}); err != nil {
+		t.Fatal(err)
+	}
+	if f.suspended(1, 10) || !f.suspended(1, 11) || f.suspended(1, 12) {
+		t.Fatalf("suspended: %v %v %v", f.suspended(1, 10), f.suspended(1, 11), f.suspended(1, 12))
+	}
+	ids, err := f.q.ListFollowedRepositoryIDs(ctx)
+	if err != nil || len(ids) != 2 || ids[0] != 10 || ids[1] != 12 {
+		t.Fatalf("poll set %v %v (the unstarred repo must leave the poll set)", ids, err)
+	}
+	f.star(1, 11)
+	if err := f.q.RestoreStarredFollows(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if f.suspended(1, 11) {
+		t.Fatal("restoring after a star came back failed")
+	}
+}
+
+// Another eligible selector keeps the repository in the poll set when one user unstars.
+func TestOtherEligibleSelectorKeepsRepositoryPolled(t *testing.T) {
+	f := newFixture(t)
+	f.user(1)
+	f.user(2)
+	f.repo(10)
+	f.selection(1, 10, "starred")
+	f.selection(2, 10, "starred")
+	f.star(2, 10)
+	if err := f.q.SuspendUnstarredFollows(context.Background(), db.SuspendUnstarredFollowsParams{UserID: 1, Now: sTs(time.Now())}); err != nil {
+		t.Fatal(err)
+	}
+	ids, _ := f.q.ListFollowedRepositoryIDs(context.Background())
+	if len(ids) != 1 || ids[0] != 10 || !f.suspended(1, 10) || f.suspended(2, 10) {
+		t.Fatalf("poll set %v", ids)
+	}
+	if err := f.q.SuspendUnstarredFollows(context.Background(), db.SuspendUnstarredFollowsParams{UserID: 2, Now: sTs(time.Now())}); err != nil {
+		t.Fatal(err) // idempotent for a still-starred follow
+	}
+}
+
+// A failed or incomplete refresh never reaches the fence, so eligibility is preserved (fence is nil: it would panic).
+func TestFailedRefreshPreservesEligibility(t *testing.T) {
+	f := newFixture(t)
+	f.user(1)
+	f.repo(10)
+	f.selection(1, 10, "starred") // not in any snapshot, yet must stay eligible after a failure
+	for _, s := range []*fakeStars{{}, {err: errors.New("net")}, {err: ErrNoCredential}} {
+		_ = StarReconcileHandler(s, &fakeClock{now: time.Now()})(context.Background(), jobs.Job{Key: "user:1"}, nil)
+	}
+	if f.suspended(1, 10) {
+		t.Fatal("failed refresh suspended eligibility")
+	}
+}
+
+func skipIfNoQueue(t *testing.T, err error) {
+	t.Helper()
+	if errors.Is(err, jobs.ErrNotImplemented) {
+		t.Skip("needs U3a queue")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Completed refresh: unstarred follow suspended, still-starred one kept, paused work for the user resumed.
+func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.user(1)
+	f.repo(10)
+	f.repo(11)
+	f.selection(1, 10, "starred")
+	f.selection(1, 11, "starred")
+	f.star(1, 10)
+	now := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
+	tx, _ := f.begin()
+	skipIfNoQueue(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(10), now))
+	skipIfNoQueue(t, tx.Commit(ctx))
+	f.exec(`UPDATE jobs SET state='paused'`)
+	err := StarReconcileHandler(&fakeStars{res: StarRefresh{Completed: true}}, &fakeClock{now: now})(ctx, jobs.Job{Key: "user:1"}, txFence{f.pool})
+	skipIfNoQueue(t, err)
+	if f.suspended(1, 10) || !f.suspended(1, 11) {
+		t.Fatal("suspension wrong")
+	}
+	if got := f.jobState(jobs.KindRepoMetadataRefresh, repoKey(10)); got != "queued" {
+		t.Fatalf("paused job after recheck: %s", got)
+	}
+}
+
+// Polls and recheck must never revive a dead metadata refresh (the dead-work barrier).
+func TestPollAndRecheckDoNotReviveDeadWork(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.user(1)
+	f.repo(10)
+	f.selection(1, 10, "owned")
+	now := time.Now()
+	tx, _ := f.begin()
+	skipIfNoQueue(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(10), now))
+	skipIfNoQueue(t, tx.Commit(ctx))
+	f.exec(`UPDATE jobs SET state='dead'`)
+	d := SchedulerDeps{Pool: f.pool, Rand: func() float64 { return 0 }}
+	skipIfNoQueue(t, d.pollMetadata(ctx, now))
+	tx, _ = f.begin()
+	skipIfNoQueue(t, RecheckEligibility(ctx, tx, 1, now))
+	skipIfNoQueue(t, tx.Commit(ctx))
+	if got := f.jobState(jobs.KindRepoMetadataRefresh, repoKey(10)); got != "dead" {
+		t.Fatalf("dead job became %s", got)
+	}
+}
+
+// Paused work resumes after an eligibility change; a poll also resumes it (missed-signal recovery). A user with no
+// followed repositories resumes nothing of someone else's.
+func TestRecheckResumesPausedWorkOnlyForTheUsersRepositories(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.user(1)
+	f.user(2)
+	f.repo(10)
+	f.repo(11)
+	f.selection(1, 10, "owned")
+	f.selection(2, 11, "owned")
+	now := time.Now()
+	tx, _ := f.begin()
+	for _, id := range []int64{10, 11} {
+		skipIfNoQueue(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(id), now))
+	}
+	skipIfNoQueue(t, tx.Commit(ctx))
+	f.exec(`UPDATE jobs SET state='paused'`)
+	tx, _ = f.begin()
+	skipIfNoQueue(t, RecheckEligibility(ctx, tx, 1, now))
+	skipIfNoQueue(t, tx.Commit(ctx))
+	if a, b := f.jobState(jobs.KindRepoMetadataRefresh, repoKey(10)), f.jobState(jobs.KindRepoMetadataRefresh, repoKey(11)); a != "queued" || b != "paused" {
+		t.Fatalf("states %s %s", a, b)
+	}
+	skipIfNoQueue(t, SchedulerDeps{Pool: f.pool, Rand: func() float64 { return 0 }}.pollMetadata(ctx, now))
+	if b := f.jobState(jobs.KindRepoMetadataRefresh, repoKey(11)); b != "queued" {
+		t.Fatalf("poll did not recover missed signal: %s", b)
+	}
+}
+
+func TestLoadMetadataStatusesFromJobsAndSync(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.user(1)
+	f.repo(10)
+	f.repo(11)
+	f.selection(1, 10, "owned")
+	f.selection(1, 11, "starred")
+	f.exec(`INSERT INTO repository_sync (repository_id, last_success_at, last_error_code) VALUES (10, now(), 'github_unavailable')`)
+	got, err := LoadMetadataStatuses(ctx, f.q, 1, []int64{10, 11, 99})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("%v %v", got, err)
+	}
+	if s := got[10]; s.State != StatusNotScheduled || s.LastSuccessAt == nil || s.FailureCode == nil || *s.FailureCode != "github_unavailable" {
+		t.Fatalf("%+v", s)
+	}
+	tx, _ := f.begin()
+	skipIfNoQueue(t, jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, repoKey(11), time.Now()))
+	skipIfNoQueue(t, tx.Commit(ctx))
+	f.exec(`UPDATE jobs SET state='paused'`)
+	got, _ = LoadMetadataStatuses(ctx, f.q, 1, []int64{11})
+	if !got[11].Paused || got[11].State != "paused" {
+		t.Fatalf("%+v", got[11])
+	}
+}
+
+// begin opens a transaction rolled back at test end, so a skipped test never pins a pooled connection.
+func (f *fixture) begin() (pgx.Tx, error) {
+	tx, err := f.pool.Begin(context.Background())
+	if err == nil {
+		f.t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	}
+	return tx, err
+}
