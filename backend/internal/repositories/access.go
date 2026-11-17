@@ -9,7 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
@@ -39,15 +41,20 @@ type Service struct {
 	TTL        time.Duration
 	AppURL     string // browser-facing origin for redirects
 	InstallURL string // where users install the GitHub App; empty when no app slug is configured
+	// OnSelect runs inside the selection transaction after the repository and selection rows are written, so
+	// durable scheduling (ingestion.RequestRefresh) commits or rolls back with the selection. Nil schedules nothing.
+	OnSelect func(ctx context.Context, tx pgx.Tx, repoID int64) error
 
 	mu      sync.Mutex
 	entries map[int64]*entry
 }
 
 type entry struct {
-	mu  sync.Mutex // held during a fetch so concurrent callers share it instead of repeating it
-	set *visibleSet
-	at  time.Time
+	mu     sync.Mutex // held during a fetch so concurrent callers share it instead of repeating it
+	set    *visibleSet
+	at     time.Time
+	snap   accessfence.Snapshot // fence epochs from before the fetch; a bump since then ends the cached set
+	fenced bool
 }
 
 // visibleSet is everything GitHub says the user can reach with the app: their own repositories plus those in
@@ -125,14 +132,35 @@ func (s *Service) visible(ctx context.Context, userID int64, token string, fresh
 	e := s.entry(userID)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !fresh && e.set != nil && s.now().Sub(e.at) < s.ttl() {
+	if !fresh && e.set != nil && s.now().Sub(e.at) < s.ttl() && s.fenceHolds(ctx, e) {
 		return e.set
 	}
+	snap, snapErr := s.takeFence(ctx, userID)
 	set := s.fetchVisible(ctx, userID, token)
 	// Incomplete listings are cached too (for the same TTL): they only withhold content, and re-fetching on every
 	// request would hammer a GitHub that is rate limiting or failing. Writes (fresh) always look again.
-	e.set, e.at = set, s.now()
+	e.set, e.at, e.snap, e.fenced = set, s.now(), snap, snapErr == nil && s.Pool != nil
 	return set
+}
+
+// takeFence records authorization epochs before a fetch (see accessfence); without a pool there is no fence.
+func (s *Service) takeFence(ctx context.Context, userID int64) (accessfence.Snapshot, error) {
+	if s.Pool == nil {
+		return accessfence.Snapshot{}, nil
+	}
+	return accessfence.TakeForUser(ctx, s.Pool, userID)
+}
+
+// fenceHolds reports whether no authorization change happened since the cached set was fetched. Fails closed.
+func (s *Service) fenceHolds(ctx context.Context, e *entry) bool {
+	if s.Pool == nil {
+		return true
+	}
+	if !e.fenced {
+		return false
+	}
+	ok, err := e.snap.Current(ctx, s.Pool)
+	return ok && err == nil
 }
 
 // ponytail: the lock is held across several HTTP calls; fine for one local user, switch to singleflight if it contends.

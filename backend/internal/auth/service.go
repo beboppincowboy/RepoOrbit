@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"golang.org/x/oauth2"
@@ -193,6 +194,9 @@ func (s *Service) Revoke(ctx context.Context, userID int64) error {
 	}
 	defer tx.Rollback(ctx)
 	q := s.Queries.WithTx(tx)
+	if err = accessfence.Bump(ctx, tx, accessfence.ScopeUser, userID); err != nil { // before cleanup: cached reads must stop first
+		return err
+	}
 	if err = q.DeleteUserSessions(ctx, userID); err != nil {
 		return err
 	}
