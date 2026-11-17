@@ -166,3 +166,33 @@ func TestConcurrentStarRefreshes(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// A completed interactive star refresh suspends a followed repository that is no longer starred, in the same
+// transaction as the snapshot replacement, and restores it when starred again. The Selection itself stays.
+func TestInteractiveRefreshSuspendsAndRestoresFollow(t *testing.T) {
+	e := setup(t, time.Nanosecond)
+	repo := e.gh.AddRepo("bob", "lib", false)
+	e.gh.Star("alice", repo)
+	alice := e.signIn("alice")
+	alice.starred("?refresh=1")
+	if got := alice.write("PUT", fmt.Sprintf("/api/repositories/%d/follow", repo)).StatusCode; got != 200 {
+		t.Fatalf("follow: %d", got)
+	}
+	suspended := func() bool {
+		var s bool
+		if err := e.pool.QueryRow(context.Background(), `SELECT follow_suspended_at IS NOT NULL FROM selections WHERE user_id=$1 AND repository_id=$2 AND deselected_at IS NULL`, alice.id, repo).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	e.gh.Unstar("alice", repo)
+	alice.starred("?refresh=1")
+	if !suspended() {
+		t.Fatal("unstarred follow stayed eligible after a completed interactive refresh")
+	}
+	e.gh.Star("alice", repo)
+	alice.starred("?refresh=1")
+	if suspended() {
+		t.Fatal("starred again but still suspended")
+	}
+}

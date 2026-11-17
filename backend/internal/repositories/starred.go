@@ -146,6 +146,19 @@ func (s *Service) replaceStars(ctx context.Context, userID int64, repos []github
 	if err := q.UpsertStarSnapshot(ctx, db.UpsertStarSnapshotParams{UserID: userID, RefreshedAt: pgtype.Timestamptz{Time: s.now(), Valid: true}}); err != nil {
 		return err
 	}
+	// The snapshot is complete here, so follow eligibility changes with it: unstarred follows stop being polled
+	// (the Selection stays), starred-again ones resume. Owned selections never depend on stars.
+	if err := q.SuspendUnstarredFollows(ctx, db.SuspendUnstarredFollowsParams{UserID: userID, Now: pgtype.Timestamptz{Time: s.now(), Valid: true}}); err != nil {
+		return err
+	}
+	if err := q.RestoreStarredFollows(ctx, userID); err != nil {
+		return err
+	}
+	if s.OnStarsReplaced != nil {
+		if err := s.OnStarsReplaced(ctx, tx, userID); err != nil {
+			return err
+		}
+	}
 	return tx.Commit(ctx)
 }
 
