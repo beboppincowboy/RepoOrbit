@@ -14,9 +14,38 @@ type AccessFence struct {
 	Epoch     int64
 }
 
+type ActivityChild struct {
+	RepositoryID  int64
+	Resource      string
+	ParentID      int64
+	ParentNumber  int64
+	Cursor        string
+	Generation    int64
+	Complete      bool
+	ScanStartedAt pgtype.Timestamptz
+	Watermark     pgtype.Timestamptz
+	PreviousScan  []int64
+	CurrentScan   []int64
+	LastSuccessAt pgtype.Timestamptz
+	LastErrorCode pgtype.Text
+}
+
 type ActivityCleanup struct {
 	RepositoryID int64
 	Version      int64
+}
+
+type ActivityComment struct {
+	SourceID     int64
+	RepositoryID int64
+	IssueNumber  int64
+	Body         string
+	HtmlUrl      string
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+	AuthorID     pgtype.Int8
+	AuthorLogin  pgtype.Text
+	AuthorType   pgtype.Text
 }
 
 type ActivityIssue struct {
@@ -29,9 +58,9 @@ type ActivityIssue struct {
 	CreatedAt    pgtype.Timestamptz
 	UpdatedAt    pgtype.Timestamptz
 	ClosedAt     pgtype.Timestamptz
-	AuthorID     int64
-	AuthorLogin  string
-	AuthorType   string
+	AuthorID     pgtype.Int8
+	AuthorLogin  pgtype.Text
+	AuthorType   pgtype.Text
 }
 
 type ActivityIssueAssignee struct {
@@ -45,6 +74,22 @@ type ActivityIssueLabel struct {
 	IssueID  int64
 	SourceID int64
 	Name     string
+}
+
+type ActivityPullRequest struct {
+	SourceID     int64
+	RepositoryID int64
+	Number       int64
+	Title        string
+	State        string
+	HtmlUrl      string
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+	ClosedAt     pgtype.Timestamptz
+	MergedAt     pgtype.Timestamptz
+	AuthorID     pgtype.Int8
+	AuthorLogin  pgtype.Text
+	AuthorType   pgtype.Text
 }
 
 type ActivityResource struct {
@@ -61,6 +106,19 @@ type ActivityResource struct {
 	CurrentScan   []int64
 	LastSuccessAt pgtype.Timestamptz
 	LastErrorCode pgtype.Text
+}
+
+type ActivityReview struct {
+	SourceID      int64
+	RepositoryID  int64
+	PullRequestID int64
+	State         string
+	Body          string
+	HtmlUrl       string
+	SubmittedAt   pgtype.Timestamptz
+	AuthorID      pgtype.Int8
+	AuthorLogin   pgtype.Text
+	AuthorType    pgtype.Text
 }
 
 type CredentialThrottle struct {

@@ -2,6 +2,9 @@ package graph
 
 import (
 	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
 	"strconv"
 	"time"
 
@@ -16,9 +19,9 @@ func activityStatus(demo, selected bool) *model.ActivityStatus {
 		return &model.ActivityStatus{Synchronized: false, Message: "Demo sample data; not synchronized from GitHub.", FutureResources: []string{"pull requests", "reviews", "comments", "releases", "issue events"}}
 	}
 	if !selected {
-		return &model.ActivityStatus{Synchronized: false, Message: "Not selected; nothing is synchronized.", FutureResources: []string{"pull requests", "reviews", "comments", "releases", "issue events"}}
+		return &model.ActivityStatus{Synchronized: false, Message: "Not selected; nothing is synchronized.", FutureResources: []string{"releases", "issue events"}}
 	}
-	return &model.ActivityStatus{Synchronized: false, Message: "Activity import in progress; other resources are not yet imported.", FutureResources: []string{"pull requests", "reviews", "comments", "releases", "issue events"}}
+	return &model.ActivityStatus{Synchronized: false, Message: "Activity import in progress; other resources are not yet imported.", FutureResources: []string{"releases", "issue events"}}
 }
 
 func rfc3339(t *time.Time) *string {
@@ -82,7 +85,62 @@ func (r *Resolver) attachMetadataStatus(ctx context.Context, userID int64, nodes
 		}
 		if n.Activity != nil {
 			n.Activity.Issues = byID[id]
+			if r.RepoAccess != nil {
+				if err := r.attachEvidenceStatus(ctx, id, n.Activity); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil
+}
+
+// attachEvidenceStatus derives child completeness only after every relevant parent traversal has caught up.
+func (r *Resolver) attachEvidenceStatus(ctx context.Context, id int64, a *model.ActivityStatus) error {
+	var boundary time.Time
+	var phase string
+	var watermark, success, next *time.Time
+	var code *string
+	var state string
+	err := r.RepoAccess.Pool.QueryRow(ctx, `SELECT a.boundary,a.phase,a.watermark,a.last_success_at,a.last_error_code,COALESCE(j.state,'not-scheduled'),CASE WHEN j.state='queued' THEN j.run_at END FROM activity_resources a LEFT JOIN jobs j ON j.kind='activity_pull_requests' AND j.key='repo:'||a.repository_id::text WHERE a.repository_id=$1 AND a.resource='pull_requests'`, id).Scan(&boundary, &phase, &watermark, &success, &code, &state, &next)
+	if err == nil {
+		a.PullRequests = &model.ActivityResourceStatus{Phase: phase, Boundary: stamp(boundary), CatchupThrough: rfc3339(watermark), LastSuccessAt: rfc3339(success), FailureCode: safeActivityCode(code), JobState: state, NextAttemptAt: rfc3339(next)}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	parentComplete := func(s *model.ActivityResourceStatus) bool {
+		return s != nil && s.Phase == "current" && s.CatchupThrough != nil
+	}
+	for _, resource := range []string{"reviews", "comments"} {
+		var pending int
+		var childSuccess, childNext *time.Time
+		var childCode *string
+		err = r.RepoAccess.Pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE NOT c.complete), CASE WHEN count(*) > 0 AND count(c.last_success_at) = count(*) THEN min(c.last_success_at) END, (array_agg(c.last_error_code ORDER BY c.parent_id) FILTER (WHERE c.last_error_code IS NOT NULL))[1], min(j.run_at) FILTER (WHERE j.state='queued') FROM activity_children c LEFT JOIN jobs j ON j.kind='activity_'||c.resource AND j.key='repo:'||c.repository_id::text||':parent:'||c.parent_id::text WHERE c.repository_id=$1 AND c.resource=$2`, id, resource).Scan(&pending, &childSuccess, &childCode, &childNext)
+		if err != nil {
+			return err
+		}
+		complete := parentComplete(a.PullRequests) && pending == 0
+		if resource == "comments" {
+			complete = complete && parentComplete(a.Issues)
+		}
+		s := &model.ChildResourceStatus{Complete: complete, PendingChildren: pending, LastSuccessAt: rfc3339(childSuccess), FailureCode: safeActivityCode(childCode), NextAttemptAt: rfc3339(childNext)}
+		if resource == "reviews" {
+			a.Reviews = s
+		} else {
+			a.Comments = s
+		}
+	}
+	return nil
+}
+
+func safeActivityCode(code *string) *string {
+	if code == nil {
+		return nil
+	}
+	switch *code {
+	case "no_credential", "rate_limited", "access_unverified", "access_changed", "upstream_error":
+		return code
+	}
+	unknown := "unknown"
+	return &unknown
 }

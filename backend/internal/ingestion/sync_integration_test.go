@@ -83,7 +83,7 @@ func TestIssueBackfillAndVisibilityFence(t *testing.T) {
 			var count int
 			var phase string
 			var private bool
-			if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues WHERE repository_id=70), phase, is_private FROM activity_resources JOIN repositories ON id=repository_id WHERE repository_id=70`).Scan(&count, &phase, &private); err != nil {
+			if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues WHERE repository_id=70), phase, is_private FROM activity_resources JOIN repositories ON id=repository_id WHERE repository_id=70 AND resource='issues'`).Scan(&count, &phase, &private); err != nil {
 				t.Fatal(err)
 			}
 			if flip {
@@ -126,7 +126,7 @@ func TestIssueResumeReconcilesChangedPagesAndRejectsLostClaim(t *testing.T) {
 	}
 	var count int
 	var page int
-	if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues),page FROM activity_resources WHERE repository_id=70`).Scan(&count, &page); err != nil || count != 0 || page != 1 {
+	if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues),page FROM activity_resources WHERE repository_id=70 AND resource='issues'`).Scan(&count, &page); err != nil || count != 0 || page != 1 {
 		t.Fatalf("lost claim wrote: %d %d %v", count, page, err)
 	}
 	for i := 0; i < 4; i++ {
@@ -141,14 +141,14 @@ func TestIssueResumeReconcilesChangedPagesAndRejectsLostClaim(t *testing.T) {
 		_ = e.deps.SyncIssues(ctx, job, txFence{pool: e.pool})
 	}
 	var phase string
-	if err = e.pool.QueryRow(ctx, `SELECT phase FROM activity_resources WHERE repository_id=70`).Scan(&phase); err != nil || phase != "catchup" {
+	if err = e.pool.QueryRow(ctx, `SELECT phase FROM activity_resources WHERE repository_id=70 AND resource='issues'`).Scan(&phase); err != nil || phase != "catchup" {
 		t.Fatalf("shift reported complete: %s %v", phase, err)
 	}
 	for i := 0; i < 2; i++ {
 		_ = e.deps.SyncIssues(ctx, job, txFence{pool: e.pool})
 	}
 	var title string
-	if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues),phase,(SELECT title FROM activity_issues WHERE source_id=11) FROM activity_resources WHERE repository_id=70`).Scan(&count, &phase, &title); err != nil || count != 3 || phase != "current" || title != "updated" {
+	if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues),phase,(SELECT title FROM activity_issues WHERE source_id=11) FROM activity_resources WHERE repository_id=70 AND resource='issues'`).Scan(&count, &phase, &title); err != nil || count != 3 || phase != "current" || title != "updated" {
 		t.Fatalf("count=%d phase=%s title=%s err=%v", count, phase, title, err)
 	}
 }
@@ -177,7 +177,7 @@ func TestPurgeRebuildPreservesBoundaryAndRejectsOldPage(t *testing.T) {
 		_ = e.deps.SyncIssues(ctx, job, txFence{pool: e.pool})
 	}
 	var boundary time.Time
-	if err = e.pool.QueryRow(ctx, `SELECT boundary FROM activity_resources WHERE repository_id=70`).Scan(&boundary); err != nil {
+	if err = e.pool.QueryRow(ctx, `SELECT boundary FROM activity_resources WHERE repository_id=70 AND resource='issues'`).Scan(&boundary); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = e.pool.Exec(ctx, `INSERT INTO activity_cleanup(repository_id) VALUES(70)`); err != nil {
@@ -191,7 +191,7 @@ func TestPurgeRebuildPreservesBoundaryAndRejectsOldPage(t *testing.T) {
 	var after time.Time
 	var phase string
 	var generation int64
-	if err = e.pool.QueryRow(ctx, `SELECT boundary,phase,generation FROM activity_resources WHERE repository_id=70`).Scan(&after, &phase, &generation); err != nil || !after.Equal(boundary) || phase != "backfill" || generation != 1 {
+	if err = e.pool.QueryRow(ctx, `SELECT boundary,phase,generation FROM activity_resources WHERE repository_id=70 AND resource='issues'`).Scan(&after, &phase, &generation); err != nil || !after.Equal(boundary) || phase != "backfill" || generation != 1 {
 		t.Fatalf("reset %v %s %d %v", after, phase, generation, err)
 	}
 	// A page fetched before the generation changed cannot commit after that change.
@@ -209,13 +209,13 @@ func TestPurgeRebuildPreservesBoundaryAndRejectsOldPage(t *testing.T) {
 		t.Fatalf("old generation wrote %d: %v", count, err)
 	}
 	_ = e.deps.SyncIssues(ctx, job, txFence{pool: e.pool})
-	if err = e.pool.QueryRow(ctx, `SELECT phase FROM activity_resources WHERE repository_id=70`).Scan(&phase); err != nil || phase != "backfill" {
+	if err = e.pool.QueryRow(ctx, `SELECT phase FROM activity_resources WHERE repository_id=70 AND resource='issues'`).Scan(&phase); err != nil || phase != "backfill" {
 		t.Fatalf("interrupted rebuild reported complete: %s %v", phase, err)
 	}
 	for i := 0; i < 5; i++ {
 		_ = e.deps.SyncIssues(ctx, job, txFence{pool: e.pool})
 	}
-	if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues WHERE repository_id=70),phase FROM activity_resources WHERE repository_id=70`).Scan(&count, &phase); err != nil || count != 1 || phase != "current" {
+	if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues WHERE repository_id=70),phase FROM activity_resources WHERE repository_id=70 AND resource='issues'`).Scan(&count, &phase); err != nil || count != 1 || phase != "current" {
 		t.Fatalf("rebuild: %d %s %v", count, phase, err)
 	}
 }
@@ -252,7 +252,7 @@ func TestIssueSyncWithFakeGitHubAndNoInstallation(t *testing.T) {
 	}
 	var count int
 	var phase string
-	if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues WHERE repository_id=$1),phase FROM activity_resources WHERE repository_id=$1`, repoID).Scan(&count, &phase); err != nil || count != 101 || phase != "current" {
+	if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues WHERE repository_id=$1),phase FROM activity_resources WHERE repository_id=$1 AND resource='issues'`, repoID).Scan(&count, &phase); err != nil || count != 101 || phase != "current" {
 		t.Fatalf("count=%d phase=%s err=%v", count, phase, err)
 	}
 }
@@ -304,7 +304,7 @@ func TestIssueFetchFencedByDeselectionAndRevocation(t *testing.T) {
 			}
 			var count, page int
 			var phase, cursor string
-			err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues WHERE repository_id=70), page, phase, cursor FROM activity_resources WHERE repository_id=70`).Scan(&count, &page, &phase, &cursor)
+			err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues WHERE repository_id=70), page, phase, cursor FROM activity_resources WHERE repository_id=70 AND resource='issues'`).Scan(&count, &page, &phase, &cursor)
 			if err != nil || count != 0 || page != 1 || phase != "backfill" || cursor != "" {
 				t.Fatalf("page or checkpoint committed: count=%d page=%d phase=%s cursor=%q err=%v", count, page, phase, cursor, err)
 			}

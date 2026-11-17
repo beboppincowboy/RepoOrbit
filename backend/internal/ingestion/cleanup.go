@@ -94,6 +94,15 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 			return errRace
 		}
 		if private && !present {
+			if _, err = tx.Exec(ctx, `DELETE FROM activity_children WHERE repository_id=$1`, repoID); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `DELETE FROM activity_comments WHERE repository_id=$1`, repoID); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `DELETE FROM activity_pull_requests WHERE repository_id=$1`, repoID); err != nil {
+				return err
+			}
 			if _, err = tx.Exec(ctx, `DELETE FROM activity_issues WHERE repository_id=$1`, repoID); err != nil {
 				return err
 			}

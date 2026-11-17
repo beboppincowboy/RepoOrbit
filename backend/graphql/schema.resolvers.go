@@ -223,6 +223,21 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 	return result, nil
 }
 
+// PullRequestEvidence is the resolver for the pullRequestEvidence field.
+func (r *queryResolver) PullRequestEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.PullRequestEvidenceConnection, error) {
+	return r.pullRequests(ctx, repositoryIds, first, after)
+}
+
+// ReviewEvidence is the resolver for the reviewEvidence field.
+func (r *queryResolver) ReviewEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.ReviewEvidenceConnection, error) {
+	return r.reviews(ctx, repositoryIds, first, after)
+}
+
+// CommentEvidence is the resolver for the commentEvidence field.
+func (r *queryResolver) CommentEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.CommentEvidenceConnection, error) {
+	return r.comments(ctx, repositoryIds, first, after)
+}
+
 // Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 
