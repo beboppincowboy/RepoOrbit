@@ -20,6 +20,8 @@ type Config struct {
 	GitHubAPIURL string
 	// AppURL is the browser-facing origin (the Next.js server) that GitHub redirects back to.
 	AppURL string
+	// AppSlug is the GitHub App's URL name; optional, it only enables the "install the app" link.
+	AppSlug string
 	// TokenKey is the 32-byte AES-GCM key for stored GitHub tokens (real mode only).
 	TokenKey []byte
 }
@@ -33,6 +35,7 @@ func LoadConfig() (Config, error) {
 		GitHubURL:    envOr("GITHUB_URL", "https://github.com"),
 		GitHubAPIURL: envOr("GITHUB_API_URL", "https://api.github.com"),
 		AppURL:       strings.TrimRight(envOr("APP_URL", "http://localhost:3000"), "/"),
+		AppSlug:      os.Getenv("GITHUB_APP_SLUG"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")

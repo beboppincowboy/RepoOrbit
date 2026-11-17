@@ -14,6 +14,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/platform"
+	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
 func main() {
@@ -38,14 +39,25 @@ func main() {
 	defer pool.Close()
 	queries := db.New(pool)
 	authHandler := &auth.Handler{Demo: cfg.Demo, AppURL: cfg.AppURL}
+	resolver := &graph.Resolver{Queries: queries, Demo: cfg.Demo}
+	var repoAPI http.Handler
 	if !cfg.Demo {
 		gh := githubapp.New(cfg.ClientID, cfg.ClientSecret, cfg.GitHubURL, cfg.GitHubAPIURL, cfg.AppURL+"/auth/github/callback")
 		authHandler.Service = &auth.Service{Pool: pool, Q: queries, GitHub: gh, Key: cfg.TokenKey}
+		repos := &repositories.Service{Q: queries, GitHub: gh, Tokens: authHandler.Service, AppURL: cfg.AppURL}
+		if cfg.AppSlug != "" {
+			repos.InstallURL = cfg.GitHubURL + "/apps/" + cfg.AppSlug + "/installations/new"
+		}
+		authHandler.Installed = http.HandlerFunc(repos.Installed)
+		resolver.Access, repoAPI = repos, authHandler.Protect(repos.Routes())
 	}
 	router := chi.NewRouter()
 	router.Mount("/", platform.Health(pool))
 	router.Mount("/auth", authHandler.Routes())
-	router.Handle("/graphql", authHandler.Protect(graph.Server(&graph.Resolver{Queries: queries, Demo: cfg.Demo})))
+	if repoAPI != nil {
+		router.Mount("/api", repoAPI)
+	}
+	router.Handle("/graphql", authHandler.Protect(graph.Server(resolver)))
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

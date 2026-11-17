@@ -8,6 +8,13 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Installation struct {
+	UserID         int64
+	InstallationID int64
+	AccountLogin   string
+	CreatedAt      pgtype.Timestamptz
+}
+
 type Issue struct {
 	ID           int64
 	RepositoryID int64
@@ -26,6 +33,15 @@ type Repository struct {
 	Name        string
 	Description string
 	IsDemo      bool
+	IsPrivate   bool
+}
+
+type Selection struct {
+	UserID       int64
+	RepositoryID int64
+	Source       string
+	SelectedAt   pgtype.Timestamptz
+	DeselectedAt pgtype.Timestamptz
 }
 
 type Session struct {

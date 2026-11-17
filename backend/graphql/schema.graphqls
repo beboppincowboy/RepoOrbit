@@ -1,6 +1,8 @@
 type Viewer { login: String!, demo: Boolean! }
-type Repository { id: ID!, name: String!, description: String! }
+# syncState is "demo", "awaiting-sync" (selected), or "not-synchronized" (accessible but not selected).
+type Repository { id: ID!, name: String!, description: String!, private: Boolean!, selected: Boolean!, syncState: String! }
 type Issue { id: ID!, repositoryId: ID!, title: String!, state: String! }
-type RepositoryConnection { nodes: [Repository!]!, endCursor: ID, hasNextPage: Boolean! }
-type IssueConnection { nodes: [Issue!]!, endCursor: ID, hasNextPage: Boolean! }
-type Query { viewer: Viewer, repositories(first: Int! = 20, after: ID): RepositoryConnection!, issues(repositoryIds: [ID!]!, first: Int! = 20, after: ID): IssueConnection! }
+# withheld counts items hidden because access could not be verified; retryAt (RFC 3339) is set when that is a rate limit.
+type RepositoryConnection { nodes: [Repository!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
+type IssueConnection { nodes: [Issue!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
+type Query { viewer: Viewer, repositories(first: Int! = 20, after: ID): RepositoryConnection!, repository(id: ID!): Repository, issues(repositoryIds: [ID!]!, first: Int! = 20, after: ID): IssueConnection! }

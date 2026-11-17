@@ -5,9 +5,11 @@ package fake
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -18,6 +20,8 @@ type Server struct {
 	ClientID, ClientSecret string
 	// RefreshDelay widens the window for concurrent-refresh tests.
 	RefreshDelay time.Duration
+	// SetupURL is where the fake app-install page sends the browser, e.g. http://app.test/auth/github/installed.
+	SetupURL string
 
 	mu        sync.Mutex
 	n         int
@@ -25,12 +29,31 @@ type Server struct {
 	access    map[string]string
 	refresh   map[string]string // refresh token -> login (single use, rotated)
 	refreshes atomic.Int64
+
+	repos        map[int64]*repo
+	installs     map[int64]*install
+	limitedUntil time.Time // API calls fail with a rate limit until this time
+	failing      bool      // API calls fail with 502
+	hits         map[string]int
+}
+
+type repo struct {
+	id                int64
+	owner, name, desc string
+	private           bool
+}
+
+// install is a GitHub App installation visible to one user, covering a fixed set of repositories.
+type install struct {
+	id    int64
+	owner string
+	repos map[int64]bool
 }
 
 type grant struct{ challenge, login string }
 
 func New(clientID, clientSecret string) *Server {
-	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}}
+	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, hits: map[string]int{}}
 }
 
 // Refreshes reports how many refresh-token exchanges were accepted.
@@ -47,7 +70,12 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/login/oauth/authorize", s.authorize)
 	mux.HandleFunc("/login/oauth/access_token", s.token)
-	mux.HandleFunc("/user", s.user)
+	mux.HandleFunc("/user", s.api(s.user))
+	mux.HandleFunc("/user/repos", s.api(s.userRepos))
+	mux.HandleFunc("/user/installations", s.api(s.userInstallations))
+	mux.HandleFunc("/user/installations/{id}/repositories", s.api(s.installationRepos))
+	mux.HandleFunc("/repositories/{id}", s.api(s.repoByID))
+	mux.HandleFunc("/apps/{slug}/installations/new", s.installNew)
 	return mux
 }
 
@@ -56,14 +84,14 @@ func (s *Server) next(prefix string) string {
 	return fmt.Sprintf("%s_%d", prefix, s.n)
 }
 
-// authorize auto-approves. The optional "as" parameter picks the signed-in fake account.
+// authorize auto-approves. The "as" parameter, or else the "fake_as" cookie (so a browser test can pick an account), picks the signed-in fake account.
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if q.Get("client_id") != s.ClientID || q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	login := q.Get("as")
+	login := asLogin(r)
 	if login == "" {
 		login = "octocat"
 	}
@@ -138,25 +166,240 @@ func writeToken(w http.ResponseWriter, v url.Values) {
 	_, _ = w.Write([]byte(v.Encode()))
 }
 
-func (s *Server) user(w http.ResponseWriter, r *http.Request) {
-	const prefix = "Bearer "
-	h := r.Header.Get("Authorization")
+func (s *Server) user(w http.ResponseWriter, r *http.Request, login string) {
+	writeJSON(w, map[string]any{"id": idFor(login), "login": login})
+}
+
+// api wraps an authenticated API endpoint: it counts the call, applies the injected failure modes, and
+// resolves the bearer token to a login (401 when the token is unknown or expired).
+func (s *Server) api(h func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		const prefix = "Bearer "
+		auth := r.Header.Get("Authorization")
+		s.mu.Lock()
+		s.hits[r.URL.Path]++
+		login, ok := "", false
+		if len(auth) > len(prefix) {
+			login, ok = s.access[auth[len(prefix):]]
+		}
+		limited, failing := s.limitedUntil, s.failing
+		s.mu.Unlock()
+		switch {
+		case !ok:
+			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+		case time.Now().Before(limited):
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(limited.Unix(), 10))
+			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+		case failing:
+			http.Error(w, `{"message":"boom"}`, http.StatusBadGateway)
+		default:
+			h(w, r, login)
+		}
+	}
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// --- test controls -------------------------------------------------------------------------
+
+// AddRepo creates a repository and returns its ID. IDs start high so they never collide with the demo seed.
+func (s *Server) AddRepo(owner, name string, private bool) int64 {
 	s.mu.Lock()
-	login, ok := "", false
-	if len(h) > len(prefix) {
-		login, ok = s.access[h[len(prefix):]]
+	defer s.mu.Unlock()
+	id := int64(100000 + len(s.repos) + 1)
+	s.repos[id] = &repo{id: id, owner: owner, name: name, desc: name + " description", private: private}
+	return id
+}
+
+func (s *Server) SetPrivate(id int64, private bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repos[id].private = private
+}
+
+// Install adds an installation owned by (and visible to) one user covering the given repositories.
+func (s *Server) Install(owner string, id int64, repoIDs ...int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	in := &install{id: id, owner: owner, repos: map[int64]bool{}}
+	for _, r := range repoIDs {
+		in.repos[r] = true
+	}
+	s.installs[id] = in
+}
+
+func (s *Server) Uninstall(id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.installs, id)
+}
+
+// RevokeUser invalidates every access token issued to a login, as when the user revokes the app.
+func (s *Server) RevokeUser(login string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for tok, l := range s.access {
+		if l == login {
+			delete(s.access, tok)
+		}
+	}
+}
+
+// LimitUntil makes every API call fail with a rate limit until t.
+func (s *Server) LimitUntil(t time.Time) { s.mu.Lock(); s.limitedUntil = t; s.mu.Unlock() }
+
+// Fail makes every API call fail with 502 while on.
+func (s *Server) Fail(on bool) { s.mu.Lock(); s.failing = on; s.mu.Unlock() }
+
+// Hits counts API requests to an exact path since the server started.
+func (s *Server) Hits(path string) int { s.mu.Lock(); defer s.mu.Unlock(); return s.hits[path] }
+
+// --- endpoints -----------------------------------------------------------------------------
+
+// canRead mirrors a GitHub App user token: public repos are readable by anyone; private ones need the
+// user to own the repo and an installation of the app that covers it (the intersection). Caller holds mu.
+func (s *Server) canRead(login string, r *repo) bool {
+	if !r.private {
+		return true
+	}
+	if r.owner != login {
+		return false
+	}
+	for _, in := range s.installs {
+		if in.owner == login && in.repos[r.id] {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) json(r *repo) map[string]any {
+	return map[string]any{"id": r.id, "name": r.name, "full_name": r.owner + "/" + r.name, "description": r.desc, "private": r.private,
+		"owner": map[string]any{"id": idFor(r.owner), "login": r.owner, "type": "User"}}
+}
+
+// page slices items for ?page&per_page and sets a Link header when more remain.
+func page[T any](w http.ResponseWriter, r *http.Request, items []T) []T {
+	per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+	pg, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if per < 1 || per > 100 {
+		per = 30
+	}
+	if pg < 1 {
+		pg = 1
+	}
+	lo, hi := min((pg-1)*per, len(items)), min(pg*per, len(items))
+	if hi < len(items) {
+		w.Header().Set("Link", `<https://api.github.test/next>; rel="next"`)
+	}
+	return items[lo:hi]
+}
+
+func (s *Server) sortedRepos(keep func(*repo) bool) []map[string]any {
+	var ids []int64
+	for id, r := range s.repos {
+		if keep(r) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	out := []map[string]any{}
+	for _, id := range ids {
+		out = append(out, s.json(s.repos[id]))
+	}
+	return out
+}
+
+func (s *Server) userRepos(w http.ResponseWriter, r *http.Request, login string) {
+	s.mu.Lock()
+	items := s.sortedRepos(func(x *repo) bool { return x.owner == login && s.canRead(login, x) })
+	s.mu.Unlock()
+	writeJSON(w, page(w, r, items))
+}
+
+func (s *Server) userInstallations(w http.ResponseWriter, r *http.Request, login string) {
+	s.mu.Lock()
+	var ids []int64
+	for id, in := range s.installs {
+		if in.owner == login {
+			ids = append(ids, id)
+		}
 	}
 	s.mu.Unlock()
-	if !ok {
-		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	items := []map[string]any{}
+	for _, id := range ids {
+		items = append(items, map[string]any{"id": id, "account": map[string]any{"login": login}})
+	}
+	writeJSON(w, map[string]any{"total_count": len(items), "installations": page(w, r, items)})
+}
+
+func (s *Server) installationRepos(w http.ResponseWriter, r *http.Request, login string) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	s.mu.Lock()
+	in, ok := s.installs[id]
+	if !ok || in.owner != login {
+		s.mu.Unlock()
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = fmt.Fprintf(w, `{"id":%s,"login":%q}`, strconv.Itoa(idFor(login)), login)
+	items := s.sortedRepos(func(x *repo) bool { return in.repos[x.id] && s.canRead(login, x) })
+	s.mu.Unlock()
+	writeJSON(w, map[string]any{"total_count": len(items), "repositories": page(w, r, items)})
+}
+
+func (s *Server) repoByID(w http.ResponseWriter, r *http.Request, login string) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	s.mu.Lock()
+	x, ok := s.repos[id]
+	if ok && s.canRead(login, x) {
+		out := s.json(x)
+		s.mu.Unlock()
+		writeJSON(w, out)
+		return
+	}
+	s.mu.Unlock()
+	http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+}
+
+// installNew stands in for GitHub's app-install page: ?as=<login> installs the app on every private
+// repository that login owns, then returns the browser to the setup URL like GitHub does.
+func (s *Server) installNew(w http.ResponseWriter, r *http.Request) {
+	login := asLogin(r)
+	if login == "" || s.SetupURL == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	id := int64(9000 + len(s.installs) + 1)
+	in := &install{id: id, owner: login, repos: map[int64]bool{}}
+	for _, x := range s.repos {
+		if x.owner == login {
+			in.repos[x.id] = true
+		}
+	}
+	s.installs[id] = in
+	s.mu.Unlock()
+	http.Redirect(w, r, s.SetupURL+"?installation_id="+strconv.FormatInt(id, 10)+"&setup_action=install", http.StatusFound)
 }
 
 // idFor gives each fake login a stable numeric GitHub ID.
 func idFor(login string) int {
 	sum := sha256.Sum256([]byte(login))
 	return int(sum[0])<<16 | int(sum[1])<<8 | int(sum[2]) + 1000
+}
+
+// asLogin names the fake account a browser acts as: the "as" parameter, else the "fake_as" cookie.
+func asLogin(r *http.Request) string {
+	if v := r.URL.Query().Get("as"); v != "" {
+		return v
+	}
+	if c, err := r.Cookie("fake_as"); err == nil {
+		return c.Value
+	}
+	return ""
 }

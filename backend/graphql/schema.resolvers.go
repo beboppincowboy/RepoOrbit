@@ -13,6 +13,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/platform"
+	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
 // Viewer is the resolver for the viewer field.
@@ -36,20 +37,88 @@ func (r *queryResolver) Repositories(ctx context.Context, first int, after *stri
 	}
 	ctx, cancel := platform.Deadline(ctx)
 	defer cancel()
-	rows, err := r.Queries.ListRepositories(ctx, db.ListRepositoriesParams{Demo: r.Demo, After: id, PageSize: int32(n + 1)})
+	result := &model.RepositoryConnection{Nodes: []*model.Repository{}}
+	if r.Demo {
+		rows, err := r.Queries.ListRepositories(ctx, db.ListRepositoriesParams{Demo: true, After: id, PageSize: int32(n + 1)})
+		if err != nil {
+			return nil, fmt.Errorf("database unavailable")
+		}
+		result.HasNextPage = len(rows) > n
+		rows = rows[:min(len(rows), n)]
+		for _, row := range rows {
+			id := strconv.FormatInt(row.ID, 10)
+			result.Nodes = append(result.Nodes, &model.Repository{ID: id, Name: row.Name, Description: row.Description, Selected: true, SyncState: "demo"})
+			result.EndCursor = &id
+		}
+		return result, nil
+	}
+	userID, err := r.userID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.Queries.ListSelectedRepositories(ctx, db.ListSelectedRepositoriesParams{UserID: userID, After: id, PageSize: int32(n + 1)})
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
-	result := &model.RepositoryConnection{Nodes: []*model.Repository{}, HasNextPage: len(rows) > n}
-	if len(rows) > n {
-		rows = rows[:n]
+	// The cursor and next-page flag come from the stored rows, before access filtering, so a page whose rows are
+	// all denied or unverified still advances.
+	result.HasNextPage = len(rows) > n
+	rows = rows[:min(len(rows), n)]
+	ids := make([]int64, len(rows))
+	for i, row := range rows {
+		ids[i] = row.ID
 	}
+	checks := r.Access.Check(ctx, userID, ids, false)
 	for _, row := range rows {
-		id := strconv.FormatInt(row.ID, 10)
-		result.Nodes = append(result.Nodes, &model.Repository{ID: id, Name: row.Name, Description: row.Description})
-		result.EndCursor = &id
+		cursorID := strconv.FormatInt(row.ID, 10)
+		result.EndCursor = &cursorID
+		d := checks[row.ID]
+		if d.Unverified {
+			result.Withheld++
+			result.RetryAt = laterRetry(result.RetryAt, d.RetryAt)
+		}
+		if d.Allowed { // current GitHub metadata, not the stored copy
+			result.Nodes = append(result.Nodes, &model.Repository{ID: cursorID, Name: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: true, SyncState: repositories.SyncState(true)})
+		}
 	}
 	return result, nil
+}
+
+// Repository is the resolver for the repository field. A repository the user can access but has not selected
+// opens to its metadata with a not-synchronized state.
+func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repository, error) {
+	repoID, err := cursor(&id)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := platform.Deadline(ctx)
+	defer cancel()
+	if r.Demo {
+		rows, err := r.Queries.ListRepositories(ctx, db.ListRepositoriesParams{Demo: true, After: repoID - 1, PageSize: 1})
+		if err != nil {
+			return nil, fmt.Errorf("database unavailable")
+		}
+		if len(rows) == 0 || rows[0].ID != repoID {
+			return nil, nil
+		}
+		return &model.Repository{ID: id, Name: rows[0].Name, Description: rows[0].Description, Selected: true, SyncState: "demo"}, nil
+	}
+	userID, err := r.userID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	d := r.Access.CheckOne(ctx, userID, repoID, false)
+	if d.Unverified {
+		return nil, unverifiedError(d.RetryAt)
+	}
+	if !d.Allowed {
+		return nil, nil // indistinguishable from a repository that does not exist
+	}
+	selected, err := r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: userID, RepositoryIds: []int64{repoID}})
+	if err != nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
+	return &model.Repository{ID: id, Name: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: len(selected) == 1, SyncState: repositories.SyncState(len(selected) == 1)}, nil
 }
 
 // Issues is the resolver for the issues field.
@@ -75,14 +144,36 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 	}
 	ctx, cancel := platform.Deadline(ctx)
 	defer cancel()
+	result := &model.IssueConnection{Nodes: []*model.Issue{}}
+	if !r.Demo {
+		// Only the user's selected repositories, and only those still verified, can contribute issues.
+		userID, err := r.userID(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if ids, err = r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: userID, RepositoryIds: ids}); err != nil {
+			return nil, fmt.Errorf("database unavailable")
+		}
+		allowed := ids[:0:0]
+		for repoID, d := range r.Access.Check(ctx, userID, ids, false) {
+			if d.Allowed {
+				allowed = append(allowed, repoID)
+			}
+			if d.Unverified {
+				result.Withheld++
+				result.RetryAt = laterRetry(result.RetryAt, d.RetryAt)
+			}
+		}
+		if ids = allowed; len(ids) == 0 {
+			return result, nil
+		}
+	}
 	rows, err := r.Queries.ListIssues(ctx, db.ListIssuesParams{Demo: r.Demo, RepositoryIds: ids, After: id, PageSize: int32(n + 1)})
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
-	result := &model.IssueConnection{Nodes: []*model.Issue{}, HasNextPage: len(rows) > n}
-	if len(rows) > n {
-		rows = rows[:n]
-	}
+	result.HasNextPage = len(rows) > n
+	rows = rows[:min(len(rows), n)]
 	for _, row := range rows {
 		id := strconv.FormatInt(row.ID, 10)
 		result.Nodes = append(result.Nodes, &model.Issue{ID: id, RepositoryID: strconv.FormatInt(row.RepositoryID, 10), Title: row.Title, State: row.State})

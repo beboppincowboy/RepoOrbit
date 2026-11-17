@@ -29,6 +29,8 @@ type Handler struct {
 	Service *Service
 	Demo    bool
 	AppURL  string // browser-facing origin, e.g. https://repoorbit.example; GitHub redirects back here
+	// Installed serves GitHub's post-install redirect (the app's Setup URL). Signed-in users only.
+	Installed http.Handler
 }
 
 func (h *Handler) secure() bool { return strings.HasPrefix(h.AppURL, "https://") }
@@ -40,6 +42,9 @@ func (h *Handler) Routes() http.Handler {
 		mux.HandleFunc("GET /auth/github/login", h.login)
 		mux.HandleFunc("GET /auth/github/callback", h.callback)
 		mux.Handle("POST /auth/logout", h.Protect(http.HandlerFunc(h.logout)))
+		if h.Installed != nil {
+			mux.Handle("GET /auth/github/installed", h.Protect(h.Installed))
+		}
 	}
 	return mux
 }
