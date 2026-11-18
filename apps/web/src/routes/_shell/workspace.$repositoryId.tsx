@@ -1,3 +1,4 @@
+import { repositorySnapshotKey, repositorySnapshotPrefix } from "@/lib/repository-snapshots";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
@@ -6,8 +7,8 @@ import { IssueIcon, PullRequestIcon } from "@/components/needs-attention";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { selectedRepositoriesKey, selectedRows, useSelectedRepositories } from "@/lib/selected-repositories";
-import { ACCESS_UNVERIFIED_MESSAGE, RepositoryAccessError, RepositorySnapshotError, fetchSelectedRepositories, fetchRepositoryOverview, fetchWorkspacePullRequests, type ActivityResourceStatus, type MetricWindow, type ReviewState, type WorkspacePullRequest } from "@/lib/api";
+import { selectedRepositoriesKey, flattenSelectedRepositoryRows, useSelectedRepositories } from "@/lib/selected-repositories";
+import { RepositoryAccessUnverifiedError, GraphQLUnavailableError, fetchSelectedRepositoryDetailsPage, fetchRepositoryOverview, fetchWorkspacePullRequests, type ActivityResourceStatus, type MetricWindow, type ReviewState, type WorkspacePullRequest } from "@/lib/api";
 
 const tabs = { overview: "Overview", pulls: "Pull Requests", contributors: "Contributors", activity: "Activity" } as const;
 type Tab = keyof typeof tabs;
@@ -77,8 +78,8 @@ function RepositoryWorkspace() {
   const { session } = Route.useRouteContext();
   const queryClient = useQueryClient();
   const overviewKey = ["repositoryOverview", session.mode, session.user?.login, repositoryId, search.days] as const;
-  const snapshotPrefix = ["repositorySnapshot", session.mode, session.user?.login, repositoryId] as const;
-  const snapshotKey = [...snapshotPrefix, search.days] as const;
+  const snapshotPrefix = repositorySnapshotPrefix(session, repositoryId);
+  const snapshotKey = repositorySnapshotKey(session, repositoryId, search.days);
   const query = useQuery({
     queryKey: overviewKey,
     queryFn: async ({ signal }) => {
@@ -89,7 +90,7 @@ function RepositoryWorkspace() {
         else queryClient.removeQueries({ queryKey: snapshotPrefix });
         return data;
       } catch (error) {
-        if (!signal.aborted && !(error instanceof RepositorySnapshotError) && !(error instanceof RepositoryAccessError && error.retryAt)) {
+        if (!signal.aborted && !(error instanceof GraphQLUnavailableError) && !(error instanceof RepositoryAccessUnverifiedError && error.retryAt)) {
           queryClient.removeQueries({ queryKey: snapshotPrefix });
         }
         throw error;
@@ -97,11 +98,11 @@ function RepositoryWorkspace() {
     },
     placeholderData: (previous, query) => query?.queryKey[1] === session.mode && query.queryKey[2] === session.user?.login && query.queryKey[3] === repositoryId ? previous : undefined,
     gcTime: 0,
-    refetchOnWindowFocus: ({ state }) => !(state.error instanceof RepositoryAccessError && state.error.retryAt),
-    retry: (count, error) => !(error instanceof RepositoryAccessError || error instanceof RepositorySnapshotError) && count < 3,
+    refetchOnWindowFocus: ({ state }) => !(state.error instanceof RepositoryAccessUnverifiedError && state.error.retryAt),
+    retry: (count, error) => !(error instanceof RepositoryAccessUnverifiedError || error instanceof GraphQLUnavailableError) && count < 3,
     // Follow running or not-yet-started sync work; stop once it settles (reconciliation leaves settled streams "queued").
     refetchInterval: ({ state }) => {
-      if (state.error instanceof RepositoryAccessError && state.error.retryAt) return false;
+      if (state.error instanceof RepositoryAccessUnverifiedError && state.error.retryAt) return false;
       if (!state.data) return false;
       const { syncState, activity } = state.data;
       const display = syncDisplay({ syncState, activity });
@@ -116,18 +117,18 @@ function RepositoryWorkspace() {
     },
   });
   const path = { to: Route.to, params: { repositoryId } } as const;
-  const snapshotReason = query.error instanceof RepositorySnapshotError ? query.error.message
-    : query.error instanceof RepositoryAccessError && query.error.retryAt ? "GitHub rate-limited access checks." : null;
+  const snapshotReason = query.error instanceof GraphQLUnavailableError ? query.error.message
+    : query.error instanceof RepositoryAccessUnverifiedError && query.error.retryAt ? "GitHub rate-limited access checks." : null;
   const snapshot = snapshotReason ? queryClient.getQueryState<Overview>(snapshotKey) : undefined;
   const overview = query.isError ? snapshot?.data : query.data;
   const demo = session.mode === "demo";
   // Metadata refresh state and the access check's retry time come from the selection list the shell already loads.
   const selection = useSelectedRepositories(session);
-  const row = selectedRows(selection).find(r => r.repo.id === repositoryId);
-  const accessRejected = query.error?.message === ACCESS_UNVERIFIED_MESSAGE || (query.isSuccess && overview === null);
+  const row = flattenSelectedRepositoryRows(selection).find(r => r.repo.id === repositoryId);
+  const accessRejected = query.error instanceof RepositoryAccessUnverifiedError || (query.isSuccess && overview === null);
   useEffect(() => {
     if (!accessRejected || query.isFetching || row?.detail?.state !== "available") return;
-    queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof fetchSelectedRepositories>>>>(
+    queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof fetchSelectedRepositoryDetailsPage>>>>(
       selectedRepositoriesKey(session),
       previous => previous && {
         ...previous,
@@ -145,7 +146,7 @@ function RepositoryWorkspace() {
       },
     );
   }, [accessRejected, query.isFetching, queryClient, repositoryId, row?.detail?.state, session]);
-  const accessRetryAt = query.error instanceof RepositoryAccessError ? query.error.retryAt : null;
+  const accessRetryAt = query.error instanceof RepositoryAccessUnverifiedError ? query.error.retryAt : null;
   const retryAt = accessRetryAt ?? (row?.detail?.state === "access-unverified" ? row.detail.retryAt : null);
   const retryTime = retryAt ? Date.parse(retryAt) : NaN;
   const rateLimited = Number.isFinite(retryTime);
@@ -169,7 +170,7 @@ function RepositoryWorkspace() {
 
   // Check access before rendering any data: a refetch that loses access keeps the last good data in the cache.
   // Only real withholding hides the page; a paused metadata refresh also reads "Access unverified" but stays explained in Sync details.
-  if (!snapshot && (query.error?.message === ACCESS_UNVERIFIED_MESSAGE || (overview !== null && row?.detail?.state === "access-unverified"))) return <div className="flex h-full min-h-0 flex-col gap-3">
+  if (!snapshot && (query.error instanceof RepositoryAccessUnverifiedError || (overview !== null && row?.detail?.state === "access-unverified"))) return <div className="flex h-full min-h-0 flex-col gap-3">
     {rateLimited && retryAt ? <div role="status" className={`${card} flex items-center gap-3 p-4`}>
       <Ico>{icons.info}</Ico>
       <div><h1 className="text-base">Waiting for GitHub</h1>

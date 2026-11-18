@@ -14,7 +14,7 @@ import (
 )
 
 func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days int) (*model.RepositoryOverview, error) {
-	if err := analytics.ValidateDays(days); err != nil {
+	if err := analytics.ValidateMetricWindowDays(days); err != nil {
 		return nil, err
 	}
 	ctx, cancel := withReadDeadline(ctx)
@@ -32,7 +32,7 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 			return nil, err
 		}
 		repoID, _ := strconv.ParseInt(id, 10, 64)
-		overview, err := analytics.Load(ctx, r.DemoPool, repoID, days, now)
+		overview, err := analytics.LoadRepositoryOverview(ctx, r.DemoPool, repoID, days, now)
 		if err != nil {
 			return nil, fmt.Errorf("database unavailable")
 		}
@@ -53,7 +53,7 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 	if len(page.ids) == 0 {
 		return nil, nil
 	}
-	overview, err := analytics.Load(ctx, r.RepoAccess.Pool, page.ids[0], days, now)
+	overview, err := analytics.LoadRepositoryOverview(ctx, r.RepoAccess.Pool, page.ids[0], days, now)
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
@@ -77,7 +77,7 @@ const demoAssigneeID = 1
 // unverified repositories are counted in Withheld without being named, and a fence move discards everything (ACCESS_UNVERIFIED).
 // Demo mode summarizes the demo repositories without an access check.
 func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (*model.CrossRepositoryOverview, error) {
-	if err := analytics.ValidateDays(days); err != nil {
+	if err := analytics.ValidateMetricWindowDays(days); err != nil {
 		return nil, err
 	}
 	ctx, cancel := withReadDeadline(ctx)
@@ -97,7 +97,7 @@ func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (
 		for _, row := range rows {
 			ids = append(ids, row.ID)
 		}
-		out, err := analytics.LoadCross(ctx, r.DemoPool, ids, demoAssigneeID, days, now)
+		out, err := analytics.LoadCrossRepositoryOverview(ctx, r.DemoPool, ids, demoAssigneeID, days, now)
 		if err != nil {
 			return nil, fmt.Errorf("database unavailable")
 		}
@@ -127,7 +127,7 @@ func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
-	out, err := analytics.LoadCross(ctx, r.RepoAccess.Pool, page.ids, assignee, days, now)
+	out, err := analytics.LoadCrossRepositoryOverview(ctx, r.RepoAccess.Pool, page.ids, assignee, days, now)
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}

@@ -1,8 +1,9 @@
+import { repositorySnapshotsKey } from "@/lib/repository-snapshots";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { fetchRepositoryDetails, fetchSelectedRepositories, logout, RepositorySnapshotError, type Me, type MetricWindow } from "@/lib/api";
-import { selectedRepositoriesKey, selectedRows, useSelectedRepositories, useSelectedRepositoryMetadata, type SelectedBatch, type SelectedRow } from "@/lib/selected-repositories";
+import { fetchRepositoryDetails, fetchSelectedRepositoryDetailsPage, logout, GraphQLUnavailableError, type ViewerSession, type MetricWindow } from "@/lib/api";
+import { selectedRepositoriesKey, flattenSelectedRepositoryRows, useSelectedRepositories, useSelectedRepositoryMetadata, type SelectedBatch, type SelectedRow } from "@/lib/selected-repositories";
 import { LoadingCircle, SyncDot, syncDisplay, syncLabels } from "@/components/sync-status";
 
 // RepoOrbit mark: a planet with an orbit ring (prototype D2 logo).
@@ -28,7 +29,7 @@ function rowDisplay({ repo, detail }: SelectedRow) {
 
 // Prototype D2 shell: sidebar (Overview, Repositories, then each selected repository) | top bar (breadcrumb, repository
 // jump, avatar menu) | view. The viewport is fixed; each screen scrolls its own lists.
-export function AppShell({ session, children }: { session: Me; children: ReactNode }) {
+export function AppShell({ session, children }: { session: ViewerSession; children: ReactNode }) {
   const demo = session.mode === "demo";
   const pathname = useRouterState({ select: state => state.location.pathname });
   const navigate = useNavigate();
@@ -38,7 +39,7 @@ export function AppShell({ session, children }: { session: Me; children: ReactNo
   const retryDetails = useMutation({
     mutationFn: async (batch: SelectedBatch) => {
       const details = await fetchRepositoryDetails(batch.repositories.map(repo => repo.id));
-      queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof fetchSelectedRepositories>>>>(
+      queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof fetchSelectedRepositoryDetailsPage>>>>(
         selectedRepositoriesKey(session),
         previous => previous && {
           ...previous,
@@ -51,7 +52,7 @@ export function AppShell({ session, children }: { session: Me; children: ReactNo
     },
   });
   const failedBatches = selection.isRefetchError ? [] : selection.data?.pages.flatMap(page => page.batches.filter(batch => batch.details === null)) ?? [];
-  const details = new Map(selectedRows(selection).map(row => [row.repo.id, row.detail]));
+  const details = new Map(flattenSelectedRepositoryRows(selection).map(row => [row.repo.id, row.detail]));
   const rows = metadata.isRefetchError || selection.isRefetchError ? [] : (metadata.data?.pages ?? []).flatMap(page =>
     page.nodes.map(repo => ({ repo, detail: details.get(repo.id) })),
   );
@@ -75,8 +76,8 @@ export function AppShell({ session, children }: { session: Me; children: ReactNo
   }, [login, mode, queryClient, retryTime]);
   const visible = rows.filter(row => row.detail?.state !== "access-unverified");
   const saved = new Map<string, { fullName: string; days: MetricWindow }>();
-  if (!demo && (limited || metadata.error instanceof RepositorySnapshotError)) {
-    for (const [key, snapshot] of queryClient.getQueriesData<{ fullName: string }>({ queryKey: ["repositorySnapshot", mode, login] })) {
+  if (!demo && (limited || metadata.error instanceof GraphQLUnavailableError)) {
+    for (const [key, snapshot] of queryClient.getQueriesData<{ fullName: string }>({ queryKey: repositorySnapshotsKey(session) })) {
       const [, , , id, days] = key;
       if (snapshot && typeof id === "string" && (days === 7 || days === 30 || days === 90) && !visible.some(row => row.repo.id === id)) {
         saved.set(id, { fullName: snapshot.fullName, days });
@@ -140,7 +141,7 @@ export function AppShell({ session, children }: { session: Me; children: ReactNo
 }
 
 // Avatar with the signed-in identity and Sign out (real mode only).
-function AccountMenu({ session }: { session: Me }) {
+function AccountMenu({ session }: { session: ViewerSession }) {
   const demo = session.mode === "demo";
   const login = session.user?.login ?? "";
   const [open, setOpen] = useState(false);

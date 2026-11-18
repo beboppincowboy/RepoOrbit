@@ -6,8 +6,8 @@ import { AssignedToMeList } from "@/components/assigned-to-me";
 import { ChevronIcon, IssueIcon, NeedsAttentionList, PullRequestIcon } from "@/components/needs-attention";
 import { segGroupClass, segItemClass, warnNoteClass } from "@/components/repository-list";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
-import { ACCESS_UNVERIFIED_MESSAGE, fetchCrossRepositoryOverview, type CrossRepositoryOverview, type MetricWindow } from "@/lib/api";
-import { selectedRows, useSelectedRepositories } from "@/lib/selected-repositories";
+import { RepositoryAccessUnverifiedError, fetchCrossRepositoryOverview, type CrossRepositoryOverview, type MetricWindow } from "@/lib/api";
+import { flattenSelectedRepositoryRows, useSelectedRepositories } from "@/lib/selected-repositories";
 
 const windows = [7, 30, 90] as const;
 
@@ -32,8 +32,8 @@ function Overview() {
   const { session } = Route.useRouteContext();
   const days = Route.useSearch().days ?? 30;
   const selection = useSelectedRepositories(session);
-  const rows = selectedRows(selection);
-  // Repositories the selection itself withheld (no rows at all); like selectedRows, a failed revalidation drops them.
+  const rows = flattenSelectedRepositoryRows(selection);
+  // Repositories the selection itself withheld (no rows at all); like flattenSelectedRepositoryRows, a failed revalidation drops them.
   const selectionPages = selection.isRefetchError ? [] : selection.data?.pages ?? [];
   const selectionWithheld = selectionPages.reduce((sum, p) => sum + p.withheld, 0);
   const selectionRetryAt = selectionPages.map(p => p.retryAt).filter(Boolean).at(-1) ?? null;
@@ -43,7 +43,7 @@ function Overview() {
     queryFn: ({ signal }) => fetchCrossRepositoryOverview(days, signal),
     enabled: rows.length > 0 || selection.hasNextPage,
     // The first read after an access revocation answers ACCESS_UNVERIFIED once; the second read is authoritative.
-    retry: (count, error) => count < 1 && error.message === ACCESS_UNVERIFIED_MESSAGE,
+    retry: (count, error) => count < 1 && error instanceof RepositoryAccessUnverifiedError,
     retryDelay: 0,
     placeholderData: keepPreviousData,
   });
@@ -82,7 +82,7 @@ function Overview() {
     {!query.isError && data && <WithheldNote withheld={data.withheld} retryAt={data.retryAt} />}
     {query.isPending ? <p role="status">Loading overview…</p>
       : query.isError ? <div role="alert" className={`${card} p-4`}>
-        <p className="font-medium">{query.error.message === ACCESS_UNVERIFIED_MESSAGE ? "Access could not be verified. Totals are hidden until GitHub confirms your access." : query.error.message}</p>
+        <p className="font-medium">{query.error instanceof RepositoryAccessUnverifiedError ? "Access could not be verified. Totals are hidden until GitHub confirms your access." : query.error.message}</p>
         <Button className="mt-3" onClick={() => void query.refetch()} disabled={query.isFetching}>Retry</Button>
       </div>
       : data && <>

@@ -41,7 +41,8 @@ extend type Query { releaseEvidence(repositoryIds: [ID!]!, first: Int! = 20, aft
 
 extend type ActivityStatus { archived: Boolean! }
 
-# One selected repository and one 7/30/90-day UTC window. Unavailable repositories return null.
+# One selected repository and one 7/30/90-day UTC window. Missing, unselected, and denied repos return null.
+# Unverified access returns null with ACCESS_UNVERIFIED and an optional retryAt.
 extend type Query { repositoryOverview(id: ID!, days: Int! = 30): RepositoryOverview }
 scalar Time
 scalar Int64
@@ -91,8 +92,9 @@ type RepositoryOverview {
 }
 
 # All of the viewer's selected repositories (at most 100) for one 7/30/90-day UTC window, using repositoryOverview's metric definitions.
-# repositoriesCounted are fully covered and summed; repositoriesSyncing are left out of every total, list and trend (never zero);
-# withheld counts selected repositories that are inaccessible or unverified, without naming them (retryAt when rate limited).
+# repositoriesCounted are fully covered and summed; repositoriesSyncing are excluded from totals, the trend and Needs attention.
+# AssignedToMe can include syncing repositories with covered issue data.
+# withheld counts unverified selections, without naming them (retryAt when rate limited).
 # reviewBacklog sums unreviewedOpenPullRequests. kind is "pr_awaiting_review", "issue_no_response" or "stale_issue".
 extend type Query { crossRepositoryOverview(days: Int! = 30): CrossRepositoryOverview }
 type AttentionItem { kind: String!, repositoryId: ID!, fullName: String!, number: Int64!, title: String!, url: String!, since: Time! }

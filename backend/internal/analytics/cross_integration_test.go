@@ -54,7 +54,7 @@ func TestCrossRepositoryOverview(t *testing.T) {
 		}
 	}
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
-	cross, err := LoadCross(ctx, pool, []int64{10, 30, 40}, 77, 7, now)
+	cross, err := LoadCrossRepositoryOverview(ctx, pool, []int64{10, 30, 40}, 77, 7, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestCrossRepositoryOverview(t *testing.T) {
 	var openIssues, backlog int64
 	daily := make([][2]int64, 7)
 	for _, id := range []int64{10, 30} {
-		one, err := Load(ctx, pool, id, 7, now)
+		one, err := LoadRepositoryOverview(ctx, pool, id, 7, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -125,15 +125,15 @@ func TestCrossRepositoryOverview(t *testing.T) {
 		INSERT INTO activity_children (repository_id, resource, parent_id, parent_number) VALUES (30, 'comments', 5, 5)`); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := LoadCross(ctx, pool, []int64{10, 30, 40}, 77, 7, now)
+	pending, err := LoadCrossRepositoryOverview(ctx, pool, []int64{10, 30, 40}, 77, 7, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	thirty, err := Load(ctx, pool, 30, 7, now)
+	thirty, err := LoadRepositoryOverview(ctx, pool, 30, 7, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ten, err := Load(ctx, pool, 10, 7, now)
+	ten, err := LoadRepositoryOverview(ctx, pool, 10, 7, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestCrossRepositoryOverview(t *testing.T) {
 		INSERT INTO activity_children (repository_id, resource, parent_id, parent_number) VALUES (30, 'reviews', 602, 12)`); err != nil {
 		t.Fatal(err)
 	}
-	pending, err = LoadCross(ctx, pool, []int64{10, 30, 40}, 77, 7, now)
+	pending, err = LoadCrossRepositoryOverview(ctx, pool, []int64{10, 30, 40}, 77, 7, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestCrossRepositoryOverview(t *testing.T) {
 	}
 
 	// A repository that is still syncing is left out, never zeroed.
-	syncing, err := LoadCross(ctx, pool, []int64{40}, 77, 7, now)
+	syncing, err := LoadCrossRepositoryOverview(ctx, pool, []int64{40}, 77, 7, now)
 	if err != nil {
 		t.Fatal(err)
 	}

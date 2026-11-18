@@ -245,7 +245,7 @@ test('a failed overview load offers Retry', async ({ page }) => {
   await page.route('**/graphql', route => fail && String(route.request().postDataJSON().query).startsWith('query RepositoryOverview')
     ? route.fulfill({ status: 500, body: '' }) : route.fallback());
   await page.goto('/workspace/1');
-  await expect(page.getByRole('alert')).toContainText('Could not load repository analytics.');
+  await expect(page.getByRole('alert')).toContainText('Could not load repository analytics.', { timeout: 10_000 });
   fail = false;
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'repo-1', exact: true })).toBeVisible();

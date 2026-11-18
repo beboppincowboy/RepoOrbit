@@ -70,14 +70,14 @@ func TestRepositoryOverviewBaseline(t *testing.T) {
 	defer probe.Close()
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 	for range 5 {
-		if _, err := Load(ctx, pool, 10, 90, now); err != nil {
+		if _, err := LoadRepositoryOverview(ctx, pool, 10, 90, now); err != nil {
 			t.Fatal(err)
 		}
 	}
 	elapsed := make([]time.Duration, 100)
 	for i := range elapsed {
 		start := time.Now()
-		if _, err := Load(ctx, pool, 10, 90, now); err != nil {
+		if _, err := LoadRepositoryOverview(ctx, pool, 10, 90, now); err != nil {
 			t.Fatal(err)
 		}
 		elapsed[i] = time.Since(start)
@@ -85,7 +85,7 @@ func TestRepositoryOverviewBaseline(t *testing.T) {
 	slices.Sort(elapsed)
 	t.Logf("90-day overview P95 (100 serial warm runs): %s", elapsed[94])
 
-	out, err := Load(ctx, probe, 10, 90, now)
+	out, err := LoadRepositoryOverview(ctx, probe, 10, 90, now)
 	if err != nil {
 		t.Fatal(err)
 	}
