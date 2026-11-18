@@ -28,7 +28,11 @@ test('select an owned repository, then install the app to reveal a private one',
   await expect(page.getByText('Connected. Awaiting sync.')).toBeVisible();
 
   await page.getByRole('link', { name: 'Overview', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'ada/notes' })).toBeVisible();
+  // U5d: / is the Engineering overview; the repository's status is in its workspace header (Sync details).
+  await expect(page.getByRole('heading', { name: 'Engineering overview' })).toBeVisible();
+  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'notes' }).click();
+  await expect(page.getByRole('heading', { name: 'notes', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Sync details' }).click();
   await expect(page.getByText('Activity import in progress; continuous reconciliation is not yet complete.')).toBeVisible();
   await expect(page.getByText('ada/secret')).toHaveCount(0); // never selected
 
@@ -37,7 +41,7 @@ test('select an owned repository, then install the app to reveal a private one',
   await page.getByRole('region', { name: 'Pending changes' }).getByRole('button', { name: 'Apply' }).click();
   await expect(page.getByText('Disconnected. RepoOrbit no longer syncs it for you.')).toBeVisible();
   await page.getByRole('link', { name: 'Overview', exact: true }).click();
-  await expect(page.getByText('No repositories connected yet.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No repositories yet' })).toBeVisible();
 
   // The installed private repository is visible to Ada after selection and stays hidden from another account.
   await page.getByRole('link', { name: 'Repositories', exact: true }).click();
@@ -45,8 +49,10 @@ test('select an owned repository, then install the app to reveal a private one',
   await page.getByRole('button', { name: 'Start syncing 1 repository' }).click();
   await expect(page.getByText('Connected. Awaiting sync.')).toBeVisible();
   await page.goto('/');
-  const privateRepo = page.getByRole('heading', { name: 'ada/secret' });
+  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'secret' }).click();
+  const privateRepo = page.getByRole('heading', { name: 'secret', exact: true });
   await expect(privateRepo).toBeVisible();
+  await page.getByRole('button', { name: 'Sync details' }).click();
   await page.getByRole('button', { name: 'Refresh activity' }).click();
   await expect(page.getByText(/Activity refresh requested|A refresh is already queued/)).toBeVisible();
 
@@ -57,7 +63,7 @@ test('select an owned repository, then install the app to reveal a private one',
   await page.getByRole('link', { name: 'Continue with GitHub' }).click();
   await page.getByRole('button', { name: 'Account menu' }).click();
   await expect(page.getByRole('navigation', { name: 'Account' }).getByText('grace')).toBeVisible();
-  await expect(page.getByText('No repositories connected yet.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No repositories yet' })).toBeVisible();
   await expect(page.getByText('ada/secret')).toHaveCount(0);
 
   // The account menu is still open from the identity check above.
@@ -86,12 +92,15 @@ test('follow a public starred repository without installing the app', async ({ p
   await expect(page.getByText('Following, awaiting sync')).toBeVisible();
 
   await page.getByRole('link', { name: 'Overview', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'grace/compiler' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Engineering overview' })).toBeVisible();
+  await page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'compiler' }).click();
+  await expect(page.getByRole('heading', { name: 'compiler', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Sync details' }).click();
   await expect(page.getByText('Activity import in progress; continuous reconciliation is not yet complete.')).toBeVisible();
 
   await page.getByRole('link', { name: 'Repositories', exact: true }).click();
   await page.getByRole('link', { name: 'Starred', exact: true }).click();
   await page.getByRole('button', { name: 'Unfollow grace/compiler', exact: true }).click();
   await page.getByRole('link', { name: 'Overview', exact: true }).click();
-  await expect(page.getByText('No repositories connected yet.')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No repositories yet' })).toBeVisible();
 });

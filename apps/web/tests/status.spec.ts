@@ -4,11 +4,29 @@ import { demo, listed, metadata, mockOwned, mockSelected, mockSession, quietActi
 // Fully mocked API: runs against whatever web server the config starts.
 const res = (over: object = {}) => ({ phase: 'current', boundary: '2026-11-01T00:00:00Z', catchupThrough: null, lastSuccessAt: '2026-11-16T08:00:00Z', failureCode: null, jobState: 'idle', nextAttemptAt: null, ...over });
 
-async function mockRepository(page: Page, meta: object | null, activity: object = quietActivity, extra: object = {}, issues: object = {}) {
+// Minimal workspace analytics answer: the header's badge and activity lines come from repositoryOverview (U5d moved the
+// full SyncStatus from / to the workspace header); metadata comes from the selection and retryAt from the details query.
+const unknown = { value: null, coverage: { covered: false, reason: 'not_synchronized', through: null } };
+const repositoryOverview = (syncState: string, activity: object) => ({
+  fullName: 'ada/repo-10', syncState, activity: { ...activity, archived: false },
+  openIssues: unknown, staleOpenIssues: unknown, pullRequestsMerged: unknown,
+  firstResponseTime: { seconds: null, sampleSize: null, coverage: unknown.coverage }, mergeTime: { seconds: null, sampleSize: null, coverage: unknown.coverage },
+  issuesWithoutResponse: { value: null }, eventsCoveredFrom: null, windowStart: '2026-10-19T00:00:00Z',
+  activeBotContributors: unknown, contributorsCoverage: unknown.coverage, contributors: [], timeline: [], daily: [],
+});
+
+// Opens /workspace/10 for one selected repository and, unless it is withheld, opens the Sync details panel.
+async function mockRepository(page: Page, meta: object | null, activity: object = quietActivity, extra: { syncState?: string } = {}, issues: object = {}) {
   await mockSession(page, signedIn);
   await mockSelected(page, [selectedRepo('10', { metadataStatus: meta, activity, ...extra })], issues);
-  await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'withheld' in issues ? 'Repository unavailable' : 'ada/repo-10' })).toBeVisible();
+  await page.route('**/graphql', route => {
+    if (!String(route.request().postDataJSON().query).startsWith('query RepositoryOverview')) return route.fallback();
+    return route.fulfill({ json: { data: { repositoryOverview: repositoryOverview(extra.syncState ?? 'awaiting-sync', activity) } } });
+  });
+  await page.goto('/workspace/10');
+  if ('withheld' in issues) return expect(page.getByRole('heading', { name: 'Repository unavailable' })).toBeVisible();
+  await page.getByRole('button', { name: 'Sync details' }).click();
+  await expect(page.getByRole('region', { name: 'Sync status' })).toBeVisible();
 }
 
 test('metadata success still says activity is not synchronized', async ({ page }) => {
@@ -28,8 +46,9 @@ test('paused refresh is explained and a failure shows a safe code only', async (
 
 test('dead and unstarred states are reported without credentials or raw errors', async ({ page }) => {
   await mockRepository(page, metadata({ state: 'dead', failureCode: 'unknown', followSuspended: true }));
-  await expect(page.getByText('stopped after repeated failures', { exact: false })).toBeVisible();
-  await expect(page.getByText('You no longer star this repository', { exact: false })).toBeVisible();
+  const panel = page.getByRole('list', { name: 'Metadata status' });
+  await expect(panel.getByText('stopped after repeated failures', { exact: false })).toBeVisible();
+  await expect(panel.getByText('You no longer star this repository', { exact: false })).toBeVisible();
   const text = await page.locator('main').innerText();
   expect(text).not.toMatch(/token|ghu_|ghp_|Bearer|https?:\/\/api\.github/i);
 });
@@ -66,7 +85,7 @@ const stateCases: { state: string; label: string; setup: (page: Page) => Promise
 
 for (const c of stateCases) {
   test(`SyncStatus renders the ${c.label} state from a fixture`, async ({ page }) => {
-    await c.setup(page);
+      await c.setup(page);
     const badge = page.locator(`[data-sync-state="${c.state}"]`);
     await expect(badge).toHaveText(c.label);
   });
@@ -82,8 +101,8 @@ test('SyncStatus renders a repository that has not been selected', async ({ page
 test('demo data is always labeled, and the demo fixture never shows a live-data state', async ({ page }) => {
   await mockSession(page, demo);
   await mockSelected(page, [selectedRepo('10', { syncState: 'demo', metadataStatus: null, activity: null, fullName: 'orbit/example' })]);
-  await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'orbit/example' })).toBeVisible();
+  await page.goto('/repositories');
+  await expect(page.getByRole('main').getByText('orbit/example')).toBeVisible();
   await expect(page.locator('[data-sync-state="demo"]')).toHaveText('Demo data');
   await expect(page.getByText('Demo mode', { exact: true })).toBeVisible();
 });
@@ -98,7 +117,7 @@ const refreshCases = [
 
 for (const [name, status_, body, headers, expected, role] of refreshCases) {
   test(`refresh activity feedback: ${name}`, async ({ page }) => {
-    let csrf: string | undefined;
+      let csrf: string | undefined;
     await page.route('**/api/repositories/10/activity/refresh', route => { csrf = route.request().headers()['x-csrf-token']; return route.fulfill({ status: status_, headers, json: body }); });
     await mockRepository(page, metadata({}));
     await page.getByRole('button', { name: 'Refresh activity' }).click();

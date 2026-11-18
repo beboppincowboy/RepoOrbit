@@ -39,11 +39,14 @@ function Repositories() {
     enabled: !demo,
   });
   // Demo mode has no GitHub list: it shows the demo selection read-only, as the prototype does.
-  const demoRows: ListedRepo[] = selectedRows(useSelectedRepositories(session))
+  const selection = useSelectedRepositories(session);
+  const demoRows: ListedRepo[] = selectedRows(selection)
     .filter(row => row.detail?.state !== "access-unverified")
     .map(({ repo }) => ({ id: repo.id, fullName: repo.fullName, description: repo.description, private: false, selected: true, syncState: repo.syncState }));
   const pages: OwnedPage[] = query.data?.pages ?? [];
   const rows = demo ? demoRows : pages.flatMap(p => p.repositories);
+  // Demo pages the selection; real mode pages the owned GitHub list.
+  const pager = demo ? selection : query;
   const listing = pages.at(-1);
   const checked = (repo: ListedRepo) => (repo.id in draft ? draft[repo.id] : repo.selected);
   const toAdd = rows.filter(r => draft[r.id] === true && !r.selected);
@@ -145,7 +148,7 @@ function Repositories() {
           {rows.length > 0 && visible.length === 0 && <tr><td colSpan={3} className={`${tdClass} py-6 text-center text-muted-foreground`}>No repositories match this filter.</td></tr>}
         </tbody>
       </table>
-      {query.hasNextPage && <div className="p-3"><Button variant="outline" onClick={() => query.fetchNextPage()} disabled={query.isFetchingNextPage}>Load more repositories</Button></div>}
+      {pager.hasNextPage && <div className="p-3"><Button variant="outline" onClick={() => pager.fetchNextPage()} disabled={pager.isFetchingNextPage}>Load more repositories</Button></div>}
       {!demo && <p className="m-0 px-3 py-2.5 text-xs text-muted-foreground">Some private repositories may need the GitHub App installed before they appear here.{listing?.installUrl ? <> <a className="text-primary underline" href={listing.installUrl}>Install the app</a>, then press Refresh.</> : " Install it on GitHub, then press Refresh."}</p>}
     </div>
 

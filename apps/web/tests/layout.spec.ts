@@ -20,14 +20,28 @@ async function expectNoPageScroll(page: Page) {
   expect(await inner.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
 }
 
+// Answers only the Engineering overview query, with 25 Needs attention rows (the API's cap) so that list must scroll.
+async function mockLongOverview(page: Page) {
+  const coverage = { covered: true, reason: null, through: null };
+  const needsAttention = forty().slice(0, 25).map(id => ({ kind: 'stale_issue', repositoryId: id, fullName: `orbit/repo-${id}`, number: Number(id), title: `Quiet issue ${id}`, url: '', since: '2026-09-01T00:00:00Z' }));
+  await page.route('**/graphql', route => {
+    if (!String(route.request().postDataJSON().query).startsWith('query CrossRepositoryOverview')) return route.fallback();
+    return route.fulfill({ json: { data: { crossRepositoryOverview: {
+      days: 30, windowStart: '2026-10-18T00:00:00Z', now: '2026-11-17T00:00:00Z', repositoriesCounted: 40, repositoriesSyncing: 0, withheld: 0, retryAt: null,
+      openIssues: { value: 40, coverage }, reviewBacklog: { value: 0, coverage }, needsAttention, assignedToMe: [], daily: [],
+    } } } });
+  });
+}
+
 for (const size of sizes) {
   const name = `${size.width}x${size.height}`;
   test(`overview fits ${name} and scrolls only inside its list`, async ({ page }) => {
     await page.setViewportSize(size);
     await mockSession(page, demo);
     await mockSelected(page, forty().map(id => selectedRepo(id, { fullName: `orbit/repo-${id}`, syncState: 'demo', activity: null })));
+    await mockLongOverview(page);
     await page.goto('/');
-    await expect(page.getByRole('heading', { name: 'orbit/repo-40' })).toBeAttached();
+    await expect(page.getByRole('link', { name: /repo-25 · Issue #25/ })).toBeAttached();
     await expectNoPageScroll(page);
   });
 
