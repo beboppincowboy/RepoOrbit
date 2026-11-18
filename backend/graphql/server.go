@@ -12,11 +12,11 @@ import (
 	"github.com/vektah/gqlparser/v2/gqlerror"
 )
 
-type depthLimit struct{}
+type operationLimits struct{}
 
-func (depthLimit) ExtensionName() string                   { return "DepthLimit" }
-func (depthLimit) Validate(graphql.ExecutableSchema) error { return nil }
-func (depthLimit) MutateOperationContext(_ context.Context, op *graphql.OperationContext) *gqlerror.Error {
+func (operationLimits) ExtensionName() string                   { return "OperationLimits" }
+func (operationLimits) Validate(graphql.ExecutableSchema) error { return nil }
+func (operationLimits) MutateOperationContext(_ context.Context, op *graphql.OperationContext) *gqlerror.Error {
 	var depth func(ast.SelectionSet, int) bool
 	depth = func(set ast.SelectionSet, level int) bool {
 		if level > maxQueryDepth {
@@ -43,6 +43,16 @@ func (depthLimit) MutateOperationContext(_ context.Context, op *graphql.Operatio
 	if !depth(op.Operation.SelectionSet, 1) {
 		return gqlerror.Errorf("query depth exceeds limit")
 	}
+	overview := false
+	for _, field := range graphql.CollectFields(op, op.Operation.SelectionSet, []string{"Query"}) {
+		if field.Name != "repositoryOverview" {
+			continue
+		}
+		if overview {
+			return gqlerror.Errorf("request at most one repository overview")
+		}
+		overview = true
+	}
 	return nil
 }
 
@@ -63,9 +73,15 @@ func Server(resolver *Resolver) http.Handler {
 		}
 		return weight(child, first)
 	}
+	cfg.Complexity.Query.RepositoryOverview = func(child int, _ string, _ int) int {
+		return 100 + child
+	}
+	cfg.Complexity.RepositoryOverview.Contributors = func(child int) int { return 20 * child }
+	cfg.Complexity.RepositoryOverview.Timeline = func(child int) int { return 50 * child }
+	cfg.Complexity.RepositoryOverview.Daily = func(child int) int { return 90 * child }
 	srv := handler.New(NewExecutableSchema(cfg))
 	srv.AddTransport(transport.POST{})
-	srv.Use(depthLimit{})
+	srv.Use(operationLimits{})
 	srv.Use(extension.FixedComplexityLimit(maxQueryComplexity))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

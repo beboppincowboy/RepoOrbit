@@ -38,3 +38,52 @@ extend type ActivityStatus { releases: ActivityResourceStatus, issueEvents: Issu
 extend type Query { releaseEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): ReleaseEvidenceConnection!, issueEventEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): IssueEventEvidenceConnection! }
 
 extend type ActivityStatus { archived: Boolean! }
+
+# One selected repository and one 7/30/90-day UTC window. Unavailable repositories return null.
+extend type Query { repositoryOverview(id: ID!, days: Int! = 30): RepositoryOverview }
+scalar Time
+scalar Int64
+
+type MetricCoverage { covered: Boolean!, reason: String, through: Time }
+type MetricCount { value: Int64, coverage: MetricCoverage! }
+type MetricMedian { seconds: Int64, sampleSize: Int64, coverage: MetricCoverage! }
+type MetricContributor { login: String!, pullRequestsOpened: Int64!, reviewsSubmitted: Int64! }
+type MetricActor { login: String!, isBot: Boolean! }
+type MetricTimelineEntry { kind: String!, occurredAt: Time!, sourceId: Int64!, actor: MetricActor, title: String!, label: String, number: Int64, url: String! }
+type MetricTimelineCoverage { pullRequestMerged: MetricCoverage!, releasePublished: MetricCoverage!, issueOpened: MetricCoverage!, issueEvents: MetricCoverage! }
+type MetricDailyPoint { day: Time!, issuesOpened: Int64, issuesClosed: Int64, pullRequestsOpened: Int64, pullRequestsMerged: Int64 }
+
+type RepositoryOverview {
+  fullName: String!
+  syncState: String!
+  activity: ActivityStatus!
+  days: Int!
+  windowStart: Time!
+  now: Time!
+  eventsCoveredFrom: Time
+  openIssues: MetricCount!
+  openPullRequests: MetricCount!
+  openIssuesAssigned: MetricCount!
+  staleOpenIssues: MetricCount!
+  staleOpenPullRequests: MetricCount!
+  unreviewedOpenPullRequests: MetricCount!
+  unansweredOpenIssues: MetricCount!
+  issuesOpened: MetricCount!
+  issuesClosed: MetricCount!
+  issuesReopened: MetricCount!
+  pullRequestsOpened: MetricCount!
+  pullRequestsMerged: MetricCount!
+  releasesPublished: MetricCount!
+  firstResponseTime: MetricMedian!
+  issuesWithoutResponse: MetricCount!
+  firstReviewTime: MetricMedian!
+  pullRequestsNeverReviewed: MetricCount!
+  mergeTime: MetricMedian!
+  activeContributors: MetricCount!
+  activeBotContributors: MetricCount!
+  contributors: [MetricContributor!]!
+  contributorsCoverage: MetricCoverage!
+  timeline: [MetricTimelineEntry!]!
+  timelineCoverage: MetricTimelineCoverage!
+  daily: [MetricDailyPoint!]!
+}

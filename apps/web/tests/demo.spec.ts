@@ -42,6 +42,14 @@ test('pages through more than one full page of repositories', async ({ page }) =
   try {
     const values = Array.from({ length: 21 }, (_, i) => `(${base + i}, 'demo/bulk-${i}', 'Bulk browser test', true)`).join(', ');
     sql(`INSERT INTO repositories (id, name, description, is_demo) VALUES ${values}`);
+    const detailResponses: { ids: string[]; ok: boolean; body: { errors?: unknown; data?: Record<string, unknown> } }[] = [];
+    await page.route('**/graphql', async route => {
+      const operation = route.request().postDataJSON();
+      if (!operation.query.startsWith('query RepositoryDetails')) return route.continue();
+      const response = await route.fetch();
+      detailResponses.push({ ids: Object.values(operation.variables), ok: response.ok(), body: await response.json() });
+      await route.fulfill({ response });
+    });
     await page.goto('/');
     const more = page.getByRole('button', { name: 'Load more repositories' });
     const rows = page.getByRole('heading', { name: /^demo\/bulk-/ });
@@ -52,6 +60,13 @@ test('pages through more than one full page of repositories', async ({ page }) =
       await expect.poll(() => rows.count()).toBeGreaterThan(loaded);
     }
     await expect(rows).toHaveCount(21);
+    const fullBatches = detailResponses.filter(response => response.ids.length === 8);
+    expect(fullBatches.length).toBeGreaterThan(0);
+    for (const response of fullBatches) {
+      expect(response.ok).toBe(true);
+      expect(response.body.errors).toBeUndefined();
+      expect(Object.keys(response.body.data ?? {})).toHaveLength(16);
+    }
     await expect(page.getByRole('heading', { name: 'demo/bulk-20', exact: true })).toBeVisible();
   } finally {
     sql(`DELETE FROM repositories WHERE id >= ${base} AND id < ${base + 21}`);

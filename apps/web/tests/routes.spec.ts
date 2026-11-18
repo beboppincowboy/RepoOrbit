@@ -39,3 +39,12 @@ test('a failed sign-in is reported on the login page', async ({ page }) => {
   await page.goto('/login?error=access_denied');
   await expect(page.getByRole('alert').filter({ hasText: 'Sign-in did not complete.' })).toBeVisible();
 });
+
+test('a failed session load can be retried on login', async ({ page }) => {
+  await page.route('**/auth/me', route => route.fulfill({ status: 503 }));
+  await page.goto('/login');
+  await expect(page.getByRole('alert')).toContainText('Could not load the session.');
+  await mockSession(page, signedOut);
+  await page.getByRole('button', { name: 'Try again' }).click();
+  await expect(page.getByRole('link', { name: 'Sign in with GitHub' })).toBeVisible();
+});

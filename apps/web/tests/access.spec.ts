@@ -37,6 +37,34 @@ test('select an owned repository, then install the app to reveal a private one',
   await expect(page.getByText('Disconnected. RepoOrbit no longer syncs it for you.')).toBeVisible();
   await page.getByRole('link', { name: 'Overview', exact: true }).click();
   await expect(page.getByText('No repositories connected yet.')).toBeVisible();
+
+  // The installed private repository is visible to Ada after selection and stays hidden from another account.
+  await page.getByRole('link', { name: 'Repositories', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'ada/secret' }).check();
+  await page.getByRole('button', { name: 'Start syncing 1 repository' }).click();
+  await expect(page.getByText('Connected. Awaiting sync.')).toBeVisible();
+  await page.goto('/');
+  const privateRepo = page.getByRole('heading', { name: 'ada/secret' });
+  await expect(privateRepo).toBeVisible();
+  await page.getByRole('button', { name: 'Refresh activity' }).click();
+  await expect(page.getByText(/Activity refresh requested|A refresh is already queued/)).toBeVisible();
+
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await page.context().addCookies([{ name: 'fake_as', value: 'grace', url: 'http://127.0.0.1:9090' }]);
+  await page.getByRole('link', { name: 'Sign in with GitHub' }).click();
+  await expect(page.getByRole('navigation', { name: 'Account' }).getByText('grace')).toBeVisible();
+  await expect(page.getByText('No repositories connected yet.')).toBeVisible();
+  await expect(page.getByText('ada/secret')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page).toHaveURL(/\/login$/);
+  await page.context().addCookies([{ name: 'fake_as', value: 'ada', url: 'http://127.0.0.1:9090' }]);
+  await page.getByRole('link', { name: 'Sign in with GitHub' }).click();
+  await page.getByRole('link', { name: 'Repositories', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'ada/secret' }).uncheck();
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await expect(page.getByText('Disconnected. RepoOrbit no longer syncs it for you.')).toBeVisible();
 });
 
 test('follow a public starred repository without installing the app', async ({ page }) => {

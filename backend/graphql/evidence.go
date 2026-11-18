@@ -10,6 +10,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/platform"
+	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
 type evidencePage struct {
@@ -19,6 +20,8 @@ type evidencePage struct {
 	withheld int
 	retry    *string
 	fence    accessfence.Snapshot
+	userID   int64
+	checks   map[int64]repositories.Decision
 }
 
 func (r *queryResolver) evidenceAccess(ctx context.Context, raw []string, first int, after *string) (evidencePage, error) {
@@ -48,6 +51,7 @@ func (r *queryResolver) evidenceAccess(ctx context.Context, raw []string, first 
 	if err != nil {
 		return p, err
 	}
+	p.userID = user
 	p.fence, err = accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, user)
 	if err != nil {
 		return p, fmt.Errorf("database unavailable")
@@ -56,10 +60,10 @@ func (r *queryResolver) evidenceAccess(ctx context.Context, raw []string, first 
 	if err != nil {
 		return p, fmt.Errorf("database unavailable")
 	}
-	checks := r.RepoAccess.Check(ctx, user, p.ids, true)
+	p.checks = r.RepoAccess.Check(ctx, user, p.ids, true)
 	allowed := make([]int64, 0, len(p.ids))
 	for _, id := range p.ids {
-		d := checks[id]
+		d := p.checks[id]
 		if d.Allowed {
 			allowed = append(allowed, id)
 		}

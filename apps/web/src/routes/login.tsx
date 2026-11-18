@@ -10,8 +10,9 @@ export const Route = createFileRoute("/login")({
 });
 
 function Login() {
-  const { data: session } = useQuery(sessionQuery);
+  const { data: session, isError, refetch } = useQuery(sessionQuery);
   const { error } = Route.useSearch();
+  if (isError) return <p role="alert" className="p-6">Could not load the session. <button className="underline" onClick={() => refetch()}>Try again</button></p>;
   if (!session) return <p role="status" className="p-6">Loading…</p>;
   return <main className="mx-auto h-full max-w-md overflow-y-auto px-5 py-16">
     <h1 className="text-3xl font-bold">RepoOrbit</h1>

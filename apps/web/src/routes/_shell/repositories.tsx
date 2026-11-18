@@ -43,7 +43,7 @@ function Repositories() {
   const toRemove = rows.filter(r => draft[r.id] === false && r.selected);
   const pending = toAdd.length + toRemove.length;
   const connectedCount = rows.filter(r => r.selected).length;
-  const visible = rows.filter(r => matchesListSearch(r, search.q) && (search.view !== "selected" || checked(r)));
+  const visible = rows.filter(r => matchesListSearch(r, search.q) && (search.view !== "selected" || checked(r) || outcomes[r.id]?.ok === false));
   const firstUse = connectedCount === 0 && toRemove.length === 0;
 
   function setSearch(patch: Partial<typeof search>) {
@@ -108,11 +108,11 @@ function Repositories() {
           <Button onClick={apply} disabled={applying}>{firstUse ? `Start syncing ${toAdd.length} ${toAdd.length === 1 ? "repository" : "repositories"}` : "Apply"}</Button>
         </div>
       </div>
-      {toRemove.length > 0 && <p className="mt-2 text-muted-foreground">Removing {toRemove.map(r => r.fullName).join(", ")} stops RepoOrbit syncing {toRemove.length === 1 ? "it" : "them"} for you. Other people who selected {toRemove.length === 1 ? "it" : "them"} keep syncing. Nothing changes on GitHub.</p>}
+      {toRemove.length > 0 && <p className="mt-2 text-muted-foreground">Removing {toRemove.map(r => r.fullName).join(", ")} stops RepoOrbit syncing {toRemove.length === 1 ? "it" : "them"} for you. Other people who selected {toRemove.length === 1 ? "it" : "them"} keep syncing. Saved issues remain available while you have access. Nothing changes on GitHub.</p>}
     </div>}
 
     <div className="relative min-h-0 flex-1 overflow-y-auto">
-      {installResult && installMessages[installResult] && <p role="status" className="m-4 rounded border border-border bg-card p-3">{installMessages[installResult]}</p>}
+      {installResult && Object.hasOwn(installMessages, installResult) && <p role="status" className="m-4 rounded border border-border bg-card p-3">{installMessages[installResult]}</p>}
       {outcomeCount > 0 && <p role="status" className="m-4 text-sm">{outcomeCount - failedCount} applied{failedCount ? `, ${failedCount} failed` : ""}.</p>}
       {query.isError && <p role="alert" className="m-4 text-destructive">Could not load your repositories. Check that the local services are running.</p>}
       {listing?.refreshFailed && <p role="alert" className="m-4 rounded border border-warning/40 bg-warning/10 p-3">GitHub could not be reached{listing.retryAt ? ` (rate limited; retry after ${new Date(listing.retryAt).toLocaleTimeString()})` : ""}, so this shows only repositories you already connected. It is not your full list.{listing.withheld > 0 && ` ${listing.withheld} connected private ${listing.withheld === 1 ? "repository is" : "repositories are"} hidden until access can be verified.`}</p>}
