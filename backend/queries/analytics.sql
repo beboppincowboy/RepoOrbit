@@ -24,6 +24,16 @@ WITH pr_children AS (
   FROM activity_issues i
   LEFT JOIN activity_children c ON c.repository_id = i.repository_id AND c.resource = 'comments' AND c.parent_id = i.number
   WHERE i.repository_id = sqlc.arg(repository_id)
+), comment_children AS (
+  -- Comment histories of every issue or PR updated in the window (a new comment moves its parent's updated_at).
+  SELECT count(*) FILTER (WHERE c.watermark IS NULL) AS updated_missing, min(c.watermark) AS updated_through
+  FROM (
+    SELECT xi.number, xi.updated_at FROM activity_issues xi WHERE xi.repository_id = sqlc.arg(repository_id)
+    UNION ALL
+    SELECT xp.number, xp.updated_at FROM activity_pull_requests xp WHERE xp.repository_id = sqlc.arg(repository_id)
+  ) parents
+  LEFT JOIN activity_children c ON c.repository_id = sqlc.arg(repository_id) AND c.resource = 'comments' AND c.parent_id = parents.number
+  WHERE parents.updated_at >= sqlc.arg(window_start)::timestamptz
 )
 SELECT
   si.boundary AS issues_boundary, si.watermark AS issues_watermark,
@@ -35,8 +45,9 @@ SELECT
   pc.created_missing AS created_pr_reviews_missing, pc.created_through::timestamptz AS created_pr_reviews_through,
   pc.updated_missing AS updated_pr_reviews_missing, pc.updated_through::timestamptz AS updated_pr_reviews_through,
   ic.open_missing AS open_issue_comments_missing, ic.open_through::timestamptz AS open_issue_comments_through,
-  ic.created_missing AS created_issue_comments_missing, ic.created_through::timestamptz AS created_issue_comments_through
-FROM pr_children pc CROSS JOIN issue_children ic
+  ic.created_missing AS created_issue_comments_missing, ic.created_through::timestamptz AS created_issue_comments_through,
+  cc.updated_missing AS updated_comments_missing, cc.updated_through::timestamptz AS updated_comments_through
+FROM pr_children pc CROSS JOIN issue_children ic CROSS JOIN comment_children cc
 LEFT JOIN activity_resources si ON si.repository_id = sqlc.arg(repository_id) AND si.resource = 'issues'
 LEFT JOIN activity_resources sp ON sp.repository_id = sqlc.arg(repository_id) AND sp.resource = 'pull_requests'
 LEFT JOIN activity_resources sr ON sr.repository_id = sqlc.arg(repository_id) AND sr.resource = 'releases'
@@ -122,25 +133,35 @@ SELECT
 FROM issue_stats s CROSS JOIN pull_stats p;
 
 -- name: ListMetricContributors :many
--- Up to 20 active humans; login is taken from the author's most recent contributing row.
+-- Active participants (PR authors and qualifying reviewers in the window): up to 20 humans, then up to 5 bots.
+-- comments_created counts their issue and PR comments in the window; login comes from the most recent PR or review row.
 WITH contributions AS (
-  SELECT p.author_id, p.author_login, p.created_at AS at, p.source_id, 1 AS opened, 0 AS reviewed FROM activity_pull_requests p
+  SELECT p.author_id, p.author_login, p.author_type = 'Bot' AS is_bot, p.created_at AS at, p.source_id, 1 AS opened, 0 AS reviewed FROM activity_pull_requests p
   WHERE p.repository_id = sqlc.arg(repository_id) AND p.created_at BETWEEN sqlc.arg(window_start)::timestamptz AND sqlc.arg(now)::timestamptz
-    AND p.author_id IS NOT NULL AND p.author_type <> 'Bot'
+    AND p.author_id IS NOT NULL AND p.author_type IS NOT NULL
   UNION ALL
-  SELECT r.author_id, r.author_login, r.submitted_at, r.source_id, 0, 1 FROM activity_reviews r
+  SELECT r.author_id, r.author_login, r.author_type = 'Bot', r.submitted_at, r.source_id, 0, 1 FROM activity_reviews r
   WHERE r.repository_id = sqlc.arg(repository_id) AND upper(r.state) <> 'PENDING'
     AND r.submitted_at BETWEEN sqlc.arg(window_start)::timestamptz AND sqlc.arg(now)::timestamptz
-    AND r.author_id IS NOT NULL AND r.author_type <> 'Bot'
+    AND r.author_id IS NOT NULL AND r.author_type IS NOT NULL
 ), people AS (
-  SELECT c.author_id,
+  SELECT c.author_id, bool_or(c.is_bot) AS is_bot,
     COALESCE((array_agg(c.author_login ORDER BY c.at DESC, c.source_id DESC))[1], '')::text AS login,
     sum(c.opened)::bigint AS pull_requests_opened, sum(c.reviewed)::bigint AS reviews_submitted
   FROM contributions c GROUP BY c.author_id
+), comments AS (
+  SELECT m.author_id, count(*)::bigint AS n FROM activity_comments m
+  WHERE m.repository_id = sqlc.arg(repository_id) AND m.created_at BETWEEN sqlc.arg(window_start)::timestamptz AND sqlc.arg(now)::timestamptz
+    AND m.author_id IN (SELECT author_id FROM people)
+  GROUP BY m.author_id
+), ranked AS (
+  SELECT p.author_id, p.is_bot, p.login, p.pull_requests_opened, p.reviews_submitted, COALESCE(m.n, 0)::bigint AS comments_created,
+    row_number() OVER (PARTITION BY p.is_bot ORDER BY p.pull_requests_opened + p.reviews_submitted + COALESCE(m.n, 0) DESC, p.login ASC, p.author_id ASC) AS position
+  FROM people p LEFT JOIN comments m ON m.author_id = p.author_id
 )
-SELECT author_id, login, pull_requests_opened, reviews_submitted FROM people
-ORDER BY pull_requests_opened + reviews_submitted DESC, login ASC, author_id ASC
-LIMIT 20;
+SELECT author_id, is_bot, login, pull_requests_opened, reviews_submitted, comments_created FROM ranked
+WHERE position <= CASE WHEN is_bot THEN 5 ELSE 20 END
+ORDER BY is_bot, position;
 
 -- name: ListMetricTimeline :many
 -- Up to 50 entries from the groups whose coverage holds (include_* flags). Issue events start at events_from.
@@ -195,3 +216,53 @@ SELECT d.day, COALESCE(io.n, 0)::bigint AS issues_opened, COALESCE(ic.n, 0)::big
 FROM days d
 LEFT JOIN io ON io.day = d.day LEFT JOIN ic ON ic.day = d.day LEFT JOIN po ON po.day = d.day LEFT JOIN pm ON pm.day = d.day
 ORDER BY d.day;
+
+-- Cross-repository lists (U5d). Every repository ID passed in is already authorized and covered for that list by the caller.
+-- The qualifying review/comment predicates are the same as GetMetricCounts, so rows agree with the per-repository counts.
+
+-- name: ListNeedsAttention :many
+-- Up to 25 problems, oldest first: open PRs (in pull_request_repository_ids) with no qualifying review, and open issues
+-- (in issue_repository_ids) with no qualifying first comment
+-- or, when answered, with no update since stale_before. One row per item; since is created_at, or updated_at for stale.
+SELECT kind, repository_id, full_name, number, title, url, since FROM (
+  SELECT 'pr_awaiting_review'::text AS kind, p.repository_id, r.name AS full_name, p.number, p.title, p.html_url AS url, p.created_at AS since
+  FROM activity_pull_requests p JOIN repositories r ON r.id = p.repository_id
+  WHERE p.repository_id = ANY(sqlc.arg(pull_request_repository_ids)::bigint[]) AND p.state = 'open'
+    AND NOT EXISTS (
+      SELECT 1 FROM activity_reviews v
+      WHERE v.repository_id = p.repository_id AND v.pull_request_id = p.source_id AND upper(v.state) <> 'PENDING'
+        AND v.author_id IS NOT NULL AND v.author_type <> 'Bot' AND v.author_id IS DISTINCT FROM p.author_id
+        AND v.submitted_at <= sqlc.arg(now)::timestamptz)
+  UNION ALL
+  SELECT CASE WHEN q.answered THEN 'stale_issue' ELSE 'issue_no_response' END, q.repository_id, q.full_name, q.number, q.title, q.html_url,
+    CASE WHEN q.answered THEN q.updated_at ELSE q.created_at END
+  FROM (
+    SELECT i.repository_id, r.name AS full_name, i.number, i.title, i.html_url, i.created_at, i.updated_at,
+      EXISTS (
+        SELECT 1 FROM activity_comments c
+        WHERE c.repository_id = i.repository_id AND c.issue_number = i.number
+          AND c.author_id IS NOT NULL AND c.author_type <> 'Bot' AND c.author_id IS DISTINCT FROM i.author_id
+          AND c.created_at <= sqlc.arg(now)::timestamptz) AS answered
+    FROM activity_issues i JOIN repositories r ON r.id = i.repository_id
+    WHERE i.repository_id = ANY(sqlc.arg(issue_repository_ids)::bigint[]) AND i.state = 'open'
+  ) q
+  WHERE NOT q.answered OR q.updated_at < sqlc.arg(stale_before)::timestamptz
+) t
+ORDER BY since ASC, kind ASC, repository_id ASC, number ASC
+LIMIT 25;
+
+-- name: ListAssignedOpenIssues :many
+-- Up to 25 open issues assigned to the GitHub user ID assignee_github_id (activity_issue_assignees.source_id), most recently updated first.
+SELECT i.repository_id, r.name AS full_name, i.number, i.title, i.html_url AS url, i.updated_at
+FROM activity_issues i JOIN repositories r ON r.id = i.repository_id
+WHERE i.repository_id = ANY(sqlc.arg(repository_ids)::bigint[]) AND i.state = 'open'
+  AND EXISTS (SELECT 1 FROM activity_issue_assignees a WHERE a.issue_id = i.source_id AND a.source_id = sqlc.arg(assignee_github_id)::bigint)
+ORDER BY i.updated_at DESC, i.source_id DESC
+LIMIT 25;
+
+-- name: ListAllSelectedIDs :many
+-- Every repository the user currently selects (unlike ListSelectedIDs, not filtered by a given ID list) (no demo rows), at most 101 so the caller can detect more than 100.
+SELECT s.repository_id FROM selections s JOIN repositories r ON r.id = s.repository_id
+WHERE s.user_id = sqlc.arg(user_id) AND s.deselected_at IS NULL AND NOT r.is_demo
+ORDER BY s.repository_id
+LIMIT 101;

@@ -45,7 +45,7 @@ func (operationLimits) MutateOperationContext(_ context.Context, op *graphql.Ope
 	}
 	overview := false
 	for _, field := range graphql.CollectFields(op, op.Operation.SelectionSet, []string{"Query"}) {
-		if field.Name != "repositoryOverview" {
+		if field.Name != "repositoryOverview" && field.Name != "crossRepositoryOverview" {
 			continue
 		}
 		if overview {
@@ -76,7 +76,11 @@ func Server(resolver *Resolver) http.Handler {
 	cfg.Complexity.Query.RepositoryOverview = func(child int, _ string, _ int) int {
 		return 100 + child
 	}
-	cfg.Complexity.RepositoryOverview.Contributors = func(child int) int { return 20 * child }
+	cfg.Complexity.RepositoryOverview.Contributors = func(child int) int { return 25 * child }
+	cfg.Complexity.Query.CrossRepositoryOverview = func(child int, _ int) int { return 100 + child }
+	cfg.Complexity.CrossRepositoryOverview.NeedsAttention = func(child int) int { return 25 * child }
+	cfg.Complexity.CrossRepositoryOverview.AssignedToMe = func(child int) int { return 25 * child }
+	cfg.Complexity.CrossRepositoryOverview.Daily = func(child int) int { return 90 * child }
 	cfg.Complexity.RepositoryOverview.Timeline = func(child int) int { return 50 * child }
 	cfg.Complexity.RepositoryOverview.Daily = func(child int) int { return 90 * child }
 	srv := handler.New(NewExecutableSchema(cfg))

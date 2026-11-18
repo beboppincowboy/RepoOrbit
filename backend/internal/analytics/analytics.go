@@ -51,11 +51,15 @@ type Median struct {
 	Coverage   Coverage
 }
 
-// Contributor is one active human in the window. Positions are an ordering for scanning, not a ranking.
+// Contributor is one active participant in the window (a PR author or qualifying reviewer). IsBot separates bots,
+// which the list holds after the humans. CommentsCreated counts their issue and PR comments in the window.
+// Positions are an ordering for scanning, not a ranking.
 type Contributor struct {
 	Login              string
+	IsBot              bool
 	PullRequestsOpened int64
 	ReviewsSubmitted   int64
+	CommentsCreated    int64
 }
 
 // Actor is nil on a TimelineEntry for a deleted (ghost) account.
@@ -116,8 +120,10 @@ type Overview struct {
 
 	ActiveContributors    Count
 	ActiveBotContributors Count
-	Contributors          []Contributor
-	ContributorsCoverage  Coverage
+	// Contributors holds up to 20 humans then up to 5 bots; empty unless ContributorsCoverage is covered, which
+	// also requires the comment histories of every issue and PR updated in the window.
+	Contributors         []Contributor
+	ContributorsCoverage Coverage
 
 	Timeline         []TimelineEntry
 	TimelineCoverage TimelineCoverage
@@ -144,49 +150,37 @@ func ValidateDays(days int) error {
 }
 
 // Load computes the overview for repositoryID over the last days (7, 30 or 90) UTC days ending at now.
+// It reads in one REPEATABLE READ snapshot and fails with ErrInvalidDays or the database error; it never returns partial values.
 func Load(ctx context.Context, pool *pgxpool.Pool, repositoryID int64, days int, now time.Time) (*Overview, error) {
 	if err := ValidateDays(days); err != nil {
 		return nil, err
 	}
-	now = now.UTC()
-	today := now.Truncate(24 * time.Hour)
-	start := today.AddDate(0, 0, 1-days)
-	startArg := pgtype.Timestamptz{Time: start, Valid: true}
-	nowArg := pgtype.Timestamptz{Time: now, Valid: true}
+	w := newWindow(days, now)
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	q := db.New(tx)
-	c, err := q.GetMetricCoverage(ctx, db.GetMetricCoverageParams{RepositoryID: repositoryID, WindowStart: startArg, Now: nowArg})
+	out, c, err := loadMetrics(ctx, q, repositoryID, w)
 	if err != nil {
 		return nil, err
 	}
-	m, err := q.GetMetricCounts(ctx, db.GetMetricCountsParams{
-		RepositoryID: repositoryID, WindowStart: startArg, Now: nowArg,
-		StaleBefore: pgtype.Timestamptz{Time: today.AddDate(0, 0, -29), Valid: true},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	out := assemble(days, start, now, c, m)
-	participants := out.ContributorsCoverage
 	coverage := out.TimelineCoverage
-	if participants.Covered {
-		rows, err := q.ListMetricContributors(ctx, db.ListMetricContributorsParams{RepositoryID: repositoryID, WindowStart: startArg, Now: nowArg})
+	if out.ContributorsCoverage.Covered {
+		rows, err := q.ListMetricContributors(ctx, db.ListMetricContributorsParams{RepositoryID: repositoryID, WindowStart: w.startArg(), Now: w.nowArg()})
 		if err != nil {
 			return nil, err
 		}
 		for _, row := range rows {
 			out.Contributors = append(out.Contributors, Contributor{
-				Login: row.Login, PullRequestsOpened: row.PullRequestsOpened, ReviewsSubmitted: row.ReviewsSubmitted,
+				Login: row.Login, IsBot: row.IsBot, PullRequestsOpened: row.PullRequestsOpened,
+				ReviewsSubmitted: row.ReviewsSubmitted, CommentsCreated: row.CommentsCreated,
 			})
 		}
 	}
 	timeline, err := q.ListMetricTimeline(ctx, db.ListMetricTimelineParams{
-		RepositoryID: repositoryID, WindowStart: startArg, Now: nowArg,
+		RepositoryID: repositoryID, WindowStart: w.startArg(), Now: w.nowArg(),
 		IncludeReleases: coverage.ReleasePublished.Covered, IncludeMerged: coverage.PullRequestMerged.Covered,
 		IncludeIssues: coverage.IssueOpened.Covered, IncludeEvents: coverage.IssueEvents.Covered, EventsFrom: c.EventsCoveredFrom,
 	})
@@ -208,9 +202,44 @@ func Load(ctx context.Context, pool *pgxpool.Pool, repositoryID int64, days int,
 		}
 		out.Timeline = append(out.Timeline, entry)
 	}
-	daily, err := q.ListMetricDaily(ctx, db.ListMetricDailyParams{RepositoryID: repositoryID, Days: int32(days), WindowStart: startArg, Now: nowArg})
+	return out, tx.Commit(ctx)
+}
+
+// window is one request's UTC window: [start, now], with start = today - (days-1) days.
+type window struct {
+	days       int
+	start, now time.Time
+	today      time.Time
+}
+
+func newWindow(days int, now time.Time) window {
+	now = now.UTC()
+	today := now.Truncate(24 * time.Hour)
+	return window{days: days, start: today.AddDate(0, 0, 1-days), now: now, today: today}
+}
+func (w window) startArg() pgtype.Timestamptz { return pgtype.Timestamptz{Time: w.start, Valid: true} }
+func (w window) nowArg() pgtype.Timestamptz   { return pgtype.Timestamptz{Time: w.now, Valid: true} }
+func (w window) staleBefore() pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: w.today.AddDate(0, 0, -29), Valid: true}
+}
+
+// loadMetrics reads one repository's coverage, counts, medians and daily series (everything but the contributor
+// list and timeline). Both the workspace overview and the cross-repository overview use it, so their numbers agree.
+func loadMetrics(ctx context.Context, q *db.Queries, repositoryID int64, w window) (*Overview, db.GetMetricCoverageRow, error) {
+	c, err := q.GetMetricCoverage(ctx, db.GetMetricCoverageParams{RepositoryID: repositoryID, WindowStart: w.startArg(), Now: w.nowArg()})
 	if err != nil {
-		return nil, err
+		return nil, c, err
+	}
+	m, err := q.GetMetricCounts(ctx, db.GetMetricCountsParams{
+		RepositoryID: repositoryID, WindowStart: w.startArg(), Now: w.nowArg(), StaleBefore: w.staleBefore(),
+	})
+	if err != nil {
+		return nil, c, err
+	}
+	out := assemble(w.days, w.start, w.now, c, m)
+	daily, err := q.ListMetricDaily(ctx, db.ListMetricDailyParams{RepositoryID: repositoryID, Days: int32(w.days), WindowStart: w.startArg(), Now: w.nowArg()})
+	if err != nil {
+		return nil, c, err
 	}
 	out.Daily = make([]DailyPoint, 0, len(daily))
 	for _, row := range daily {
@@ -221,18 +250,7 @@ func Load(ctx context.Context, pool *pgxpool.Pool, repositoryID int64, days int,
 			PullRequestsMerged: count(row.PullRequestsMerged, out.PullRequestsMerged.Coverage).Value,
 		})
 	}
-	return out, tx.Commit(ctx)
-}
-
-// UnsynchronizedOverview returns the window with unknown metrics and no evidence.
-func UnsynchronizedOverview(days int, now time.Time) *Overview {
-	now = now.UTC()
-	start := now.Truncate(24*time.Hour).AddDate(0, 0, 1-days)
-	out := assemble(days, start, now, db.GetMetricCoverageRow{}, db.GetMetricCountsRow{})
-	for day := range days {
-		out.Daily = append(out.Daily, DailyPoint{Day: start.AddDate(0, 0, day)})
-	}
-	return out
+	return out, c, nil
 }
 
 func assemble(days int, start, now time.Time, c db.GetMetricCoverageRow, m db.GetMetricCountsRow) *Overview {
@@ -255,6 +273,7 @@ func assemble(days int, start, now time.Time, c db.GetMetricCoverageRow, m db.Ge
 	createdComments := childCoverage(windowIssues, c.CreatedIssueCommentsMissing, c.CreatedIssueCommentsThrough)
 	createdReviews := childCoverage(windowPulls, c.CreatedPrReviewsMissing, c.CreatedPrReviewsThrough)
 	participants := childCoverage(windowPulls, c.UpdatedPrReviewsMissing, c.UpdatedPrReviewsThrough)
+	contributorList := childCoverage(combineCoverage(participants, windowIssues), c.UpdatedCommentsMissing, c.UpdatedCommentsThrough)
 
 	out := &Overview{
 		Days: days, WindowStart: start, Now: now,
@@ -278,7 +297,7 @@ func assemble(days int, start, now time.Time, c db.GetMetricCoverageRow, m db.Ge
 		MergeTime:                  median(m.MergeSeconds, m.PullRequestsMerged, windowPulls),
 		ActiveContributors:         count(m.ActiveContributors, participants),
 		ActiveBotContributors:      count(m.ActiveBotContributors, participants),
-		ContributorsCoverage:       participants,
+		ContributorsCoverage:       contributorList,
 		TimelineCoverage: TimelineCoverage{
 			PullRequestMerged: windowPulls, ReleasePublished: releases,
 			IssueOpened: windowIssues, IssueEvents: eventTimeline,

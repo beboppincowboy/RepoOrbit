@@ -48,7 +48,7 @@ async function graphqlQuery<Data>(queryText: string, variables: Record<string, u
   if (!response.ok) throw new Error("Unable to load repositories");
   return response.json();
 }
-// The backend caps GraphQL nesting at 6 levels (a leaf one level deeper is rejected) and query complexity at 1000.
+// The backend caps GraphQL nesting at 6 levels (a leaf one level deeper is rejected) and query complexity at 1200.
 // So the list query stays shallow, and activity and issues come from aliased queries of at most 8 repositories each:
 // repository(id) and issues(repositoryIds) are each one level shallower than selectedRepositories { nodes { activity { issueEvents { traversal } } } }.
 const activityResourceFields = "phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt";
@@ -160,7 +160,8 @@ type RepositoryOverview = {
   windowStart: string;
   activeBotContributors: CountMetric;
   contributorsCoverage: Coverage;
-  contributors: { login: string; pullRequestsOpened: number; reviewsSubmitted: number }[];
+  // Up to 20 humans, then up to 5 bots (isBot); empty unless contributorsCoverage is covered.
+  contributors: { login: string; isBot: boolean; pullRequestsOpened: number; reviewsSubmitted: number; commentsCreated: number }[];
   timeline: { url: string; sourceId: number; kind: string; occurredAt: string; title: string; number: number | null; actor: { login: string; isBot: boolean } | null }[];
   daily: { day: string; issuesOpened: number | null; pullRequestsMerged: number | null }[];
 };
@@ -177,7 +178,7 @@ export async function fetchRepositoryOverview(id: string, days: MetricWindow, si
       openIssues { ${count} } staleOpenIssues { ${count} } pullRequestsMerged { ${count} }
       firstResponseTime { ${median} } mergeTime { ${median} } issuesWithoutResponse { value }
       activeBotContributors { ${count} } contributorsCoverage { ${coverage} }
-      contributors { login pullRequestsOpened reviewsSubmitted }
+      contributors { login isBot pullRequestsOpened reviewsSubmitted commentsCreated }
       windowStart eventsCoveredFrom
       daily { day issuesOpened pullRequestsMerged }
       timeline { sourceId kind occurredAt title number url actor { login isBot } }
@@ -190,13 +191,60 @@ export async function fetchRepositoryOverview(id: string, days: MetricWindow, si
   return data.repositoryOverview;
 }
 
+// "merged" | "closed", or for an open PR the human reviewers' latest decision; null while its review history is not imported.
+export type ReviewState = "awaiting_review" | "commented" | "approved" | "changes_requested" | "merged" | "closed";
+export type WorkspacePullRequest = { id: string; number: number; title: string; state: string; url: string; createdAt: string; mergedAt: string | null; reviewState: ReviewState | null; author: { login: string; type: string } | null };
+
+// Loads the first 20 pull requests of one repository (by ID order). Rejects with "Access could not be verified" when withheld.
 export async function fetchWorkspacePullRequests(id: string, signal: AbortSignal) {
   const { data, errors } = await graphqlQuery<{
-    pullRequestEvidence: { nodes: { id: string; number: number; title: string; state: string; mergedAt: string | null }[]; withheld: number; hasNextPage: boolean };
+    pullRequestEvidence: { nodes: WorkspacePullRequest[]; withheld: number; hasNextPage: boolean };
   }>(`query WorkspacePullRequests($id: ID!) {
-    pullRequestEvidence(repositoryIds: [$id], first: 20) { nodes { id number title state mergedAt } withheld hasNextPage }
+    pullRequestEvidence(repositoryIds: [$id], first: 20) { nodes { id number title state url createdAt mergedAt reviewState author { login type } } withheld hasNextPage }
   }`, { id }, signal);
   if (!data || errors?.length) throw new Error("Could not load pull requests");
   if (data.pullRequestEvidence.withheld) throw new Error("Access could not be verified");
   return data.pullRequestEvidence;
+}
+
+export type AttentionKind = "pr_awaiting_review" | "issue_no_response" | "stale_issue";
+// since: when the item was opened, or for stale_issue when it was last updated (RFC 3339).
+export type AttentionItem = { kind: AttentionKind; repositoryId: string; fullName: string; number: number; title: string; url: string; since: string };
+export type AssignedIssue = { repositoryId: string; fullName: string; number: number; title: string; url: string; updatedAt: string };
+// Totals, lists and the trend cover only repositoriesCounted; repositoriesSyncing are left out (never zero);
+// withheld counts selected repositories that could not be shown, without naming them. Lists hold at most 25 rows.
+export type CrossRepositoryOverview = {
+  days: MetricWindow;
+  windowStart: string;
+  now: string;
+  repositoriesCounted: number;
+  repositoriesSyncing: number;
+  withheld: number;
+  retryAt: string | null;
+  openIssues: CountMetric;
+  reviewBacklog: CountMetric;
+  needsAttention: AttentionItem[];
+  assignedToMe: AssignedIssue[];
+  daily: { day: string; issuesOpened: number | null; pullRequestsMerged: number | null }[];
+};
+
+// Summarizes all of the viewer's selected repositories for one window. Rejects with "Access could not be verified"
+// when access changed during the read (retry), or "Could not load the overview" on any other error.
+export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: AbortSignal) {
+  const coverage = "covered reason through";
+  const { data, errors } = await graphqlQuery<{ crossRepositoryOverview: CrossRepositoryOverview | null }>(`query CrossRepositoryOverview($days: Int! = 30) {
+    crossRepositoryOverview(days: $days) {
+      days windowStart now repositoriesCounted repositoriesSyncing withheld retryAt
+      openIssues { value coverage { ${coverage} } }
+      reviewBacklog { value coverage { ${coverage} } }
+      needsAttention { kind repositoryId fullName number title url since }
+      assignedToMe { repositoryId fullName number title url updatedAt }
+      daily { day issuesOpened pullRequestsMerged }
+    }
+  }`, { days }, signal);
+  if (errors?.some(error => error.extensions?.code === "ACCESS_UNVERIFIED")) {
+    throw new Error("Access could not be verified");
+  }
+  if (!data?.crossRepositoryOverview || errors?.length) throw new Error("Could not load the overview");
+  return data.crossRepositoryOverview;
 }

@@ -19,7 +19,9 @@ type IssueConnection { nodes: [Issue!]!, endCursor: ID, hasNextPage: Boolean!, w
 type Query { viewer: Viewer, selectedRepositories(first: Int! = 20, after: ID): RepositoryConnection!, repository(id: ID!): Repository, issues(repositoryIds: [ID!]!, first: Int! = 20, after: ID): IssueConnection! }
 
 type EvidenceActor { id: ID!, login: String!, type: String! }
-type PullRequestEvidence { id: ID!, repositoryId: ID!, number: Int!, title: String!, state: String!, url: String!, createdAt: String!, updatedAt: String!, closedAt: String, mergedAt: String, author: EvidenceActor }
+# reviewState: "merged", "closed", or for an open PR "awaiting_review", "commented", "approved" or "changes_requested" from each human
+# non-author reviewer's latest approval or change request (docs/metrics-definitions.md 5.7); null while that open PR's review history is not imported.
+type PullRequestEvidence { id: ID!, repositoryId: ID!, number: Int!, title: String!, state: String!, url: String!, createdAt: String!, updatedAt: String!, closedAt: String, mergedAt: String, author: EvidenceActor, reviewState: String }
 type ReviewEvidence { id: ID!, repositoryId: ID!, pullRequestId: ID!, state: String!, body: String!, url: String!, submittedAt: String!, author: EvidenceActor }
 type CommentEvidence { id: ID!, repositoryId: ID!, issueNumber: Int!, body: String!, url: String!, createdAt: String!, updatedAt: String!, author: EvidenceActor }
 type PullRequestEvidenceConnection { nodes: [PullRequestEvidence!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
@@ -47,7 +49,7 @@ scalar Int64
 type MetricCoverage { covered: Boolean!, reason: String, through: Time }
 type MetricCount { value: Int64, coverage: MetricCoverage! }
 type MetricMedian { seconds: Int64, sampleSize: Int64, coverage: MetricCoverage! }
-type MetricContributor { login: String!, pullRequestsOpened: Int64!, reviewsSubmitted: Int64! }
+type MetricContributor { login: String!, isBot: Boolean!, pullRequestsOpened: Int64!, reviewsSubmitted: Int64!, commentsCreated: Int64! }
 type MetricActor { login: String!, isBot: Boolean! }
 type MetricTimelineEntry { kind: String!, occurredAt: Time!, sourceId: Int64!, actor: MetricActor, title: String!, label: String, number: Int64, url: String! }
 type MetricTimelineCoverage { pullRequestMerged: MetricCoverage!, releasePublished: MetricCoverage!, issueOpened: MetricCoverage!, issueEvents: MetricCoverage! }
@@ -86,4 +88,27 @@ type RepositoryOverview {
   timeline: [MetricTimelineEntry!]!
   timelineCoverage: MetricTimelineCoverage!
   daily: [MetricDailyPoint!]!
+}
+
+# All of the viewer's selected repositories (at most 100) for one 7/30/90-day UTC window, using repositoryOverview's metric definitions.
+# repositoriesCounted are fully covered and summed; repositoriesSyncing are left out of every total, list and trend (never zero);
+# withheld counts selected repositories that are inaccessible or unverified, without naming them (retryAt when rate limited).
+# reviewBacklog sums unreviewedOpenPullRequests. kind is "pr_awaiting_review", "issue_no_response" or "stale_issue".
+extend type Query { crossRepositoryOverview(days: Int! = 30): CrossRepositoryOverview }
+type AttentionItem { kind: String!, repositoryId: ID!, fullName: String!, number: Int64!, title: String!, url: String!, since: Time! }
+type AssignedIssue { repositoryId: ID!, fullName: String!, number: Int64!, title: String!, url: String!, updatedAt: Time! }
+type CrossDailyPoint { day: Time!, issuesOpened: Int64, pullRequestsMerged: Int64 }
+type CrossRepositoryOverview {
+  days: Int!
+  windowStart: Time!
+  now: Time!
+  repositoriesCounted: Int!
+  repositoriesSyncing: Int!
+  withheld: Int!
+  retryAt: String
+  openIssues: MetricCount!
+  reviewBacklog: MetricCount!
+  needsAttention: [AttentionItem!]!
+  assignedToMe: [AssignedIssue!]!
+  daily: [CrossDailyPoint!]!
 }

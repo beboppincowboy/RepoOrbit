@@ -32,3 +32,17 @@ models:
     model: github.com/repoorbit/repoorbit/backend/internal/analytics.TimelineCoverage
   MetricDailyPoint:
     model: github.com/repoorbit/repoorbit/backend/internal/analytics.DailyPoint
+  CrossRepositoryOverview:
+    model: github.com/repoorbit/repoorbit/backend/graphql/model.CrossRepositoryOverview
+  AttentionItem:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.AttentionItem
+    fields:
+      repositoryId:
+        resolver: true
+  AssignedIssue:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.AssignedIssue
+    fields:
+      repositoryId:
+        resolver: true
+  CrossDailyPoint:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.CrossDailyPoint

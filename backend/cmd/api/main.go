@@ -42,7 +42,7 @@ func main() {
 	defer pool.Close()
 	queries := db.New(pool)
 	authHandler := &auth.Handler{Demo: cfg.Demo, AppURL: cfg.AppURL}
-	resolver := &graph.Resolver{Queries: queries, Demo: cfg.Demo}
+	resolver := &graph.Resolver{Queries: queries, Demo: cfg.Demo, DemoPool: pool}
 	var repoAPI, webhooks http.Handler
 	if !cfg.Demo {
 		gh := githubapp.New(cfg.ClientID, cfg.ClientSecret, cfg.GitHubURL, cfg.GitHubAPIURL, cfg.AppURL+"/auth/github/callback")

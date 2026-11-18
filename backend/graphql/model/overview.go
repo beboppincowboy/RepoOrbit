@@ -9,3 +9,10 @@ type RepositoryOverview struct {
 	SyncState string
 	Activity  *ActivityStatus
 }
+
+// CrossRepositoryOverview adds the count of withheld selected repositories to the metrics, under the same access fence.
+type CrossRepositoryOverview struct {
+	*analytics.CrossOverview
+	Withheld int
+	RetryAt  *string
+}

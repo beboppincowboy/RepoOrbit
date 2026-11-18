@@ -57,9 +57,29 @@ func TestRepositoryMetrics(t *testing.T) {
 	if out.IssuesReopened.Value != nil || *out.IssuesReopened.Coverage.Reason != ReasonHistoricalGap {
 		t.Fatalf("expected unknown reopen count: %+v", out.IssuesReopened)
 	}
-	if len(out.Daily) != 7 || len(out.Contributors) != 2 || len(out.Timeline) != 4 ||
-		out.Timeline[0].Kind != "issue_opened" || out.Contributors[1].Login != "reviewer" {
-		t.Fatalf("unexpected daily, contributors, or timeline: %+v", out)
+	if len(out.Daily) != 7 || len(out.Timeline) != 4 || out.Timeline[0].Kind != "issue_opened" {
+		t.Fatalf("unexpected daily or timeline: %+v", out)
+	}
+	// Humans first, then bots; comments count only for PR authors and reviewers, in the window, in this repository.
+	wantContributors := []Contributor{
+		{Login: "reviewer", ReviewsSubmitted: 1, CommentsCreated: 2},
+		{Login: "author", PullRequestsOpened: 1, CommentsCreated: 1},
+		{Login: "bot", IsBot: true, PullRequestsOpened: 1, ReviewsSubmitted: 1, CommentsCreated: 1},
+	}
+	if len(out.Contributors) != len(wantContributors) {
+		t.Fatalf("contributors: %+v", out.Contributors)
+	}
+	for i, want := range wantContributors {
+		if out.Contributors[i] != want {
+			t.Errorf("contributor %d: got %+v, want %+v", i, out.Contributors[i], want)
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE activity_children SET watermark=NULL WHERE resource='comments' AND parent_id=6`); err != nil {
+		t.Fatal(err)
+	}
+	out = load()
+	if len(out.Contributors) != 0 || *out.ContributorsCoverage.Reason != ReasonChildrenIncomplete || out.ActiveContributors.Value == nil {
+		t.Fatalf("missing PR comment history must hide only the contributor list: %+v", out)
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM activity_children WHERE resource='reviews' AND parent_id=101`); err != nil {
 		t.Fatal(err)

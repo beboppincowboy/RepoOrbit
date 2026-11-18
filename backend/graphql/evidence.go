@@ -98,7 +98,23 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 	if len(p.ids) == 0 {
 		return out, nil
 	}
-	rows, err := r.RepoAccess.Pool.Query(ctx, `SELECT source_id,repository_id,number,title,state,html_url,created_at,updated_at,closed_at,merged_at,author_id,author_login,author_type FROM activity_pull_requests WHERE repository_id=ANY($1) AND source_id>$2 ORDER BY source_id LIMIT $3`, p.ids, p.after, p.n+1)
+	// review_state (docs/metrics-definitions.md 5.7): qualifying reviews are the same as for the review backlog; each
+	// reviewer's latest APPROVED or CHANGES_REQUESTED decides; null while an open PR's review history has not converged.
+	rows, err := r.RepoAccess.Pool.Query(ctx, `SELECT p.source_id,p.repository_id,p.number,p.title,p.state,p.html_url,p.created_at,p.updated_at,p.closed_at,p.merged_at,p.author_id,p.author_login,p.author_type,
+	  CASE WHEN p.merged_at IS NOT NULL THEN 'merged' WHEN p.state <> 'open' THEN 'closed'
+	    WHEN NOT EXISTS (SELECT 1 FROM activity_children c WHERE c.repository_id=p.repository_id AND c.resource='reviews' AND c.parent_id=p.source_id AND c.watermark IS NOT NULL) THEN NULL
+	    WHEN 'CHANGES_REQUESTED' = ANY(d.latest) THEN 'changes_requested' WHEN 'APPROVED' = ANY(d.latest) THEN 'approved'
+	    WHEN d.reviewed THEN 'commented' ELSE 'awaiting_review' END
+	  FROM activity_pull_requests p
+	  CROSS JOIN LATERAL (
+	    SELECT EXISTS (SELECT 1 FROM activity_reviews r WHERE r.repository_id=p.repository_id AND r.pull_request_id=p.source_id AND r.submitted_at IS NOT NULL
+	        AND upper(r.state)<>'PENDING' AND r.author_id IS NOT NULL AND r.author_type<>'Bot' AND r.author_id IS DISTINCT FROM p.author_id) AS reviewed,
+	      ARRAY(SELECT DISTINCT ON (r.author_id) upper(r.state) FROM activity_reviews r
+	        WHERE r.repository_id=p.repository_id AND r.pull_request_id=p.source_id AND r.submitted_at IS NOT NULL AND upper(r.state) IN ('APPROVED','CHANGES_REQUESTED')
+	          AND r.author_id IS NOT NULL AND r.author_type<>'Bot' AND r.author_id IS DISTINCT FROM p.author_id
+	        ORDER BY r.author_id, r.submitted_at DESC, r.source_id DESC) AS latest
+	  ) d
+	  WHERE p.repository_id=ANY($1) AND p.source_id>$2 ORDER BY p.source_id LIMIT $3`, p.ids, p.after, p.n+1)
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
@@ -110,7 +126,8 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 		var title, state, url string
 		var created, updated time.Time
 		var closed, merged *time.Time
-		if err = rows.Scan(&id, &repo, &number, &title, &state, &url, &created, &updated, &closed, &merged, &aid, &login, &kind); err != nil {
+		var reviewState *string
+		if err = rows.Scan(&id, &repo, &number, &title, &state, &url, &created, &updated, &closed, &merged, &aid, &login, &kind, &reviewState); err != nil {
 			return nil, fmt.Errorf("database unavailable")
 		}
 		if len(out.Nodes) == p.n {
@@ -119,7 +136,7 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 		}
 		cursor := strconv.FormatInt(id, 10)
 		out.EndCursor = &cursor
-		out.Nodes = append(out.Nodes, &model.PullRequestEvidence{ID: cursor, RepositoryID: strconv.FormatInt(repo, 10), Number: int(number), Title: title, State: state, URL: url, CreatedAt: stamp(created), UpdatedAt: stamp(updated), ClosedAt: rfc3339(closed), MergedAt: rfc3339(merged), Author: actor(aid, login, kind)})
+		out.Nodes = append(out.Nodes, &model.PullRequestEvidence{ID: cursor, RepositoryID: strconv.FormatInt(repo, 10), Number: int(number), Title: title, State: state, URL: url, CreatedAt: stamp(created), UpdatedAt: stamp(updated), ClosedAt: rfc3339(closed), MergedAt: rfc3339(merged), Author: actor(aid, login, kind), ReviewState: reviewState})
 	}
 	if rows.Err() != nil {
 		return nil, fmt.Errorf("database unavailable")

@@ -12,11 +12,22 @@ import (
 
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
+	"github.com/repoorbit/repoorbit/backend/internal/analytics"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/platform"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
+
+// RepositoryID is the resolver for the repositoryId field.
+func (r *assignedIssueResolver) RepositoryID(ctx context.Context, obj *analytics.AssignedIssue) (string, error) {
+	return strconv.FormatInt(obj.RepositoryID, 10), nil
+}
+
+// RepositoryID is the resolver for the repositoryId field.
+func (r *attentionItemResolver) RepositoryID(ctx context.Context, obj *analytics.AttentionItem) (string, error) {
+	return strconv.FormatInt(obj.RepositoryID, 10), nil
+}
 
 // Viewer is the resolver for the viewer field.
 func (r *queryResolver) Viewer(ctx context.Context) (*model.Viewer, error) {
@@ -253,7 +264,20 @@ func (r *queryResolver) RepositoryOverview(ctx context.Context, id string, days 
 	return r.repositoryOverview(ctx, id, days)
 }
 
+// CrossRepositoryOverview is the resolver for the crossRepositoryOverview field.
+func (r *queryResolver) CrossRepositoryOverview(ctx context.Context, days int) (*model.CrossRepositoryOverview, error) {
+	return r.crossRepositoryOverview(ctx, days)
+}
+
+// AssignedIssue returns AssignedIssueResolver implementation.
+func (r *Resolver) AssignedIssue() AssignedIssueResolver { return &assignedIssueResolver{r} }
+
+// AttentionItem returns AttentionItemResolver implementation.
+func (r *Resolver) AttentionItem() AttentionItemResolver { return &attentionItemResolver{r} }
+
 // Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 
+type assignedIssueResolver struct{ *Resolver }
+type attentionItemResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
