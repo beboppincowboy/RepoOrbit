@@ -53,13 +53,14 @@ type RepoFetcher interface {
 
 // Deps are the collaborators of the metadata refresh handler.
 type Deps struct {
-	Pool      *pgxpool.Pool
-	GitHub    RepoFetcher
-	Tokens    TokenSource
-	Access    AccessChecker
-	Clock     jobs.Clock
-	Inventory AppInventory
-	AppKey    *rsa.PrivateKey
+	Pool                    *pgxpool.Pool
+	GitHub                  RepoFetcher
+	Tokens                  TokenSource
+	Access                  AccessChecker
+	Clock                   jobs.Clock
+	Inventory               AppInventory
+	AppKey                  *rsa.PrivateKey
+	InstallationCredentials *githubapp.InstallationCredentials
 }
 
 // Register wires the handler into a worker.

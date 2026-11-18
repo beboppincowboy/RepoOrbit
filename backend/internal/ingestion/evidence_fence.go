@@ -3,6 +3,7 @@ package ingestion
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
@@ -73,7 +74,18 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 			}
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
 		}
-		data, err := fetch(token, before.Repo.FullName)
+		fetchToken := token
+		installation := before.InstallationID
+		if d.InstallationCredentials != nil && installation != 0 {
+			fetchToken, err = d.InstallationCredentials.AccessToken(ctx, installation)
+			if err != nil {
+				return d.installationFetchError(installation, fetchToken, err)
+			}
+		}
+		data, err := fetch(fetchToken, before.Repo.FullName)
+		if err != nil && fetchToken != token {
+			return d.installationFetchError(installation, fetchToken, err)
+		}
 		if err != nil {
 			var api *githubapp.APIError
 			if errors.As(err, &api) && api.RateLimited() {
@@ -154,4 +166,15 @@ func tightenToPrivate(ctx context.Context, fence jobs.ClaimFence, repoID int64) 
 		}
 		return accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeRepository, repoID)
 	})
+}
+
+func (d *Deps) installationFetchError(id int64, token string, err error) error {
+	var api *githubapp.APIError
+	if errors.As(err, &api) {
+		d.InstallationCredentials.Observe(id, token, api)
+		if api.RateLimited() {
+			return &jobs.Defer{RetryAt: api.RetryAt, Reason: CodeRateLimited}
+		}
+	}
+	return fmt.Errorf("installation activity fetch: %w", err)
 }

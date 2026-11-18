@@ -3,11 +3,13 @@ package graph
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/handler/extension"
 	"github.com/99designs/gqlgen/graphql/handler/transport"
+	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/gqlerror"
 )
@@ -90,6 +92,11 @@ func Server(resolver *Resolver) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-		srv.ServeHTTP(w, r)
+		srv.ServeHTTP(w, r.WithContext(repositories.WithRequestVisibility(r.Context())))
 	})
+}
+
+// Access-checked GraphQL reads can require several sequential GitHub requests.
+func withReadDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, 12*time.Second)
 }

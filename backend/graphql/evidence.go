@@ -9,7 +9,6 @@ import (
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
-	"github.com/repoorbit/repoorbit/backend/internal/platform"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
@@ -88,7 +87,7 @@ func actor(id *int64, login, kind *string) *model.EvidenceActor {
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
 func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first int, after *string, newestFirst bool) (*model.PullRequestEvidenceConnection, error) {
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	p, err := r.evidenceAccess(ctx, ids, first, after)
 	if err != nil {
@@ -171,7 +170,7 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 	return out, nil
 }
 func (r *queryResolver) reviews(ctx context.Context, ids []string, first int, after *string) (*model.ReviewEvidenceConnection, error) {
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	p, err := r.evidenceAccess(ctx, ids, first, after)
 	if err != nil {
@@ -216,7 +215,7 @@ func (r *queryResolver) reviews(ctx context.Context, ids []string, first int, af
 	return out, nil
 }
 func (r *queryResolver) comments(ctx context.Context, ids []string, first int, after *string) (*model.CommentEvidenceConnection, error) {
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	p, err := r.evidenceAccess(ctx, ids, first, after)
 	if err != nil {
@@ -262,7 +261,7 @@ func (r *queryResolver) comments(ctx context.Context, ids []string, first int, a
 }
 
 func (r *queryResolver) releases(ctx context.Context, ids []string, first int, after *string) (*model.ReleaseEvidenceConnection, error) {
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	p, err := r.evidenceAccess(ctx, ids, first, after)
 	if err != nil {
@@ -310,7 +309,7 @@ func (r *queryResolver) releases(ctx context.Context, ids []string, first int, a
 }
 
 func (r *queryResolver) issueEvents(ctx context.Context, ids []string, first int, after *string) (*model.IssueEventEvidenceConnection, error) {
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	p, err := r.evidenceAccess(ctx, ids, first, after)
 	if err != nil {

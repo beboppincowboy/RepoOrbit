@@ -10,7 +10,6 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/analytics"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
-	"github.com/repoorbit/repoorbit/backend/internal/platform"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
@@ -18,7 +17,7 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 	if err := analytics.ValidateDays(days); err != nil {
 		return nil, err
 	}
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 
 	clock := r.Clock
@@ -81,7 +80,7 @@ func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (
 	if err := analytics.ValidateDays(days); err != nil {
 		return nil, err
 	}
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	clock := r.Clock
 	if clock == nil {

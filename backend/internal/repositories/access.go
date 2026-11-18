@@ -56,6 +56,13 @@ type Service struct {
 	entries map[int64]*entry
 }
 
+type requestVisibilityKey struct{}
+
+// WithRequestVisibility shares one fresh visibility lookup across reads in a GraphQL request.
+func WithRequestVisibility(ctx context.Context) context.Context {
+	return context.WithValue(ctx, requestVisibilityKey{}, &entry{})
+}
+
 type entry struct {
 	mu   sync.Mutex // held during a fetch so concurrent callers share it instead of repeating it
 	set  *visibleSet
@@ -67,6 +74,7 @@ type entry struct {
 // their installations (user access intersected with installation). Incomplete means some may be missing.
 type visibleSet struct {
 	repos         map[int64]githubapp.Repo
+	installations map[int64]int64
 	complete      bool
 	tokenRejected bool      // GitHub answered 401 to the user's token
 	retryAt       time.Time // rate limited until
@@ -77,8 +85,9 @@ type visibleSet struct {
 
 // Decision is the outcome of one access check. The zero value means denied (not found, or the user was signed out).
 type Decision struct {
-	Allowed bool
-	Repo    githubapp.Repo // current GitHub metadata; meaningful only when Allowed
+	Allowed        bool
+	Repo           githubapp.Repo // current GitHub metadata; meaningful only when Allowed
+	InstallationID int64          // viewer-visible installation covering Repo, when present
 	// Unverified means access could not be checked (upstream error, rate limit). Content must be withheld,
 	// but this is not a denial. RetryAt is non-zero when a rate limit says when to try again.
 	Unverified bool
@@ -138,6 +147,10 @@ func (s *Service) visible(ctx context.Context, userID int64, token string, fresh
 	e := s.entry(userID)
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	request, _ := ctx.Value(requestVisibilityKey{}).(*entry)
+	if request != nil && request.set != nil && s.fenceHolds(ctx, request.snap) {
+		return request.set
+	}
 	if e.set != nil && e.set.retryAt.After(s.now()) && s.fenceHolds(ctx, e.snap) {
 		return &visibleSet{repos: map[int64]githubapp.Repo{}, complete: false, retryAt: e.set.retryAt}
 	}
@@ -149,6 +162,9 @@ func (s *Service) visible(ctx context.Context, userID int64, token string, fresh
 		set, selfBump := s.fetchVisible(ctx, userID, token, snap)
 		if snapErr == nil && s.fenceHolds(ctx, snap) {
 			e.set, e.at, e.snap = set, s.now(), snap
+			if request != nil {
+				request.set, request.snap = set, snap
+			}
 			return set
 		}
 		if !selfBump {
@@ -169,7 +185,7 @@ func (s *Service) fenceHolds(ctx context.Context, snap accessfence.Snapshot) boo
 
 // ponytail: the lock is held across several HTTP calls; fine for one local user, switch to singleflight if it contends.
 func (s *Service) fetchVisible(ctx context.Context, userID int64, token string, snap accessfence.Snapshot) (*visibleSet, bool) {
-	set := &visibleSet{repos: map[int64]githubapp.Repo{}, complete: true}
+	set := &visibleSet{repos: map[int64]githubapp.Repo{}, installations: map[int64]int64{}, complete: true}
 	fail := func(err error) {
 		set.complete = false
 		var apiErr *githubapp.APIError
@@ -178,11 +194,6 @@ func (s *Service) fetchVisible(ctx context.Context, userID int64, token string, 
 			if apiErr.RateLimited() {
 				set.retryAt = apiErr.RetryAt
 			}
-		}
-	}
-	add := func(repos []githubapp.Repo) {
-		for _, r := range repos {
-			set.repos[r.ID] = r
 		}
 	}
 	owned, ok, err := collect(func(p int) ([]githubapp.Repo, bool, error) {
@@ -212,7 +223,10 @@ func (s *Service) fetchVisible(ctx context.Context, userID int64, token string, 
 		repos, ok, err := collect(func(p int) ([]githubapp.Repo, bool, error) {
 			return s.GitHub.FetchInstallationRepos(ctx, token, in.ID, p)
 		})
-		add(repos)
+		for _, repo := range repos {
+			set.repos[repo.ID] = repo
+			set.installations[repo.ID] = in.ID
+		}
 		if err != nil {
 			fail(err)
 		} else if !ok {
@@ -335,7 +349,7 @@ func (s *Service) Check(ctx context.Context, userID int64, ids []int64, fresh bo
 		case verdictForAll != nil:
 			out[id] = *verdictForAll
 		case ok:
-			out[id] = Decision{Allowed: true, Repo: r}
+			out[id] = Decision{Allowed: true, Repo: r, InstallationID: set.installations[id]}
 		case set.complete:
 			// ponytail: serial lookups, at most one page of them per TTL; batch or fan out if a page of follows gets slow.
 			out[id] = s.outside(ctx, userID, token, set, id)
@@ -384,7 +398,7 @@ func (s *Service) CheckOne(ctx context.Context, userID, id int64, fresh bool) De
 		return Decision{Unverified: true, RetryAt: set.retryAt}
 	}
 	if r, ok := set.lookup(id); ok {
-		return Decision{Allowed: true, Repo: r}
+		return Decision{Allowed: true, Repo: r, InstallationID: set.installations[id]}
 	}
 	return s.lookupOne(ctx, userID, token, set, id)
 }
