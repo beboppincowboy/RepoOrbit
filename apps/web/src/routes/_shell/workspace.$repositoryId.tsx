@@ -1,8 +1,12 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState, type ReactNode } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { describeActivity, SyncStatus } from "@/components/sync-status";
-import { Button } from "@/components/ui/button";
-import { fetchRepositoryOverview, fetchWorkspacePullRequests, type MetricWindow } from "@/lib/api";
+import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
+import { LineChart, type ChartSeries } from "@/components/line-chart";
+import { describeActivity, describeMetadata, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { selectedRows, useSelectedRepositories } from "@/lib/selected-repositories";
+import { fetchRepositoryOverview, fetchWorkspacePullRequests, type ActivityResourceStatus, type MetricWindow, type ReviewState, type WorkspacePullRequest } from "@/lib/api";
 
 const tabs = { overview: "Overview", pulls: "Pull Requests", contributors: "Contributors", activity: "Activity" } as const;
 type Tab = keyof typeof tabs;
@@ -17,15 +21,55 @@ export const Route = createFileRoute("/_shell/workspace/$repositoryId")({
 });
 
 type Overview = NonNullable<Awaited<ReturnType<typeof fetchRepositoryOverview>>>;
-const card = "rounded-xl border border-border bg-card";
-const muted = "text-xs text-muted-foreground";
-const date = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", timeZone: "UTC" });
-const coverageLabels: Record<string, string> = {
-  not_synchronized: "Awaiting data",
-  window_before_boundary: "Window predates imported history",
-  historical_gap: "Issue event history is incomplete",
-  children_incomplete: "Related activity is still importing",
+type Coverage = Overview["openIssues"]["coverage"];
+type Entry = Overview["timeline"][number];
+const accessError = "Access could not be verified";
+
+// Prototype D2 classes, as Tailwind strings.
+const card = "rounded-xl border border-border bg-card min-w-0 min-h-0";
+const muted = "text-muted-foreground";
+const lrow = "flex items-center gap-3 border-b border-border px-3 py-2.5 last:border-b-0";
+const mini = "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-[7px] text-[11px]";
+const smallBtn = buttonVariants({ variant: "outline", size: "sm" });
+
+const svg = (size: number, d: ReactNode) => <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" className="shrink-0">{d}</svg>;
+const icons = {
+  repo: svg(16, <path d="M3 2.5h8.5v10H4.5A1.5 1.5 0 0 1 3 11zM3 11a1.5 1.5 0 0 1 1.5-1.5h7" fill="none" stroke="currentColor" strokeWidth="1.4" />),
+  pr: svg(14, <><circle cx="4" cy="3.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.4" /><circle cx="4" cy="12.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.4" /><circle cx="12" cy="12.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M4 5.3v5.4M12 10.7V6a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" strokeWidth="1.4" /></>),
+  issue: svg(14, <><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.4" /><circle cx="8" cy="8" r="1.4" fill="currentColor" /></>),
+  tag: svg(14, <><path d="M2.5 2.5h5.3l5.7 5.7-5.3 5.3-5.7-5.7z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /><circle cx="5.5" cy="5.5" r="1" fill="currentColor" /></>),
+  ext: svg(12, <path d="M9 3h4v4M13 3L7 9M11 9.5V13H3V5h3.5" fill="none" stroke="currentColor" strokeWidth="1.5" />),
+  info: svg(14, <><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M8 7v4M8 5v.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></>),
 };
+const Ico = ({ children, tone = "bg-muted text-muted-foreground" }: { children: ReactNode; tone?: string }) =>
+  <span className={`grid size-7 shrink-0 place-items-center rounded-lg ${tone}`}>{children}</span>;
+
+const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+const stamp = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" });
+const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
+function ago(iso: string) {
+  const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  return minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.round(minutes / 60)}h ago` : `${Math.round(minutes / 1440)}d ago`;
+}
+// Prototype style: 45m, 4.1h, 11h, 2.3d.
+function duration(seconds: number | null) {
+  if (seconds === null) return null;
+  const hours = seconds / 3600;
+  if (hours < 1) return `${Math.round(seconds / 60)}m`;
+  if (hours < 48) return hours < 10 ? `${hours.toFixed(1)}h` : `${Math.round(hours)}h`;
+  return `${(hours / 24).toFixed(1)}d`;
+}
+// Links come from the API; only GitHub URLs are rendered as links.
+const githubHref = (url: string, fallback: string) => url.startsWith("https://github.com/") ? url : fallback;
+
+// KPI sub-line for an uncovered metric: [text, tone]. Partial reasons are amber like the prototype.
+const coverageReasons: Record<string, [string, string]> = {
+  not_synchronized: ["Awaiting data", muted],
+  window_before_boundary: ["Window predates imported history", "text-warning"],
+  historical_gap: ["Partial: issue event history incomplete", "text-warning"],
+  children_incomplete: ["Partial: reviews and comments importing", "text-warning"],
+};
+const coverageReason = (coverage: Coverage) => coverageReasons[coverage.reason ?? ""] ?? ["Coverage incomplete", "text-warning"];
 
 function RepositoryWorkspace() {
   const { repositoryId } = Route.useParams();
@@ -34,168 +78,276 @@ function RepositoryWorkspace() {
   const query = useQuery({
     queryKey: ["repositoryOverview", session.mode, session.user?.login, repositoryId, search.days],
     queryFn: ({ signal }) => fetchRepositoryOverview(repositoryId, search.days, signal),
-    staleTime: 0,
+    placeholderData: keepPreviousData,
     gcTime: 0,
+    refetchOnWindowFocus: true,
+    // Follow running or not-yet-started sync work; stop once it settles (reconciliation leaves settled streams "queued").
+    refetchInterval: ({ state }) => {
+      const display = state.data && !state.error ? syncDisplay({ syncState: state.data.syncState, activity: state.data.activity }) : null;
+      return display === "syncing" ? 3000 : display === "awaiting" ? 10000 : false;
+    },
   });
   const path = { to: Route.to, params: { repositoryId } } as const;
-
-  if (query.isPending) return <p role="status" className="p-5">Loading repository workspace…</p>;
-  if (query.isError || !query.data) return <div className={`${card} m-4 p-5`}>
-    <h1 className="font-semibold">{query.error?.message ?? "Repository unavailable"}</h1>
-    {query.isError && <Button className="mt-3" onClick={() => void query.refetch()}>Retry</Button>}
-  </div>;
   const overview = query.data;
+  const demo = session.mode === "demo";
+  // Metadata refresh state and the access check's retry time come from the selection list the shell already loads.
+  const row = selectedRows(useSelectedRepositories(session)).find(r => r.repo.id === repositoryId);
+  const retryAt = row?.detail ? (row.detail.state === "available" ? row.detail.issues.retryAt : row.detail.retryAt) : null;
+  const sync: SyncInput | null = overview ? {
+    syncState: overview.syncState,
+    activity: demo ? null : overview.activity,
+    metadataStatus: overview.syncState === "awaiting-sync" ? row?.repo.metadataStatus ?? null : null,
+    retryAt,
+  } : null;
+  const display = sync ? syncDisplay(sync) : null;
+
+  // Check access before rendering any data: a refetch that loses access keeps the last good data in the cache.
+  // Only real withholding hides the page; a paused metadata refresh also reads "Access unverified" but stays explained in Sync details.
+  if (query.error?.message === accessError || row?.detail?.state === "access-unverified") return <div className="flex h-full min-h-0 flex-col gap-3">
+    <section className={`${card} flex flex-none flex-wrap items-center gap-x-3 gap-y-2 p-4`}>
+      <Ico>{icons.repo}</Ico><h1 className="text-[19px] leading-[1.2]">Repository unavailable</h1>
+      <SyncStatus compact syncState="awaiting-sync" withheld={1} retryAt={retryAt} />
+      {retryAt && <span className={`text-xs ${muted}`}>GitHub rate limited the access check; next check after {clock.format(new Date(retryAt))}.</span>}
+    </section>
+    <div className="grid min-h-0 flex-1 place-items-center">
+      <div className={`${card} flex max-w-[440px] flex-col items-center gap-2.5 p-4 text-center`}>
+        <Ico tone="bg-destructive-soft text-destructive">{icons.info}</Ico>
+        <h2 className="text-base">Access could not be verified</h2>
+        <p className={`m-0 ${muted}`}>Protected content is hidden, not deleted.</p>
+        <Button onClick={() => void query.refetch()} disabled={query.isFetching}>Re-verify access</Button>
+      </div>
+    </div>
+  </div>;
+  if (query.isPending) return <p role="status" className={`${card} p-4`}>Loading repository workspace…</p>;
+  if (!overview || !sync) return <div role="alert" className={`${card} p-4`}>
+    <h1 className="text-base">{query.isError ? "Could not load repository analytics. Check that the local services are running." : "Repository unavailable"}</h1>
+    {query.isError && <Button className="mt-3" onClick={() => void query.refetch()} disabled={query.isFetching}>Retry</Button>}
+  </div>;
+
   const [owner, name] = overview.fullName.split("/");
   const github = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-  const unanswered = overview.issuesWithoutResponse.value;
-  const selectedClass = "rounded-full px-2.5 py-1 aria-[current=page]:bg-primary/10 aria-[current=page]:font-semibold aria-[current=page]:text-primary";
-  const coverage = [overview.firstResponseTime.coverage, overview.mergeTime.coverage, overview.openIssues.coverage, overview.pullRequestsMerged.coverage];
-  const missing = coverage.filter(item => !item.covered).length;
-  const syncDetails = session.mode === "demo" ? [] : describeActivity(overview.activity);
 
-  return <div className="flex h-full min-w-0 flex-col gap-3 overflow-y-auto text-sm">
-    <header className={`${card} sticky top-0 z-10 shrink-0 px-4 pt-3`}>
+  return <div className="flex h-full min-h-0 flex-col gap-3 max-[900px]:overflow-auto">
+    <section className={`${card} flex flex-none flex-col gap-2.5 px-4 pt-4`}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <span className="grid size-8 place-items-center rounded-lg bg-muted font-mono text-primary" aria-hidden="true">▤</span>
-        <div className="min-w-0 break-words"><p className={muted}>{owner} /</p><h1 className="text-xl leading-tight font-semibold">{name}</h1></div>
-        {session.mode !== "demo" && <a className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted" href={github}>View on GitHub ↗</a>}
-        <SyncStatus compact syncState={overview.syncState} activity={session.mode === "demo" ? null : overview.activity} />
-        {overview.activity.archived && <span className={muted}>Archived</span>}
-        <nav aria-label="Activity window" className="ml-auto flex rounded-full border border-border p-0.5 text-xs">
-          {windows.map(days => <Link key={days} {...path} search={{ ...search, days }} aria-current={search.days === days ? "page" : undefined} className={selectedClass}>{days}d</Link>)}
-        </nav>
+        <Ico>{icons.repo}</Ico>
+        <div className="min-w-0 break-words"><div className={`text-xs ${muted}`}>{owner} /</div><h1 className="text-[19px] leading-[1.2]">{name}</h1></div>
+        {!demo && <a className={smallBtn} href={github}>View on GitHub {icons.ext}</a>}
+        {demo ? <SyncStatus compact {...sync} /> : <SyncDetails sync={sync} repositoryId={repositoryId} />}
+        {overview.activity.archived && <span className={`${mini} border-border text-soft`}>Archived</span>}
+        <div role="group" aria-label="Time window" className="ml-auto inline-flex gap-0.5 rounded-full border border-border bg-card p-0.5">
+          {windows.map(days => <Link key={days} {...path} search={{ ...search, days }} aria-current={search.days === days ? "page" : undefined}
+            className="rounded-full px-[11px] py-[3px] text-xs text-muted-foreground aria-[current=page]:bg-primary-soft aria-[current=page]:font-semibold aria-[current=page]:text-primary">{days}d</Link>)}
+        </div>
       </div>
-      <nav aria-label="Workspace sections" className="mt-2 flex flex-wrap gap-x-4">
-        {(Object.keys(tabs) as Tab[]).map(tab => <Link key={tab} {...path} search={{ ...search, tab }}
-          aria-current={search.tab === tab ? "page" : undefined}
-          className="border-b-2 border-transparent py-2 text-muted-foreground aria-[current=page]:border-foreground aria-[current=page]:font-semibold aria-[current=page]:text-foreground">{tabs[tab]}</Link>)}
+      <nav aria-label="Workspace sections" className="flex flex-wrap gap-x-5 gap-y-0.5 border-b border-border">
+        {(Object.keys(tabs) as Tab[]).map(tab => <Link key={tab} {...path} search={{ ...search, tab }} aria-current={search.tab === tab ? "page" : undefined}
+          className="-mb-px border-b-2 border-transparent py-2 text-muted-foreground aria-[current=page]:border-foreground aria-[current=page]:font-semibold aria-[current=page]:text-foreground">{tabs[tab]}</Link>)}
       </nav>
-    </header>
+    </section>
+    {display && <Banner overview={overview} display={display} />}
+    {search.tab === "overview" && <OverviewTab overview={overview} days={search.days} recent={<Link {...path} search={{ ...search, tab: "activity" }} className={smallBtn}>All</Link>} github={github} />}
+    {search.tab === "pulls" && <PullRequests id={repositoryId} viewer={`${session.mode}:${session.user?.login}`} github={github} />}
+    {search.tab === "contributors" && <Contributors overview={overview} days={search.days} />}
+    {search.tab === "activity" && <section className={`${card} flex-1 overflow-auto`}><Timeline overview={overview} github={github} /></section>}
+  </div>;
+}
 
-    {missing > 0 && <p role="status" className={`rounded-lg border px-3 py-2 ${missing === coverage.length ? "border-border bg-muted text-muted-foreground" : "border-warning/25 bg-warning/10 text-warning"}`}>
-      {missing === coverage.length ? "Activity metrics are awaiting synchronized data." : "Partial coverage. Some metrics are unavailable for this window."}
-    </p>}
-    {search.tab === "overview" && <>
-      <section aria-label="Repository metrics" className="grid grid-cols-[repeat(auto-fit,minmax(min(150px,100%),1fr))] gap-3">
-        <Metric label="Median first response" value={duration(overview.firstResponseTime.seconds)} coverage={overview.firstResponseTime.coverage} detail={unanswered === null ? undefined : `${unanswered} without a response`} />
-        <Metric label="Median merge time" value={duration(overview.mergeTime.seconds)} coverage={overview.mergeTime.coverage} detail={sample(overview.mergeTime.sampleSize)} />
-        <Metric label="Open issues" value={overview.openIssues.value} coverage={overview.openIssues.coverage} detail={overview.staleOpenIssues.value === null ? undefined : `${overview.staleOpenIssues.value} stale`} />
-        <Metric label="Merged PRs" value={overview.pullRequestsMerged.value} coverage={overview.pullRequestsMerged.coverage} detail={`Last ${search.days} days`} />
+// The header pill opens the full sync status (same copy as SyncStatus: metadata and activity lines) and Refresh activity.
+function SyncDetails({ sync, repositoryId }: { sync: SyncInput; repositoryId: string }) {
+  const [open, setOpen] = useState(false);
+  const metadata = sync.metadataStatus ? describeMetadata(sync.metadataStatus) : [];
+  const activity = sync.activity ? [...(sync.activity.synchronized ? [] : [sync.activity.message]), ...describeActivity(sync.activity)] : [];
+  const lines = (label: string, items: string[]) => items.length > 0 && <ul aria-label={label} className="m-0 list-none space-y-1 p-0 text-[13px] text-muted-foreground">{items.map(line => <li key={line}>{line}</li>)}</ul>;
+  return <div className="relative" onKeyDown={e => { if (e.key === "Escape") setOpen(false); }}>
+    <button type="button" aria-expanded={open} aria-controls="sync-details" aria-label="Sync details" onClick={() => setOpen(!open)} className="flex items-center gap-1 rounded-full">
+      <SyncStatus compact {...sync} /><span aria-hidden="true" className={`text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`}>›</span>
+    </button>
+    {open && <div id="sync-details" role="region" aria-label="Sync status" className={`${card} absolute top-full left-0 z-20 mt-2 flex max-h-[60vh] w-[min(420px,80vw)] flex-col gap-2 overflow-auto p-3 shadow-[0_18px_44px_rgba(15,23,42,.16)]`}>
+      {lines("Metadata status", metadata)}
+      {lines("Activity status", activity)}
+      {sync.retryAt && <p className="m-0 text-[13px] text-warning">GitHub rate limited the access check; next check after {clock.format(new Date(sync.retryAt))}.</p>}
+      {sync.activity && <RefreshActivityButton repositoryId={repositoryId} />}
+    </div>}
+  </div>;
+}
+
+const metricsOf = (o: Overview) => [o.firstResponseTime.coverage, o.mergeTime.coverage, o.openIssues.coverage, o.pullRequestsMerged.coverage, o.contributorsCoverage];
+const streamNames: [string, (a: Overview["activity"]) => ActivityResourceStatus | null | undefined][] = [
+  ["issues", a => a.issues], ["pull requests", a => a.pullRequests], ["releases", a => a.releases], ["issue events", a => a.issueEvents?.traversal],
+];
+const list = (items: string[]) => items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+
+// One state banner under the header, as in the prototype: rate limited, syncing/awaiting, stopped, or partial coverage.
+function Banner({ overview, display }: { overview: Overview; display: string }) {
+  const a = overview.activity;
+  const note = (text: ReactNode, warn = true) => <div role="status" className={`flex flex-none items-start gap-2.5 rounded-[10px] border px-3 py-2.5 text-[13px] ${warn ? "border-warning bg-warning-soft" : "border-border bg-card"}`}>
+    <span className="mt-[3px]">{icons.info}</span><span>{text}</span>
+  </div>;
+  const streams = streamNames.map(([label, get]) => [label, get(a)] as const).filter((s): s is readonly [string, ActivityResourceStatus] => !!s[1]);
+  const uncovered = metricsOf(overview).filter(c => !c.covered);
+  if (display === "rate-limited") {
+    const last = streams.map(([, s]) => s.lastSuccessAt).filter((t): t is string => !!t).sort().at(-1);
+    const retry = streams.filter(([, s]) => s.failureCode === "rate_limited").map(([, s]) => s.nextAttemptAt).filter((t): t is string => !!t).sort()[0];
+    return note(`Rate limited. Showing the last good data from ${last ? ago(last) : "an earlier sync"}${retry ? `; next retry ${clock.format(new Date(retry))}` : ""}.`);
+  }
+  if (display === "syncing") {
+    const running = streams.filter(([, s]) => s.jobState === "running").map(([label]) => label);
+    return note(`Syncing ${running.length ? list(running) : "activity"}. Figures update as data arrives.`, false);
+  }
+  if (display === "stopped") return note("Synchronization stopped after repeated failures; an operator must requeue it. Showing the last good data.");
+  if (display === "awaiting" || display === "not-synchronized" || (uncovered.length && uncovered.every(c => c.reason === "not_synchronized"))) {
+    return note("First sync has not started. Figures show — until data exists.", false);
+  }
+  if (uncovered.length || a.issueEvents?.historicalGap) {
+    const reasons = new Set(uncovered.map(c => c.reason));
+    const parts = [
+      reasons.has("historical_gap") || a.issueEvents?.historicalGap ? (overview.eventsCoveredFrom ? `Issue events before ${day.format(new Date(overview.eventsCoveredFrom))} were never recorded` : "Issue event history is not recorded yet") : "",
+      reasons.has("children_incomplete") ? `Reviews and comments are still importing${a.reviews?.pendingChildren ? ` (${a.reviews.pendingChildren} pull requests pending)` : ""}` : "",
+      reasons.has("not_synchronized") ? "Some activity has not finished its first import" : "",
+    ].filter(Boolean);
+    return note(<><b className="font-semibold">Partial coverage.</b> {parts.length ? `${parts.join("; ")}.` : "Some figures are not covered for this window."}</>);
+  }
+  return null;
+}
+
+function Kpi({ label, value, coverage, detail, tone = muted }: { label: string; value: ReactNode; coverage: Coverage; detail: ReactNode; tone?: string }) {
+  const [reason, reasonTone] = coverageReason(coverage);
+  return <div role="group" aria-label={label} className={`${card} px-4 py-3`}>
+    <small className={`flex justify-between text-xs ${muted}`}>{label}</small>
+    <b className="num block text-[26px] font-semibold leading-[1.25] tracking-[-.02em]">{coverage.covered && value !== null ? value : "—"}</b>
+    <span className={`text-xs ${coverage.covered ? tone : reasonTone}`}>{coverage.covered ? detail : reason}</span>
+  </div>;
+}
+
+function OverviewTab({ overview: o, days, recent, github }: { overview: Overview; days: MetricWindow; recent: ReactNode; github: string }) {
+  const chart = useMemo(() => ({
+    days: o.daily.map(d => d.day),
+    series: [
+      { name: "Issues opened", unit: "opened", color: "--primary", values: o.daily.map(d => d.issuesOpened) },
+      { name: "PRs merged", unit: "merged", color: "--chart-2", values: o.daily.map(d => d.pullRequestsMerged) },
+    ] satisfies ChartSeries[],
+  }), [o.daily]);
+  return <>
+    <section aria-label="Repository metrics" className="grid flex-none grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-3">
+      <Kpi label="Median first response" value={duration(o.firstResponseTime.seconds)} coverage={o.firstResponseTime.coverage} detail="Issue responsiveness" tone="text-success-foreground" />
+      <Kpi label="Median merge time" value={duration(o.mergeTime.seconds)} coverage={o.mergeTime.coverage} detail="Merged PRs" />
+      <Kpi label="Open issues" value={o.openIssues.value} coverage={o.openIssues.coverage} detail={o.staleOpenIssues.value === null ? "" : `${o.staleOpenIssues.value} stale`} />
+      <Kpi label="Merged PRs" value={o.pullRequestsMerged.value} coverage={o.pullRequestsMerged.coverage} detail={`last ${days} days`} />
+    </section>
+    <div className="flex min-h-0 flex-1 gap-3 max-[900px]:flex-col">
+      <section className={`${card} flex flex-[999_1_520px] flex-col gap-2 p-4 max-[900px]:min-h-[280px]`}>
+        <div className="flex flex-wrap justify-between gap-2"><h2 className="text-sm">Opened vs merged</h2>
+          <div className={`flex flex-wrap gap-3.5 text-xs ${muted}`}>{chart.series.map(s => <span key={s.name}>
+            <i className="mr-[5px] inline-block size-2 rounded-full" style={{ background: `var(${s.color})` }} />{s.name}{s.values.every(v => v === null) && " (not imported yet)"}
+          </span>)}</div>
+        </div>
+        <LineChart days={chart.days} series={chart.series} />
       </section>
-      <div className="grid min-w-0 gap-3 min-[901px]:min-h-80 min-[901px]:flex-1 min-[901px]:grid-cols-[minmax(0,7fr)_minmax(260px,3fr)]">
-        <Trend days={overview.daily} />
-        <section className={card}>
-          <header className="flex items-center justify-between px-4 pt-3"><h2 className="font-semibold">Recent activity</h2>
-            <Link {...path} search={{ ...search, tab: "activity" }} className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted">All</Link>
-          </header>
-          <Timeline entries={overview.timeline.slice(0, 5)} github={github} />
-        </section>
-      </div>
-    </>}
-    {search.tab === "pulls" && <PullRequests key={repositoryId} id={repositoryId} viewer={[session.mode, session.user?.login]} />}
-    {search.tab === "contributors" && <section className={`${card} p-4`}>
-      <h2 className="font-semibold">Participation · last {search.days} days</h2>
-      <p className={muted}>{overview.activeBotContributors.value === null ? "Bot participation unavailable" : `${overview.activeBotContributors.value} active bots`}</p>
-      {overview.contributors.length ? <ul className="mt-2 divide-y divide-border">
-        {overview.contributors.map(person => <li key={person.login} className="flex flex-wrap justify-between gap-2 py-2">
-          <span className="font-medium">{person.login}</span><span className={muted}>{person.pullRequestsOpened} PRs opened · {person.reviewsSubmitted} reviews submitted</span>
+      <section className={`${card} flex flex-[1_1_300px] flex-col`}>
+        <div className="flex justify-between p-4 pb-1.5"><h2 className="text-sm">Recent activity</h2>{recent}</div>
+        <div className="min-h-0 flex-1 overflow-auto">
+          {o.timeline.length ? o.timeline.slice(0, 5).map(e => <div key={`${e.kind}-${e.sourceId}`} className={lrow}>
+            <Ico>{entryIcon(e)}</Ico>
+            <span className="min-w-0 flex-1"><a href={entryHref(e, github)} className="block truncate font-medium hover:underline">{entryLabel(e)}</a><span className={`text-xs ${muted}`}>{actor(e)}</span></span>
+            <span className={`whitespace-nowrap text-xs ${muted}`}>{ago(e.occurredAt)}</span>
+          </div>) : <p className={`p-4 ${muted}`}>No activity imported yet.</p>}
+        </div>
+      </section>
+    </div>
+  </>;
+}
+
+const entryIcon = (e: Entry) => e.kind === "pull_request_merged" ? icons.pr : e.kind === "release_published" ? icons.tag : icons.issue;
+const entryLabel = (e: Entry) => e.kind === "pull_request_merged" ? `PR #${e.number} merged`
+  : e.kind === "release_published" ? `${e.title || "Release"} released`
+  : `Issue #${e.number} ${e.kind.replace(/^issue_/, "")}`;
+const entryHref = (e: Entry, github: string) => githubHref(e.url, e.number === null ? `${github}/releases` : `${github}/${e.kind === "pull_request_merged" ? "pull" : "issues"}/${e.number}`);
+const actor = (e: Entry) => e.actor ? `${e.actor.login}${e.actor.isBot ? " · bot" : ""}` : "ghost";
+
+// Full timeline with GitHub links. A hatched "History gap" row sits where issue-event coverage starts.
+function Timeline({ overview: o, github }: { overview: Overview; github: string }) {
+  const gapAt = o.eventsCoveredFrom === null ? o.timeline.length
+    : Date.parse(o.eventsCoveredFrom) > Date.parse(o.windowStart) ? o.timeline.findIndex(e => Date.parse(e.occurredAt) < Date.parse(o.eventsCoveredFrom!)) : -2;
+  const gap = <li key="gap" className="hatch border-b border-border p-2.5 text-center text-xs text-muted-foreground">
+    {o.eventsCoveredFrom ? `History gap · issue events before ${day.format(new Date(o.eventsCoveredFrom))} were never recorded` : "History gap · issue events are not recorded yet"}
+  </li>;
+  const rows = o.timeline.map(e => <li key={`${e.kind}-${e.sourceId}`} className="border-b border-border">
+    <a href={entryHref(e, github)} className={`${lrow} border-b-0 hover:bg-muted`}>
+      <Ico>{entryIcon(e)}</Ico>
+      <span className="min-w-0 flex-1"><span className="block font-medium">{entryLabel(e)}{e.kind !== "release_published" && e.title && ` · ${e.title}`}</span><span className={`text-xs ${muted}`}>{actor(e)}</span></span>
+      <span className={`font-mono text-xs ${muted}`}>{stamp.format(new Date(e.occurredAt)).replace(",", "")}</span>{icons.ext}
+    </a>
+  </li>);
+  if (gapAt !== -2) rows.splice(gapAt === -1 ? rows.length : gapAt, 0, gap);
+  if (!o.timeline.length && gapAt === -2) return <p className={`p-4 ${muted}`}>No activity in this window.</p>;
+  return <ul aria-label="Activity" className="m-0 list-none p-0">{rows}</ul>;
+}
+
+// Participation, alphabetical, stacked PRs / reviews / comments. Bots are left out of the bars and listed apart.
+function Contributors({ overview: o, days }: { overview: Overview; days: MetricWindow }) {
+  const people = o.contributors.filter(p => !p.isBot).sort((x, y) => x.login.localeCompare(y.login));
+  const bots = o.contributors.filter(p => p.isBot);
+  const max = Math.max(1, ...o.contributors.map(p => p.pullRequestsOpened + p.reviewsSubmitted + p.commentsCreated)) * 1.1;
+  const bar = (value: number, color: string) => <span style={{ width: `${value / max * 100}%`, background: `var(${color})` }} />;
+  const botText = bots.length ? bots.map(b => [`${b.login} ${b.pullRequestsOpened} PRs`, b.reviewsSubmitted ? `${b.reviewsSubmitted} rev` : "", b.commentsCreated ? `${b.commentsCreated} cmt` : ""].filter(Boolean).join(" · ")).join(", ")
+    : o.activeBotContributors.value ? `${o.activeBotContributors.value} active` : "none in this window";
+  return <section className={`${card} flex flex-1 flex-col gap-3 p-4`}>
+    <div><h2 className="text-sm">Participation · last {days} days</h2><p className={`mt-0.5 mb-0 text-xs ${muted}`}>Alphabetical. Participation, not a productivity ranking.</p></div>
+    {!o.contributorsCoverage.covered ? <p className={muted}>— · {coverageReason(o.contributorsCoverage)[0]}</p> : <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-auto">
+      {people.length ? <ul aria-label="Contributors" className="m-0 flex list-none flex-col gap-2.5 p-0">
+        {people.map(p => <li key={p.login} className="grid grid-cols-[28px_110px_1fr_170px] items-center gap-2.5 max-[600px]:grid-cols-[28px_1fr]">
+          <span className="inline-grid size-6 place-items-center rounded-full bg-primary-soft text-[10px] font-semibold text-primary" aria-hidden="true">{p.login.slice(0, 2).toUpperCase()}</span>
+          <span className="truncate">{p.login}</span>
+          <span className="flex h-2.5 overflow-hidden rounded-[5px] bg-muted max-[600px]:col-span-2" aria-hidden="true">{bar(p.pullRequestsOpened, "--primary")}{bar(p.reviewsSubmitted, "--chart-2")}{bar(p.commentsCreated, "--border-strong")}</span>
+          <span className={`font-mono text-xs ${muted} max-[600px]:col-span-2`}>{p.pullRequestsOpened} PRs · {p.reviewsSubmitted} rev · {p.commentsCreated} cmt</span>
         </li>)}
-      </ul> : <p className="mt-3 text-muted-foreground">{overview.contributorsCoverage.covered ? "No contributor activity in this window." : coverageLabels[overview.contributorsCoverage.reason ?? ""]}</p>}
-    </section>}
-    {search.tab === "activity" && <section className={card}>
-      {(!overview.eventsCoveredFrom || Date.parse(overview.eventsCoveredFrom) > Date.parse(overview.windowStart)) && <p className="border-b border-border bg-muted px-4 py-2 text-xs text-muted-foreground">
-        {overview.eventsCoveredFrom ? `Issue event history starts ${date.format(new Date(overview.eventsCoveredFrom))}.` : "Issue event history is unavailable."}
-      </p>}
-      <Timeline entries={overview.timeline} github={github} />
-    </section>}
-    {syncDetails.length > 0 && <details className={`${card} px-3 py-2 text-xs text-muted-foreground`}>
-      <summary className="cursor-pointer font-medium">Activity sync details</summary>
-      <ul className="mt-2 space-y-1">{syncDetails.map(line => <li key={line}>{line}</li>)}</ul>
-    </details>}
-  </div>;
-}
-
-function duration(seconds: number | null) {
-  if (seconds === null) return null;
-  if (seconds >= 86400) return `${Math.floor(seconds / 86400)}d ${Math.floor(seconds / 3600) % 24}h`;
-  if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds / 60) % 60}m`;
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
-function sample(size: number | null) {
-  return size === 0 ? "No qualifying samples" : size === null ? undefined : `${size} qualifying samples`;
-}
-
-function Metric({ label, value, coverage, detail }: { label: string; value: string | number | null; coverage: Overview["openIssues"]["coverage"]; detail?: string }) {
-  return <div className={`${card} min-w-0 p-3`}>
-    <h2 className="text-xs font-medium text-muted-foreground">{label}</h2>
-    <p className="py-1 text-2xl font-semibold tabular-nums">{value ?? "—"}</p>
-    <p className={muted} title={coverage.through ? `Covered through ${coverage.through}` : undefined}>
-      {coverage.covered ? detail : coverageLabels[coverage.reason ?? ""]}
-    </p>
-  </div>;
-}
-
-function Trend({ days }: { days: Overview["daily"] }) {
-  const lines = [
-    { label: "Issues opened", color: "var(--primary)", points: days.map(day => day.issuesOpened) },
-    { label: "PRs merged", color: "var(--success)", points: days.map(day => day.pullRequestsMerged) },
-  ];
-  const max = Math.max(1, ...lines.flatMap(line => line.points.map(value => value ?? 0)));
-  return <section className={`${card} flex min-w-0 flex-col p-4`}>
-    <div className="flex flex-wrap justify-between gap-2"><h2 className="font-semibold">Opened vs merged</h2>
-      <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">{lines.map(line => <span key={line.label} className="flex items-center gap-1.5">
-        <i aria-hidden="true" className="size-2 rounded-full" style={{ background: line.color }} />{line.label}
-        {line.points[0] === null && " (unavailable)"}
-      </span>)}</div>
-    </div>
-    <svg viewBox="0 0 500 160" preserveAspectRatio="none" className="mt-4 h-40 min-h-40 w-full min-[901px]:flex-1" role="img" aria-label="Daily issues opened and pull requests merged. Values available in the data table.">
-      {[20, 60, 100, 140].map(y => <line key={y} x1="0" x2="500" y1={y} y2={y} stroke="var(--border)" />)}
-      {lines.filter(line => line.points[0] !== null).map(line => <polyline key={line.label} fill="none" stroke={line.color} strokeWidth="2" vectorEffect="non-scaling-stroke"
-        points={line.points.map((point, index) => `${500 * index / (days.length - 1)},${140 - (point ?? 0) * 120 / max}`).join(" ")} />)}
-    </svg>
-    <div className="flex justify-between font-mono text-xs text-muted-foreground">
-      <span>{date.format(new Date(days[0].day))}</span><span>{date.format(new Date(days[days.length - 1].day))}</span>
-    </div>
-    <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">Daily values</summary>
-      <table className="mt-2 w-full text-left"><thead><tr><th>UTC day</th><th>Issues opened</th><th>PRs merged</th></tr></thead>
-        <tbody>{days.map(day => <tr key={day.day}><th scope="row">{date.format(new Date(day.day))}</th><td>{day.issuesOpened ?? "—"}</td><td>{day.pullRequestsMerged ?? "—"}</td></tr>)}</tbody>
-      </table>
-    </details>
+      </ul> : <p className={muted}>No contributor activity in this window.</p>}
+      <div className={`border-t border-dashed border-border pt-2.5 text-xs ${muted}`}>Bots counted separately: {botText}</div>
+    </div>}
   </section>;
 }
 
-function Timeline({ entries, github }: { entries: Overview["timeline"]; github: string }) {
-  if (!entries.length) return <p className="px-4 py-3 text-muted-foreground">No activity available in this window.</p>;
-  return <ul className="divide-y divide-border px-4">
-    {entries.map(entry => {
-      const href = entry.number === null
-        ? entry.url.startsWith(`${github}/releases/`) ? entry.url : `${github}/releases`
-        : `${github}/${entry.kind === "pull_request_merged" ? "pull" : "issues"}/${entry.number}`;
-      return <li className="flex items-start gap-3 py-2.5" key={`${entry.kind}-${entry.sourceId}`}>
-        <span aria-hidden="true" className="rounded-md bg-muted px-2 py-1 font-mono text-primary">↳</span>
-        <div className="min-w-0 flex-1 break-words"><a href={href} className="font-medium hover:underline">{entry.title || entry.kind.replaceAll("_", " ")}</a>
-          <p className={muted}>{entry.kind.replaceAll("_", " ")}{entry.number !== null && ` #${entry.number}`}{entry.actor && ` · ${entry.actor.login}${entry.actor.isBot ? " (bot)" : ""}`}</p>
-        </div>
-        <time className={muted} dateTime={entry.occurredAt}>{date.format(new Date(entry.occurredAt))}</time>
-      </li>;
-    })}
-  </ul>;
-}
+const reviewLabels: Record<ReviewState, [string, string]> = {
+  awaiting_review: ["Awaiting review", "border-border text-soft"],
+  commented: ["Commented", "border-border text-soft"],
+  approved: ["Approved", "border-success-soft bg-success-soft text-success-foreground"],
+  changes_requested: ["Changes requested", "border-warning-soft bg-warning-soft text-warning"],
+  merged: ["Merged", "border-primary-soft bg-primary-soft text-primary"],
+  closed: ["Closed", "border-border bg-muted text-muted-foreground"],
+};
+const features = tableFeatures({});
+const column = createColumnHelper<typeof features, WorkspacePullRequest>();
+const noPulls: WorkspacePullRequest[] = [];
 
-function PullRequests({ id, viewer }: { id: string; viewer: (string | undefined)[] }) {
+function PullRequests({ id, viewer, github }: { id: string; viewer: string; github: string }) {
   const query = useQuery({
-    queryKey: ["workspacePullRequests", id, ...viewer],
+    queryKey: ["workspacePullRequests", id, viewer],
     queryFn: ({ signal }) => fetchWorkspacePullRequests(id, signal),
     gcTime: 0,
   });
-  return <section className={`${card} p-4`}>
-    {query.isPending ? <p role="status">Loading pull requests…</p> : query.isError ? <p role="alert">{query.error.message}</p> :
-      query.data.nodes.length ? <>
-        <table className="w-full text-left"><thead><tr><th>PR</th><th>Title</th><th>State</th></tr></thead><tbody className="divide-y divide-border">
-          {query.data.nodes.map(pr => <tr key={pr.id}><td className="py-2 pr-2">#{pr.number}</td><td className="pr-2">{pr.title}</td><td>{pr.mergedAt ? "Merged" : pr.state}</td></tr>)}
-        </tbody></table>
-        {query.data.hasNextPage && <p className={muted}>Showing the first 20 imported pull requests.</p>}
-      </> : <p className="text-muted-foreground">No imported pull requests.</p>}
-  </section>;
+  const columns = useMemo(() => column.columns([
+    column.accessor("number", { header: "PR", cell: c => <a href={githubHref(c.row.original.url, `${github}/pull/${c.getValue()}`)} className="font-mono text-xs text-muted-foreground hover:underline">#{c.getValue()}</a> }),
+    column.accessor("title", { header: "Title", cell: c => <><span className="font-medium">{c.getValue()}</span>{c.row.original.author && <span className={`ml-2 text-xs ${muted}`}>{c.row.original.author.login}</span>}</> }),
+    column.accessor("reviewState", { header: "Review", cell: c => {
+      const state = c.getValue();
+      return state === null ? <span className={`${mini} border-dashed border-border-strong text-muted-foreground`}>Review history importing</span>
+        : <span className={`${mini} ${reviewLabels[state][1]}`}>{reviewLabels[state][0]}</span>;
+    } }),
+    column.accessor("createdAt", { header: "Opened", cell: c => <span className={`font-mono text-xs ${muted}`}>{day.format(new Date(c.getValue()))}</span> }),
+  ]), [github]);
+  const table = useTable({ features, columns, data: query.data?.nodes ?? noPulls });
+  const th = "sticky top-0 z-[1] whitespace-nowrap border-b border-border bg-card px-3 py-2 text-left text-xs font-medium text-muted-foreground";
+  return <div className={`${card} flex-1 overflow-auto`}>
+    {query.isPending ? <p role="status" className="p-4">Loading pull requests…</p> : query.isError ? <p role="alert" className="p-4">{query.error.message}</p> : <>
+      <table className="w-full border-collapse">
+        <thead>{table.getHeaderGroups().map(group => <tr key={group.id}>{group.headers.map(h => <th key={h.id} className={th}><table.FlexRender header={h} /></th>)}</tr>)}</thead>
+        <tbody>
+          {table.getRowModel().rows.map(row => <tr key={row.id} className="hover:bg-muted">{row.getAllCells().map(cell => <td key={cell.id} className="border-b border-border px-3 py-[9px] align-middle"><table.FlexRender cell={cell} /></td>)}</tr>)}
+          {!query.data.nodes.length && <tr><td colSpan={columns.length} className={`p-6 text-center ${muted}`}>No imported pull requests.</td></tr>}
+        </tbody>
+      </table>
+      {query.data.hasNextPage && <p className={`p-3 text-xs ${muted}`}>Showing the first 20 imported pull requests.</p>}
+    </>}
+  </div>;
 }
