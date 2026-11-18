@@ -171,7 +171,7 @@ func tightenToPrivate(ctx context.Context, fence jobs.ClaimFence, repoID int64) 
 func (d *Deps) installationFetchError(id int64, token string, err error) error {
 	var api *githubapp.APIError
 	if errors.As(err, &api) {
-		d.InstallationCredentials.Observe(id, token, api)
+		d.InstallationCredentials.RecordAPIError(id, token, api)
 		if api.RateLimited() {
 			return &jobs.Defer{RetryAt: api.RetryAt, Reason: CodeRateLimited}
 		}

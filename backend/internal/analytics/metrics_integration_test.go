@@ -24,7 +24,7 @@ func TestRepositoryMetrics(t *testing.T) {
 	now := time.Date(2026, 11, 17, 4, 0, 0, 0, time.FixedZone("PST", -8*3600))
 	load := func() *Overview {
 		t.Helper()
-		out, err := Load(ctx, pool, 10, 7, now)
+		out, err := LoadRepositoryOverview(ctx, pool, 10, 7, now)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -55,7 +55,7 @@ export function describeMetadata(s: MetadataStatus): string[] {
 }
 
 // Every state the UI can show for one repository. "demo" is always labeled, never implied.
-export type SyncDisplay = "demo" | "access-unverified" | "rate-limited" | "syncing" | "stopped" | "synced" | "partial" | "awaiting" | "not-synchronized";
+type SyncDisplay = "demo" | "access-unverified" | "rate-limited" | "syncing" | "stopped" | "synced" | "partial" | "awaiting" | "not-synchronized";
 export const syncLabels: Record<SyncDisplay, string> = {
   demo: "Demo data",
   "access-unverified": "Access unverified",
@@ -131,6 +131,8 @@ export function SyncStatus({ compact = false, ...props }: SyncInput & { compact?
   </div>;
 }
 
+// Queues a repository activity refresh. Calls onAccepted for both a new job and a coalesced request.
+// Displays a request failure inline and leaves the button available to retry.
 export function RefreshActivityButton({ repositoryId, onAccepted }: { repositoryId: string; onAccepted: () => void }) {
   const [feedback, setFeedback] = useState<{ kind: "status" | "alert"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);

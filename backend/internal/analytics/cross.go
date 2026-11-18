@@ -39,7 +39,7 @@ type CrossDailyPoint struct {
 	PullRequestsMerged *int64
 }
 
-// CrossOverview summarizes several repositories with the per-repository metric definitions of Load.
+// CrossOverview summarizes several repositories with the per-repository metric definitions of LoadRepositoryOverview.
 //
 // A repository is counted when its issue and PR streams have converged for the window (IssuesOpened and
 // PullRequestsMerged covered); otherwise it is syncing and left out of totals, the trend and NeedsAttention, never added as zero.
@@ -65,14 +65,11 @@ type CrossOverview struct {
 	Daily        []CrossDailyPoint
 }
 
-// LoadCross summarizes repositoryIDs over the last days (7, 30 or 90) UTC days ending at now, listing open issues
-// assigned to the GitHub user ID assigneeGitHubID (not users.id). It reads in one REPEATABLE READ snapshot and fails with ErrInvalidDays or the
-// database error; it never returns partial values.
-//
-// Precondition: like Load, it performs no access check. repositoryIDs must hold only repositories the viewer may read.
-// ponytail: one loadMetrics per repository (3 queries each); batch by repository if 100 selections near the deadline.
-func LoadCross(ctx context.Context, pool *pgxpool.Pool, repositoryIDs []int64, assigneeGitHubID int64, days int, now time.Time) (*CrossOverview, error) {
-	if err := ValidateDays(days); err != nil {
+// LoadCrossRepositoryOverview aggregates already authorized repositories in one read-only REPEATABLE READ transaction.
+// The 7-, 30-, or 90-day UTC window includes the calendar date of now. The GitHub user ID scopes AssignedToMe.
+// An empty repository list returns an overview with uncovered totals. Invalid windows and database failures return no overview.
+func LoadCrossRepositoryOverview(ctx context.Context, pool *pgxpool.Pool, repositoryIDs []int64, assigneeGitHubID int64, days int, now time.Time) (*CrossOverview, error) {
+	if err := ValidateMetricWindowDays(days); err != nil {
 		return nil, err
 	}
 	w := newWindow(days, now)

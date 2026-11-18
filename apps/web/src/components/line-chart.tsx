@@ -6,7 +6,7 @@ import { SVGRenderer } from "echarts/renderers";
 
 echarts.use([LineSeries, GridComponent, SVGRenderer]);
 
-// One line per series; null means the day is not covered (never drawn as zero).
+// One line per series. Values align with days by index. Null means uncovered and is drawn as a gap.
 export type ChartSeries = { name: string; unit: string; color: "--primary" | "--chart-2"; values: (number | null)[] };
 
 const dayLabel = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
@@ -14,6 +14,7 @@ const token = (name: string) => getComputedStyle(document.documentElement).getPr
 
 // Daily line chart styled like prototype D2's SVG: thin lines, light thirds grid, hatched leading days with no
 // imported data, and a hover/focus day readout above the plot. Each day is a focusable column for keyboard use.
+// days is an ordered list of UTC ISO dates with one value per day in each series.
 export function LineChart({ days, series }: { days: string[]; series: ChartSeries[] }) {
   const plot = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);

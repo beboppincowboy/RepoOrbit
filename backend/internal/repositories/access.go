@@ -58,7 +58,8 @@ type Service struct {
 
 type requestVisibilityKey struct{}
 
-// WithRequestVisibility shares one fresh visibility lookup across reads in a GraphQL request.
+// WithRequestVisibility creates an empty visibility memo for one GraphQL request and its single viewer.
+// The first read checks GitHub unless the user is cooling down. Later reads reuse the result while its access fence holds.
 func WithRequestVisibility(ctx context.Context) context.Context {
 	return context.WithValue(ctx, requestVisibilityKey{}, &entry{})
 }

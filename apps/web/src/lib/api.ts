@@ -1,6 +1,6 @@
 export type Issue = { id: string; repositoryId: string; title: string; state: string };
-// Error message the analytics fetchers throw when the API withholds the content (ACCESS_UNVERIFIED); callers compare against it.
-export const ACCESS_UNVERIFIED_MESSAGE = "Access could not be verified";
+// User-facing label for an unverified repository access check.
+const ACCESS_UNVERIFIED_MESSAGE = "Access could not be verified";
 // Wire values of the backend's repositories.SyncState; "demo" appears only in Demo mode.
 export type SyncState = "demo" | "awaiting-sync" | "not-synchronized";
 // Shared metadata refresh status (null when not selected, and in Demo mode). Times are RFC 3339; failureCode is a safe machine code.
@@ -22,19 +22,19 @@ type RepositoryConnection = { nodes: SelectedRepository[]; endCursor: string | n
 export type ListedRepo = { id: string; fullName: string; description: string; private: boolean; selected: boolean; syncState: SyncState };
 export type OwnedPage = { repositories: ListedRepo[]; nextPage: number; refreshFailed: boolean; withheld: number; retryAt: string | null; installUrl: string };
 export type StarredPage = { repositories: ListedRepo[]; nextPage: number; refreshedAt: string | null; refreshFailed: boolean; withheld: number; retryAt: string | null; installUrl: string };
-export type Me = { mode: "demo" | "real"; user: { login: string; demo: boolean } | null; csrfToken: string | null };
+export type ViewerSession = { mode: "demo" | "real"; user: { login: string; demo: boolean } | null; csrfToken: string | null };
 let csrfToken: string | null = null;
-// me() fetches the session and, as a side effect, stores its CSRF token in this module for every later
+// fetchViewerSession fetches the session and, as a side effect, stores its CSRF token in this module for every later
 // mutating call (logout, setSelected, setFollowed, GraphQL). The workspace loads it before any of them.
-export async function me(): Promise<Me> {
+async function fetchViewerSession(): Promise<ViewerSession> {
   const response = await fetch("/auth/me", { cache: "no-store" });
   if (!response.ok) throw new Error("Unable to load session");
-  const result: Me = await response.json();
+  const result: ViewerSession = await response.json();
   csrfToken = result.csrfToken;
   return result;
 }
 // Fetches the current session on workspace entry and supplies the CSRF token for subsequent requests.
-export const sessionQuery = { queryKey: ["session"], queryFn: me, staleTime: 0 } as const;
+export const sessionQuery = { queryKey: ["session"], queryFn: fetchViewerSession, staleTime: 0 } as const;
 // Ends the current session in Go. The caller owns navigation and local query state. Rejects on HTTP or network failure.
 export async function logout() {
   const response = await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
@@ -45,14 +45,15 @@ type GraphQLResponse<Data> = {
   errors?: { message?: string; path?: (string | number)[]; extensions?: { code?: string; retryAt?: string } }[];
 };
 
-export class RepositorySnapshotError extends Error {}
+// A network failure or temporary HTTP gateway error. The message explains why a saved view may be shown.
+export class GraphQLUnavailableError extends Error {}
 
 async function graphqlQuery<Data>(queryText: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<GraphQLResponse<Data>> {
   const response = await fetch("/graphql", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "" }, cache: "no-store", signal, body: JSON.stringify({ query: queryText, variables }) }).catch((error: unknown) => {
     if (signal?.aborted || !(error instanceof TypeError)) throw error;
-    throw new RepositorySnapshotError("RepoOrbit could not reach the server.");
+    throw new GraphQLUnavailableError("RepoOrbit could not reach the server.");
   });
-  if ([502, 503, 504].includes(response.status)) throw new RepositorySnapshotError("The server is temporarily unavailable.");
+  if ([502, 503, 504].includes(response.status)) throw new GraphQLUnavailableError("The server is temporarily unavailable.");
   if (!response.ok) throw new Error("Unable to load repositories");
   return response.json();
 }
@@ -92,17 +93,20 @@ export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal
 type SelectedRepositoryBatch = { repositories: SelectedRepository[]; details: RepositoryDetail[] | null };
 type SelectedRepositoryPage = Omit<RepositoryConnection, "nodes"> & { batches: SelectedRepositoryBatch[] };
 
-export async function fetchSelectedRepositoryMetadata(after: string | null, signal?: AbortSignal): Promise<RepositoryConnection> {
+// Fetches up to 20 verified selections from GraphQL. Start with null, then pass the previous endCursor.
+// Withheld rows count toward the page size and appear only in the withheld count. An empty page can still have a next cursor.
+// Rejects on request failure or cancellation.
+export async function fetchSelectedRepositoryMetadataPage(after: string | null, signal?: AbortSignal): Promise<RepositoryConnection> {
   const { data, errors } = await graphqlQuery<{ selectedRepositories: RepositoryConnection }>(`query SelectedRepositories($after: ID) { selectedRepositories(first: 20, after: $after) { nodes { id fullName description syncState metadataStatus { state lastSuccessAt nextAttemptAt paused failureCode followSuspended } } endCursor hasNextPage withheld retryAt } }`, { after }, signal);
   if (!data || errors?.length) throw new Error("Unable to load repositories");
   return data.selectedRepositories;
 }
 
-// Fetches one page of selected repositories, then their details with at most two requests in flight.
-// Pass null for the first page or the previous page’s endCursor. Batches preserve list order and retain IDs for retry.
-// List failures and cancellation reject the call. A failed detail batch has null details.
-export async function fetchSelectedRepositories(metadata: Promise<RepositoryConnection>, signal?: AbortSignal): Promise<SelectedRepositoryPage> {
-  const { nodes, ...connection } = await metadata;
+// Enriches one metadata-page promise with ordered detail batches, issuing at most two detail requests at a time.
+// Metadata failure and cancellation reject the promise. A failed batch keeps its repositories with null details.
+// Explicit access failures appear as access-unverified details. Callers withhold those names and links.
+export async function fetchSelectedRepositoryDetailsPage(metadataPage: Promise<RepositoryConnection>, signal?: AbortSignal): Promise<SelectedRepositoryPage> {
+  const { nodes, ...connection } = await metadataPage;
   const batches: SelectedRepositoryBatch[] = [];
   for (let i = 0; i < nodes.length; i += detailChunk) {
     batches.push({ repositories: nodes.slice(i, i + detailChunk), details: null });
@@ -179,13 +183,16 @@ type RepositoryOverview = {
   daily: { day: string; issuesOpened: number | null; pullRequestsMerged: number | null }[];
 };
 
-export class RepositoryAccessError extends Error {
+// GitHub access is unverified. retryAt is a UTC timestamp, or null when the server supplies no retry time.
+export class RepositoryAccessUnverifiedError extends Error {
   constructor(readonly retryAt: string | null) {
     super(ACCESS_UNVERIFIED_MESSAGE);
   }
 }
 
-export async function fetchRepositoryOverview(id: string, days: MetricWindow, signal: AbortSignal) {
+// Fetches stored repository analytics after server-side access verification. Null means the repo is missing,
+// unselected, or denied. Unverified access and temporary transport failures reject with their typed errors.
+export async function fetchRepositoryOverview(id: string, days: MetricWindow, signal: AbortSignal): Promise<RepositoryOverview | null> {
   const coverage = "covered reason through";
   const count = `value coverage { ${coverage} }`;
   const median = `seconds sampleSize coverage { ${coverage} }`;
@@ -204,7 +211,7 @@ export async function fetchRepositoryOverview(id: string, days: MetricWindow, si
     }
   }`, { id, days }, signal);
   const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
-  if (accessError) throw new RepositoryAccessError(accessError.extensions?.retryAt ?? null);
+  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
   if (!data || errors?.length) throw new Error("Could not load repository analytics");
   return data.repositoryOverview;
 }
@@ -213,15 +220,16 @@ export async function fetchRepositoryOverview(id: string, days: MetricWindow, si
 export type ReviewState = "awaiting_review" | "commented" | "approved" | "changes_requested" | "merged" | "closed";
 export type WorkspacePullRequest = { id: string; number: number; title: string; state: string; url: string; createdAt: string; mergedAt: string | null; reviewState: ReviewState | null; author: { login: string; type: string } | null };
 
-// Pages through imported pull requests newest first.
+// Fetches imported PRs in descending source ID order. Start with null, then pass the previous endCursor.
+// A withheld page rejects with RepositoryAccessUnverifiedError. Titles are raw GitHub text.
 export async function fetchWorkspacePullRequests(id: string, after: string | null, signal: AbortSignal) {
   const { data, errors } = await graphqlQuery<{
-    pullRequestEvidence: { nodes: WorkspacePullRequest[]; withheld: number; hasNextPage: boolean; endCursor: string | null };
+    pullRequestEvidence: { nodes: WorkspacePullRequest[]; withheld: number; retryAt: string | null; hasNextPage: boolean; endCursor: string | null };
   }>(`query WorkspacePullRequests($id: ID!, $after: ID) {
-    pullRequestEvidence(repositoryIds: [$id], first: 20, after: $after, newestFirst: true) { nodes { id number title state url createdAt mergedAt reviewState author { login type } } withheld hasNextPage endCursor }
+    pullRequestEvidence(repositoryIds: [$id], first: 20, after: $after, newestFirst: true) { nodes { id number title state url createdAt mergedAt reviewState author { login type } } withheld retryAt hasNextPage endCursor }
   }`, { id, after }, signal);
   if (!data || errors?.length) throw new Error("Could not load pull requests");
-  if (data.pullRequestEvidence.withheld) throw new Error(ACCESS_UNVERIFIED_MESSAGE);
+  if (data.pullRequestEvidence.withheld) throw new RepositoryAccessUnverifiedError(data.pullRequestEvidence.retryAt ?? null);
   return data.pullRequestEvidence;
 }
 
@@ -246,8 +254,8 @@ export type CrossRepositoryOverview = {
   daily: { day: string; issuesOpened: number | null; pullRequestsMerged: number | null }[];
 };
 
-// Summarizes all of the viewer's selected repositories for one window. Rejects with "Access could not be verified"
-// when access changed during the read (retry), or "Could not load the overview" on any other error.
+// Fetches aggregate analytics for the viewer’s selected repositories. Unverified access rejects with
+// RepositoryAccessUnverifiedError. A selection-limit error reports the server’s limit to the caller.
 export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: AbortSignal) {
   const coverage = "covered reason through";
   const { data, errors } = await graphqlQuery<{ crossRepositoryOverview: CrossRepositoryOverview | null }>(`query CrossRepositoryOverview($days: Int! = 30) {
@@ -260,9 +268,8 @@ export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: A
       daily { day issuesOpened pullRequestsMerged }
     }
   }`, { days }, signal);
-  if (errors?.some(error => error.extensions?.code === "ACCESS_UNVERIFIED")) {
-    throw new Error(ACCESS_UNVERIFIED_MESSAGE);
-  }
+  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
+  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
   const selectionLimit = errors?.find(error => error.extensions?.code === "OVERVIEW_SELECTION_LIMIT");
   if (selectionLimit?.message) throw new Error(selectionLimit.message);
   if (!data?.crossRepositoryOverview || errors?.length) throw new Error("Could not load the overview. Check that the local services are running.");

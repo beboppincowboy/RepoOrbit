@@ -1,8 +1,8 @@
 // Package analytics computes one repository's activity metrics (docs/metrics-definitions.md) from synchronized
 // evidence in a single read-only REPEATABLE READ snapshot.
 //
-// Precondition: Load performs no access check. The caller must take the access fence, verify the user may read
-// repositoryID, call Load, and discard the result if the fence moved (graphql/evidence.go read order).
+// Precondition: LoadRepositoryOverview performs no access check. The caller must take the access fence, verify the user may read
+// repositoryID, call LoadRepositoryOverview, and discard the result if the fence moved (graphql/evidence.go read order).
 package analytics
 
 import (
@@ -139,8 +139,8 @@ type TimelineCoverage struct {
 	IssueEvents       Coverage
 }
 
-// ValidateDays checks the supported UTC calendar windows.
-func ValidateDays(days int) error {
+// ValidateMetricWindowDays checks the supported UTC calendar windows.
+func ValidateMetricWindowDays(days int) error {
 	switch days {
 	case 7, 30, 90:
 		return nil
@@ -149,10 +149,11 @@ func ValidateDays(days int) error {
 	}
 }
 
-// Load computes the overview for repositoryID over the last days (7, 30 or 90) UTC days ending at now.
-// It reads in one REPEATABLE READ snapshot and fails with ErrInvalidDays or the database error; it never returns partial values.
-func Load(ctx context.Context, pool *pgxpool.Pool, repositoryID int64, days int, now time.Time) (*Overview, error) {
-	if err := ValidateDays(days); err != nil {
+// LoadRepositoryOverview reads stored metrics for an already authorized repository in one read-only REPEATABLE READ transaction.
+// The 7-, 30-, or 90-day UTC window includes the calendar date of now. Uncovered metrics carry a coverage reason.
+// An unsupported window returns ErrInvalidDays. A database failure returns an error without an overview.
+func LoadRepositoryOverview(ctx context.Context, pool *pgxpool.Pool, repositoryID int64, days int, now time.Time) (*Overview, error) {
+	if err := ValidateMetricWindowDays(days); err != nil {
 		return nil, err
 	}
 	w := newWindow(days, now)

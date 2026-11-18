@@ -38,7 +38,7 @@ func TestInstallationCredentialsReuseAndSeparateCooldowns(t *testing.T) {
 	if err != nil || first != second || requests != 1 {
 		t.Fatalf("expected one exchange, got %d (err: %v)", requests, err)
 	}
-	credentials.Observe(1, first, &APIError{Status: 429, RetryAt: time.Now().Add(time.Minute)})
+	credentials.RecordAPIError(1, first, &APIError{Status: 429, RetryAt: time.Now().Add(time.Minute)})
 	_, err = credentials.AccessToken(ctx, 1)
 	var api *APIError
 	if !errors.As(err, &api) || !api.RateLimited() || requests != 1 {

@@ -1,3 +1,4 @@
+import { repositorySnapshotPrefix } from "@/lib/repository-snapshots";
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -5,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { SyncStatus } from "@/components/sync-status";
 import { RepositoryCell, RepositoriesHeading, SourceTabs, ToolsRow, noteClass, searchBoxClass, segGroupClass, segItemClass, tableCardClass, tdClass, thClass, warnNoteClass } from "@/components/repository-list";
 import { matchesListSearch, validateListSearch } from "@/lib/list-search";
-import { selectedRows, useSelectedRepositories } from "@/lib/selected-repositories";
+import { flattenSelectedRepositoryRows, useSelectedRepositories } from "@/lib/selected-repositories";
 import { ownedRepositories, setSelected, type ListedRepo, type OwnedPage } from "@/lib/api";
 
 export const Route = createFileRoute("/_shell/repositories")({
@@ -40,7 +41,7 @@ function Repositories() {
   });
   // Demo mode has no GitHub list: it shows the demo selection read-only, as the prototype does.
   const selection = useSelectedRepositories(session);
-  const demoRows: ListedRepo[] = selectedRows(selection)
+  const demoRows: ListedRepo[] = flattenSelectedRepositoryRows(selection)
     .filter(row => row.detail?.state === "available")
     .map(({ repo }) => ({ id: repo.id, fullName: repo.fullName, description: repo.description, private: false, selected: true, syncState: repo.syncState }));
   const pages: OwnedPage[] = query.data?.pages ?? [];
@@ -72,7 +73,7 @@ function Repositories() {
       try {
         await setSelected(repo.id, selected);
         done.set(repo.id, selected);
-        if (!selected) queryClient.removeQueries({ queryKey: ["repositorySnapshot", session.mode, session.user?.login, repo.id] });
+        if (!selected) queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repo.id) });
         next[repo.id] = { ok: true, text: selected ? "Connected. Awaiting sync." : "Disconnected. RepoOrbit no longer syncs it for you." };
       } catch (e) {
         next[repo.id] = { ok: false, text: e instanceof Error ? e.message : "Something went wrong." };
