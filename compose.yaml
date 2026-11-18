@@ -48,10 +48,9 @@ services:
       timeout: 3s
       retries: 20
   web:
-    build:
-      context: ./apps/web
-      args:
-        API_ORIGIN: http://api:8080
+    build: ./apps/web
+    environment:
+      API_ORIGIN: http://api:8080
     ports: ["127.0.0.1:3000:3000"]
     depends_on:
       api: { condition: service_healthy }
