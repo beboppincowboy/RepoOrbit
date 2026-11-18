@@ -6,16 +6,20 @@ test('first use: nothing is pre-checked and nothing syncs until confirm', async 
   await mockSession(page, signedIn);
   const writes = await mockOwned(page, [listed('1'), listed('2'), listed('3')]);
   await page.goto('/repositories');
-  await expect(page.getByRole('heading', { name: 'Get started' })).toBeVisible();
-  await expect(page.getByRole('checkbox')).toHaveCount(3);
+  await expect(page.getByRole('heading', { name: 'Choose what RepoOrbit keeps in sync' })).toBeVisible();
+  await expect(page.getByRole('checkbox', { name: /^ada\/repo-/ })).toHaveCount(3);
   await expect(page.getByRole('checkbox', { checked: true })).toHaveCount(0);
-  await expect(page.getByRole('region', { name: 'Pending changes' })).toHaveCount(0);
+  // First use always shows the bar, with nothing to start until something is checked.
+  const bar = page.getByRole('region', { name: 'Pending changes' });
+  await expect(bar).toContainText('Pick at least one repository');
+  await expect(bar.getByRole('button', { name: 'Start syncing repositories' })).toBeDisabled();
 
   // Checking and then unchecking the same repository leaves no pending change and sends nothing.
   await page.getByRole('checkbox', { name: 'ada/repo-1' }).check();
-  await expect(page.getByRole('region', { name: 'Pending changes' })).toContainText('1 to add');
+  await expect(bar).toContainText('1 selected');
   await page.getByRole('checkbox', { name: 'ada/repo-1' }).uncheck();
-  await expect(page.getByRole('region', { name: 'Pending changes' })).toHaveCount(0);
+  await expect(bar).toContainText('Pick at least one repository');
+  await expect(bar.getByRole('button', { name: 'Start syncing repositories' })).toBeDisabled();
   expect(writes).toEqual([]);
 });
 
@@ -27,7 +31,7 @@ test('confirm applies each repository, and a failed one stays unchecked with its
   await page.getByRole('checkbox', { name: 'ada/repo-2' }).check();
   await page.getByRole('button', { name: 'Connected' }).click();
   const bar = page.getByRole('region', { name: 'Pending changes' });
-  await expect(bar).toContainText('2 to add');
+  await expect(bar).toContainText('2 selected');
   await bar.getByRole('button', { name: 'Start syncing 2 repositories' }).click();
 
   await expect(page.getByRole('status').filter({ hasText: '1 applied, 1 failed.' })).toBeVisible();
@@ -65,7 +69,7 @@ test('discard drops the pending changes without sending anything', async ({ page
   await page.getByRole('checkbox', { name: 'ada/repo-1' }).check();
   const bar = page.getByRole('region', { name: 'Pending changes' });
   await bar.getByRole('button', { name: 'Discard' }).click();
-  await expect(bar).toHaveCount(0);
+  await expect(bar).toContainText('Pick at least one repository');
   await expect(page.getByRole('checkbox', { name: 'ada/repo-1' })).not.toBeChecked();
   expect(writes).toEqual([]);
 });
