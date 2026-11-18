@@ -127,7 +127,7 @@ export function SyncStatus({ compact = false, ...props }: SyncInput & { compact?
   </div>;
 }
 
-export function RefreshActivityButton({ repositoryId }: { repositoryId: string }) {
+export function RefreshActivityButton({ repositoryId, onAccepted }: { repositoryId: string; onAccepted: () => void }) {
   const [feedback, setFeedback] = useState<{ kind: "status" | "alert"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   async function click() {
@@ -135,6 +135,7 @@ export function RefreshActivityButton({ repositoryId }: { repositoryId: string }
     setFeedback({ kind: "status", text: "Refreshing activity…" });
     try {
       const state = await refreshActivity(repositoryId);
+      onAccepted();
       setFeedback({ kind: "status", text: state === "coalesced" ? "A refresh is already queued or running; it will include your request." : "Activity refresh requested." });
     } catch (e) {
       setFeedback({ kind: "alert", text: e instanceof Error ? e.message : "Could not request an activity refresh." });

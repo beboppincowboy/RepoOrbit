@@ -281,7 +281,7 @@ type ComplexityRoot struct {
 		CrossRepositoryOverview func(childComplexity int, days int) int
 		IssueEventEvidence      func(childComplexity int, repositoryIds []string, first int, after *string) int
 		Issues                  func(childComplexity int, repositoryIds []string, first int, after *string) int
-		PullRequestEvidence     func(childComplexity int, repositoryIds []string, first int, after *string) int
+		PullRequestEvidence     func(childComplexity int, repositoryIds []string, first int, after *string, newestFirst bool) int
 		ReleaseEvidence         func(childComplexity int, repositoryIds []string, first int, after *string) int
 		Repository              func(childComplexity int, id string) int
 		RepositoryOverview      func(childComplexity int, id string, days int) int
@@ -403,7 +403,7 @@ type QueryResolver interface {
 	SelectedRepositories(ctx context.Context, first int, after *string) (*model.RepositoryConnection, error)
 	Repository(ctx context.Context, id string) (*model.Repository, error)
 	Issues(ctx context.Context, repositoryIds []string, first int, after *string) (*model.IssueConnection, error)
-	PullRequestEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.PullRequestEvidenceConnection, error)
+	PullRequestEvidence(ctx context.Context, repositoryIds []string, first int, after *string, newestFirst bool) (*model.PullRequestEvidenceConnection, error)
 	ReviewEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.ReviewEvidenceConnection, error)
 	CommentEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.CommentEvidenceConnection, error)
 	ReleaseEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.ReleaseEvidenceConnection, error)
@@ -1525,7 +1525,7 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 			return 0, false
 		}
 
-		return e.complexity.Query.PullRequestEvidence(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string)), true
+		return e.complexity.Query.PullRequestEvidence(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string), args["newestFirst"].(bool)), true
 
 	case "Query.releaseEvidence":
 		if e.complexity.Query.ReleaseEvidence == nil {
@@ -2537,6 +2537,11 @@ func (ec *executionContext) field_Query_pullRequestEvidence_args(ctx context.Con
 		return nil, err
 	}
 	args["after"] = arg2
+	arg3, err := ec.field_Query_pullRequestEvidence_argsNewestFirst(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["newestFirst"] = arg3
 	return args, nil
 }
 func (ec *executionContext) field_Query_pullRequestEvidence_argsRepositoryIds(
@@ -2590,6 +2595,24 @@ func (ec *executionContext) field_Query_pullRequestEvidence_argsAfter(
 	}
 
 	var zeroVal *string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_pullRequestEvidence_argsNewestFirst(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (bool, error) {
+	if _, ok := rawArgs["newestFirst"]; !ok {
+		var zeroVal bool
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("newestFirst"))
+	if tmp, ok := rawArgs["newestFirst"]; ok {
+		return ec.unmarshalNBoolean2bool(ctx, tmp)
+	}
+
+	var zeroVal bool
 	return zeroVal, nil
 }
 
@@ -9932,7 +9955,7 @@ func (ec *executionContext) _Query_pullRequestEvidence(ctx context.Context, fiel
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().PullRequestEvidence(rctx, fc.Args["repositoryIds"].([]string), fc.Args["first"].(int), fc.Args["after"].(*string))
+		return ec.resolvers.Query().PullRequestEvidence(rctx, fc.Args["repositoryIds"].([]string), fc.Args["first"].(int), fc.Args["after"].(*string), fc.Args["newestFirst"].(bool))
 	})
 	if err != nil {
 		ec.Error(ctx, err)

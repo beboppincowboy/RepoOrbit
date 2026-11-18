@@ -29,7 +29,7 @@ type ReviewEvidenceConnection { nodes: [ReviewEvidence!]!, endCursor: ID, hasNex
 type CommentEvidenceConnection { nodes: [CommentEvidence!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
 type ChildResourceStatus { complete: Boolean!, pendingChildren: Int!, lastSuccessAt: String, failureCode: String, nextAttemptAt: String }
 extend type ActivityStatus { pullRequests: ActivityResourceStatus, reviews: ChildResourceStatus, comments: ChildResourceStatus }
-extend type Query { pullRequestEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): PullRequestEvidenceConnection!, reviewEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): ReviewEvidenceConnection!, commentEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): CommentEvidenceConnection! }
+extend type Query { pullRequestEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID, newestFirst: Boolean! = false): PullRequestEvidenceConnection!, reviewEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): ReviewEvidenceConnection!, commentEvidence(repositoryIds: [ID!]!, first: Int! = 20, after: ID): CommentEvidenceConnection! }
 
 type ReleaseEvidence { id: ID!, repositoryId: ID!, name: String!, tagName: String!, body: String!, url: String!, createdAt: String!, updatedAt: String, publishedAt: String!, observedAt: String!, prerelease: Boolean!, author: EvidenceActor }
 type IssueEventEvidence { id: ID!, repositoryId: ID!, issueId: ID!, issueNumber: Int!, event: String!, url: String!, createdAt: String!, observedAt: String!, actor: EvidenceActor, assignee: EvidenceActor, label: String }

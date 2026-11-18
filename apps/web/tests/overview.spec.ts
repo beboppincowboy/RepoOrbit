@@ -87,6 +87,25 @@ test('with every selected repository withheld, the overview says so instead of s
   await expect(page.getByRole('heading', { name: 'No repositories yet' })).toHaveCount(0);
 });
 
+test('an empty selection page does not suppress the cross-repository overview', async ({ page }) => {
+  await mockSession(page, signedIn);
+  await page.route('**/graphql', route => route.fulfill({ json: { data: { selectedRepositories: {
+    nodes: [], endCursor: '20', hasNextPage: true, withheld: 0, retryAt: null,
+  } } } }));
+  await serveOverview(page, ok());
+  await page.goto('/');
+  await expect(page.getByRole('region', { name: 'Totals' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No repositories yet' })).toHaveCount(0);
+});
+
+test('the overview selection limit explains how to recover', async ({ page }) => {
+  await open(page, '/', { data: { crossRepositoryOverview: null }, errors: [{
+    message: 'The overview supports up to 100 selected repositories. Disconnect or unfollow repositories to view your overview.',
+    extensions: { code: 'OVERVIEW_SELECTION_LIMIT' },
+  }] });
+  await expect(page.getByRole('alert')).toContainText('Disconnect or unfollow repositories');
+});
+
 test('one access-unverified read is retried once and then shows the data', async ({ page }) => {
   const calls = await open(page, '/', unverified, ok());
   await expect(page.getByRole('region', { name: 'Needs attention' }).getByRole('link')).toHaveCount(3);

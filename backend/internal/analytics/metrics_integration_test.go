@@ -89,4 +89,12 @@ func TestRepositoryMetrics(t *testing.T) {
 		out.ActiveContributors.Value != nil || len(out.Contributors) != 0 || out.PullRequestsMerged.Value == nil {
 		t.Fatalf("missing child coverage affected the wrong metrics: %+v", out)
 	}
+	if _, err := pool.Exec(ctx, `UPDATE activity_resources SET boundary='2026-11-16 00:00Z' WHERE repository_id=10 AND resource='pull_requests'`); err != nil {
+		t.Fatal(err)
+	}
+	out = load()
+	if c := out.PullRequestsMerged; c.Value != nil || c.Coverage.Reason == nil || *c.Coverage.Reason != ReasonWindowBeforeBoundary {
+		t.Fatalf("PR window predates imported history: %+v", c)
+	}
+
 }

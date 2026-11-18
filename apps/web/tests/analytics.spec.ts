@@ -131,8 +131,8 @@ test('access unverified hides the repository name and offers re-verify', async (
   await expect(page.getByRole('heading', { name: 'Access could not be verified' })).toBeVisible();
   await expect(page.getByText('Protected content is hidden, not deleted.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Re-verify access' })).toBeVisible();
-  // The shell's sidebar row comes from the selection list; the workspace itself shows no name.
   await expect(page.getByRole('main').getByText('repo-1')).toHaveCount(0);
+  await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'repo-1', exact: true })).toHaveCount(0);
 });
 
 test('rate limited and awaiting states show their banners', async ({ page }) => {
@@ -168,6 +168,27 @@ test('polls while syncing and stops once settled', async ({ page }) => {
   const settled = calls.overview;
   await page.waitForTimeout(6_000);
   expect(calls.overview).toBe(settled);
+});
+
+test('polling recovers from a failed refresh and hides stale figures while access is unknown', async ({ page }) => {
+  await mockWorkspace(page, () => overview());
+  let reads = 0;
+  await page.route('**/graphql', route => {
+    if (!route.request().postDataJSON().query.startsWith('query RepositoryOverview')) return route.fallback();
+    reads++;
+    if (reads === 2) return route.fulfill({ status: 503 });
+    const data = overview(reads === 1 ? {
+      activity: activity({ synchronized: false, issues: stream({ jobState: 'running', phase: 'backfill' }) }),
+    } : {});
+    return route.fulfill({ json: { data: { repositoryOverview: data } } });
+  });
+  await page.goto('/workspace/1');
+  const metrics = page.getByRole('region', { name: 'Repository metrics' });
+  await expect(metrics).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Could not load repository analytics/ })).toBeVisible();
+  await expect(metrics).toHaveCount(0);
+  await expect(page.locator('[data-sync-state="synced"]')).toBeVisible({ timeout: 10_000 });
+  await expect(metrics).toBeVisible();
 });
 
 test('the header pill opens the full sync status with Refresh activity', async ({ page }) => {

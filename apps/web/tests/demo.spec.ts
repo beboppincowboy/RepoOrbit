@@ -12,6 +12,16 @@ test('shows the database-backed demo overview', async ({ page }) => {
   await expect(page.getByRole('region', { name: 'Needs attention' }).getByRole('link', { name: /^example · / }).first()).toBeVisible();
 });
 
+test('pages through seeded pull requests in recent-first order', async ({ page }) => {
+  await page.goto('/workspace/1?tab=pulls');
+  const rows = page.getByRole('table').locator('tbody tr');
+  await expect(rows).toHaveCount(20);
+  await expect(rows.first()).toContainText('#101');
+  await page.getByRole('button', { name: 'Load more pull requests' }).click();
+  await expect(rows).toHaveCount(30);
+  await expect(rows.last()).toContainText('#130');
+});
+
 test('distinguishes an empty dataset from an error', async ({ page }) => {
   await page.route('**/graphql', route => route.fulfill({ json: { data: { selectedRepositories: { nodes: [], endCursor: null, hasNextPage: false } } } }));
   await page.goto('/');

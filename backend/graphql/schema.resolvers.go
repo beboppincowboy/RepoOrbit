@@ -235,8 +235,8 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 }
 
 // PullRequestEvidence is the resolver for the pullRequestEvidence field.
-func (r *queryResolver) PullRequestEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.PullRequestEvidenceConnection, error) {
-	return r.pullRequests(ctx, repositoryIds, first, after)
+func (r *queryResolver) PullRequestEvidence(ctx context.Context, repositoryIds []string, first int, after *string, newestFirst bool) (*model.PullRequestEvidenceConnection, error) {
+	return r.pullRequests(ctx, repositoryIds, first, after, newestFirst)
 }
 
 // ReviewEvidence is the resolver for the reviewEvidence field.

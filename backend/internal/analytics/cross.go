@@ -42,7 +42,7 @@ type CrossDailyPoint struct {
 // CrossOverview summarizes several repositories with the per-repository metric definitions of Load.
 //
 // A repository is counted when its issue and PR streams have converged for the window (IssuesOpened and
-// PullRequestsMerged covered); otherwise it is syncing and left out of every total, list and trend, never added as zero.
+// PullRequestsMerged covered); otherwise it is syncing and left out of totals, the trend and NeedsAttention, never added as zero.
 // A counted repository whose review or comment histories are still importing stays counted: metrics that need them
 // become unknown (ReviewBacklog) or omit that repository's rows (NeedsAttention), exactly as its workspace shows.
 type CrossOverview struct {

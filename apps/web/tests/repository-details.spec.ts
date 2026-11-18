@@ -60,13 +60,19 @@ test('loads ordered chunks with two requests in flight, and a failed chunk does 
   } finally {
     releaseInitial();
   }
-  await expect(sidebar(page).getByRole('link', { name: /^repo-\d+$/ })).toHaveText(repositories.map(repo => repo.fullName.split('/')[1]));
+  await expect(sidebar(page).getByRole('link', { name: /^repo-\d+$/ })).toHaveText(repositories.filter((_, i) => i < 8 || i >= 16).map(repo => repo.fullName.split('/')[1]));
+  await expect(sidebar(page).getByRole('link', { name: 'repo-9', exact: true })).toHaveCount(0);
+  await expect(page.locator('#repolist option[value="ada/repo-9"]')).toHaveCount(0);
   await expect.poll(() => calls.length).toBe(3);
   // Repository 9's chunk failed; its workspace still opens from its own analytics read.
   await expect(page.getByRole('heading', { name: 'repo-1', exact: true })).toBeVisible();
   expect(peak).toBe(2);
   expect(listCalls).toBe(1);
   expect(calls.map(ids => ids.length)).toEqual([8, 8, 4]);
+  await sidebar(page).getByRole('button', { name: 'Retry details' }).click();
+  await expect(sidebar(page).getByRole('link', { name: 'repo-9', exact: true })).toBeVisible();
+  expect(calls.map(ids => ids[0])).toEqual(['1', '9', '17', '9']);
+  expect(listCalls).toBe(1);
 });
 
 test('a failed access check clears previously loaded details and keeps the other repository', async ({ page }) => {
@@ -98,6 +104,34 @@ test('a failed access check clears previously loaded details and keeps the other
   await sidebar(page).getByRole('link', { name: 'Overview', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('Could not load repositories.');
   await expect(sidebar(page).getByRole('link', { name: 'repo-2', exact: true })).toHaveCount(0);
+});
+
+test('switching repositories clears the previous workspace while its access check runs', async ({ page }) => {
+  await mockSession(page, signedIn);
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/graphql', async route => {
+    const { query, variables } = route.request().postDataJSON();
+    if (query.startsWith('query SelectedRepositories')) {
+      return route.fulfill({ json: { data: { selectedRepositories: {
+        nodes: [selectedRepo('1'), selectedRepo('2')], withheld: 0, hasNextPage: false,
+      } } } });
+    }
+    if (query.startsWith('query RepositoryOverview') && variables.id === '2') await pending;
+    if (await answerScreens(route, query, variables)) return;
+    return route.fulfill({ json: { data: { a0: { activity: quietActivity }, r0: issuePage('1'), a1: { activity: quietActivity }, r1: issuePage('2') } } });
+  });
+  await page.goto('/workspace/1');
+  const heading = page.getByRole('main').getByRole('heading', { level: 1 });
+  await expect(heading).toHaveText('repo-1');
+  try {
+    await sidebar(page).getByRole('link', { name: 'repo-2', exact: true }).click();
+    await expect(page.getByText('Loading repository workspace…')).toBeVisible();
+    await expect(heading).toHaveCount(0);
+  } finally {
+    release();
+  }
+  await expect(heading).toHaveText('repo-2');
 });
 
 for (const action of ['navigating away', 'signing out'] as const) {

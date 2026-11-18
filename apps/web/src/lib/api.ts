@@ -1,4 +1,6 @@
 export type Issue = { id: string; repositoryId: string; title: string; state: string };
+// Error message the analytics fetchers throw when the API withholds the content (ACCESS_UNVERIFIED); callers compare against it.
+export const ACCESS_UNVERIFIED_MESSAGE = "Access could not be verified";
 // Wire values of the backend's repositories.SyncState; "demo" appears only in Demo mode.
 export type SyncState = "demo" | "awaiting-sync" | "not-synchronized";
 // Shared metadata refresh status (null when not selected, and in Demo mode). Times are RFC 3339; failureCode is a safe machine code.
@@ -40,7 +42,7 @@ export async function logout() {
 }
 type GraphQLResponse<Data> = {
   data?: Data | null;
-  errors?: { path?: (string | number)[]; extensions?: { code?: string; retryAt?: string } }[];
+  errors?: { message?: string; path?: (string | number)[]; extensions?: { code?: string; retryAt?: string } }[];
 };
 
 async function graphqlQuery<Data>(queryText: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<GraphQLResponse<Data>> {
@@ -185,7 +187,7 @@ export async function fetchRepositoryOverview(id: string, days: MetricWindow, si
     }
   }`, { id, days }, signal);
   if (errors?.some(error => error.extensions?.code === "ACCESS_UNVERIFIED")) {
-    throw new Error("Access could not be verified");
+    throw new Error(ACCESS_UNVERIFIED_MESSAGE);
   }
   if (!data || errors?.length) throw new Error("Could not load repository analytics");
   return data.repositoryOverview;
@@ -195,15 +197,15 @@ export async function fetchRepositoryOverview(id: string, days: MetricWindow, si
 export type ReviewState = "awaiting_review" | "commented" | "approved" | "changes_requested" | "merged" | "closed";
 export type WorkspacePullRequest = { id: string; number: number; title: string; state: string; url: string; createdAt: string; mergedAt: string | null; reviewState: ReviewState | null; author: { login: string; type: string } | null };
 
-// Loads the first 20 pull requests of one repository (by ID order). Rejects with "Access could not be verified" when withheld.
-export async function fetchWorkspacePullRequests(id: string, signal: AbortSignal) {
+// Pages through imported pull requests newest first.
+export async function fetchWorkspacePullRequests(id: string, after: string | null, signal: AbortSignal) {
   const { data, errors } = await graphqlQuery<{
-    pullRequestEvidence: { nodes: WorkspacePullRequest[]; withheld: number; hasNextPage: boolean };
-  }>(`query WorkspacePullRequests($id: ID!) {
-    pullRequestEvidence(repositoryIds: [$id], first: 20) { nodes { id number title state url createdAt mergedAt reviewState author { login type } } withheld hasNextPage }
-  }`, { id }, signal);
+    pullRequestEvidence: { nodes: WorkspacePullRequest[]; withheld: number; hasNextPage: boolean; endCursor: string | null };
+  }>(`query WorkspacePullRequests($id: ID!, $after: ID) {
+    pullRequestEvidence(repositoryIds: [$id], first: 20, after: $after, newestFirst: true) { nodes { id number title state url createdAt mergedAt reviewState author { login type } } withheld hasNextPage endCursor }
+  }`, { id, after }, signal);
   if (!data || errors?.length) throw new Error("Could not load pull requests");
-  if (data.pullRequestEvidence.withheld) throw new Error("Access could not be verified");
+  if (data.pullRequestEvidence.withheld) throw new Error(ACCESS_UNVERIFIED_MESSAGE);
   return data.pullRequestEvidence;
 }
 
@@ -211,8 +213,8 @@ export type AttentionKind = "pr_awaiting_review" | "issue_no_response" | "stale_
 // since: when the item was opened, or for stale_issue when it was last updated (RFC 3339).
 export type AttentionItem = { kind: AttentionKind; repositoryId: string; fullName: string; number: number; title: string; url: string; since: string };
 export type AssignedIssue = { repositoryId: string; fullName: string; number: number; title: string; url: string; updatedAt: string };
-// Totals, lists and the trend cover only repositoriesCounted; repositoriesSyncing are left out (never zero);
-// withheld counts selected repositories that could not be shown, without naming them. Lists hold at most 25 rows.
+// Totals, the trend and Needs attention cover counted repositories. Assigned issues require issue coverage.
+// Withheld counts unverified repositories without naming them. Lists hold at most 25 rows.
 export type CrossRepositoryOverview = {
   days: MetricWindow;
   windowStart: string;
@@ -243,8 +245,10 @@ export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: A
     }
   }`, { days }, signal);
   if (errors?.some(error => error.extensions?.code === "ACCESS_UNVERIFIED")) {
-    throw new Error("Access could not be verified");
+    throw new Error(ACCESS_UNVERIFIED_MESSAGE);
   }
-  if (!data?.crossRepositoryOverview || errors?.length) throw new Error("Could not load the overview");
+  const selectionLimit = errors?.find(error => error.extensions?.code === "OVERVIEW_SELECTION_LIMIT");
+  if (selectionLimit?.message) throw new Error(selectionLimit.message);
+  if (!data?.crossRepositoryOverview || errors?.length) throw new Error("Could not load the overview. Check that the local services are running.");
   return data.crossRepositoryOverview;
 }

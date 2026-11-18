@@ -197,7 +197,19 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 		}
 	}
 
-	// Cross-repository overview: an uninstalled repository is withheld without its name; the other still counts.
+	for _, page := range []struct {
+		after, want string
+	}{
+		{"", `"nodes":[{"number":6}],"endCursor":"105","hasNextPage":true`},
+		{`, after:"105"`, `"nodes":[{"number":5}],"endCursor":"104","hasNextPage":true`},
+	} {
+		prs := fmt.Sprintf(`{ pullRequestEvidence(repositoryIds:["%d"], first:1, newestFirst:true%s) { nodes { number } endCursor hasNextPage } }`, repo, page.after)
+		if got := run(alice, prs); !strings.Contains(got, page.want) {
+			t.Fatalf("newest-first PR page: %s", got)
+		}
+	}
+
+	// Cross-repository overview: an uninstalled repository is denied and excluded; the other still counts.
 	hidden := gh.AddRepo("alice", "hidden-repo", true)
 	gh.Install("alice", 10, hidden)
 	if err := repos.Connect(ctx, aliceID, hidden); err != nil {
@@ -245,7 +257,7 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := cross.Data.CrossRepositoryOverview
-	if c.RepositoriesCounted != 1 || c.RepositoriesSyncing != 0 || c.Withheld != 1 || c.OpenIssues.Value == nil || *c.OpenIssues.Value != 2 ||
+	if c.RepositoriesCounted != 1 || c.RepositoriesSyncing != 0 || c.Withheld != 0 || c.OpenIssues.Value == nil || *c.OpenIssues.Value != 2 ||
 		c.ReviewBacklog.Value == nil || *c.ReviewBacklog.Value != 1 || len(c.AssignedToMe) != 1 || c.AssignedToMe[0].Title != "mine open" ||
 		c.AssignedToMe[0].FullName != "alice/secret" || len(c.NeedsAttention) != 3 {
 		t.Fatalf("cross overview: %s", got)
