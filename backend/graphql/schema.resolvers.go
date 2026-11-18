@@ -15,7 +15,6 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/analytics"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
-	"github.com/repoorbit/repoorbit/backend/internal/platform"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
@@ -48,7 +47,7 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	result := &model.RepositoryConnection{Nodes: []*model.Repository{}}
 	if r.Demo {
@@ -116,7 +115,7 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	if r.Demo {
 		rows, err := r.Queries.ListDemoRepositories(ctx, db.ListDemoRepositoriesParams{After: repoID - 1, PageSize: 1})
@@ -181,7 +180,7 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 		}
 		ids = append(ids, v)
 	}
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	result := &model.IssueConnection{Nodes: []*model.Issue{}}
 	var readFence accessfence.Snapshot

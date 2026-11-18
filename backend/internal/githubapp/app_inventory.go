@@ -21,19 +21,10 @@ import (
 // AppInventory returns one complete app-wide installation-to-repository membership inventory.
 // Any uncertainty returns an error and no inventory; callers must not treat an error as absence.
 func (c *Client) AppInventory(ctx context.Context, key *rsa.PrivateKey) (map[int64][]int64, error) {
-	if key == nil || c.OAuth.ClientID == "" {
-		return nil, fmt.Errorf("github app: missing credentials")
-	}
-	now := time.Now()
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
-	claims, _ := json.Marshal(map[string]any{"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(9 * time.Minute).Unix(), "iss": c.OAuth.ClientID})
-	unsigned := header + "." + base64.RawURLEncoding.EncodeToString(claims)
-	digest := sha256.Sum256([]byte(unsigned))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	jwt, err := c.appJWT(key)
 	if err != nil {
-		return nil, fmt.Errorf("github app: sign JWT")
+		return nil, err
 	}
-	jwt := unsigned + "." + base64.RawURLEncoding.EncodeToString(sig)
 	type installation struct {
 		ID        int64           `json:"id"`
 		Suspended json.RawMessage `json:"suspended_at"`
@@ -55,15 +46,9 @@ func (c *Client) AppInventory(ctx context.Context, key *rsa.PrivateKey) (map[int
 			if _, ok := result[in.ID]; ok {
 				return nil, fmt.Errorf("github app: duplicate installation")
 			}
-			var token struct {
-				Token string `json:"token"`
-			}
-			_, err = c.inventoryRequest(ctx, http.MethodPost, jwt, fmt.Sprintf("/app/installations/%d/access_tokens", in.ID), &token)
+			token, err := c.requestInstallationToken(ctx, jwt, in.ID)
 			if err != nil {
 				return nil, err
-			}
-			if token.Token == "" {
-				return nil, fmt.Errorf("github app: invalid installation token")
 			}
 			ids := []int64{}
 			seen := map[int64]bool{}
@@ -75,7 +60,7 @@ func (c *Client) AppInventory(ctx context.Context, key *rsa.PrivateKey) (map[int
 						ID int64 `json:"id"`
 					} `json:"repositories"`
 				}
-				more, e := c.inventoryRequest(ctx, http.MethodGet, token.Token, fmt.Sprintf("/installation/repositories?per_page=100&page=%d", rp), &out)
+				more, e := c.inventoryRequest(ctx, http.MethodGet, token.Value, fmt.Sprintf("/installation/repositories?per_page=100&page=%d", rp), &out)
 				if e != nil {
 					return nil, e
 				}
@@ -111,6 +96,36 @@ func (c *Client) AppInventory(ctx context.Context, key *rsa.PrivateKey) (map[int
 		}
 	}
 	return result, nil
+}
+
+func (c *Client) appJWT(key *rsa.PrivateKey) (string, error) {
+	if key == nil || c.OAuth.ClientID == "" {
+		return "", fmt.Errorf("github app: missing credentials")
+	}
+	now := time.Now()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+	claims, _ := json.Marshal(map[string]any{"iat": now.Add(-time.Minute).Unix(), "exp": now.Add(9 * time.Minute).Unix(), "iss": c.OAuth.ClientID})
+	unsigned := header + "." + base64.RawURLEncoding.EncodeToString(claims)
+	digest := sha256.Sum256([]byte(unsigned))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, digest[:])
+	if err != nil {
+		return "", fmt.Errorf("github app: sign JWT")
+	}
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(sig), nil
+}
+
+type installationToken struct {
+	Value     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func (c *Client) requestInstallationToken(ctx context.Context, jwt string, id int64) (installationToken, error) {
+	var token installationToken
+	_, err := c.inventoryRequest(ctx, http.MethodPost, jwt, fmt.Sprintf("/app/installations/%d/access_tokens", id), &token)
+	if err == nil && token.Value == "" {
+		err = fmt.Errorf("github app: invalid installation token")
+	}
+	return token, err
 }
 
 func (c *Client) inventoryRequest(ctx context.Context, method, token, path string, out any) (bool, error) {
