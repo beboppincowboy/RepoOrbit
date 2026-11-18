@@ -24,7 +24,7 @@ async function mockRepository(page: Page, meta: object | null, activity: object 
     return route.fulfill({ json: { data: { repositoryOverview: repositoryOverview(extra.syncState ?? 'awaiting-sync', activity) } } });
   });
   await page.goto('/workspace/10');
-  if ('withheld' in issues) return expect(page.getByRole('heading', { name: 'Repository unavailable' })).toBeVisible();
+  if ('withheld' in issues) return expect(page.getByRole('heading', { name: /^(Access unverified )?Repository$/ })).toBeVisible();
   await page.getByRole('button', { name: 'Sync details' }).click();
   await expect(page.getByRole('region', { name: 'Sync status' })).toBeVisible();
 }

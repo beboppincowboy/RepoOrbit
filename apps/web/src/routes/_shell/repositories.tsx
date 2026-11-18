@@ -72,6 +72,7 @@ function Repositories() {
       try {
         await setSelected(repo.id, selected);
         done.set(repo.id, selected);
+        if (!selected) queryClient.removeQueries({ queryKey: ["repositorySnapshot", session.mode, session.user?.login, repo.id] });
         next[repo.id] = { ok: true, text: selected ? "Connected. Awaiting sync." : "Disconnected. RepoOrbit no longer syncs it for you." };
       } catch (e) {
         next[repo.id] = { ok: false, text: e instanceof Error ? e.message : "Something went wrong." };
@@ -110,7 +111,7 @@ function Repositories() {
       <div role="group" aria-label="Show" className={segGroupClass}>
         {([["All", undefined], ["Connected", "selected"]] as const).map(([label, view]) => <button key={label} type="button" aria-pressed={search.view === view} onClick={() => setSearch({ view })} className={segItemClass}>{label}</button>)}
       </div>
-      {!demo && <Button variant="outline" size="sm" className="ml-auto" onClick={() => query.refetch()} disabled={query.isFetching || applying}>Refresh</Button>}
+      {!demo && <Button variant="outline" size="sm" className="ml-auto" onClick={() => void Promise.all([query.refetch(), queryClient.invalidateQueries({ queryKey: ["selectedRepositories"] })])} disabled={query.isFetching || applying}>Refresh</Button>}
     </ToolsRow>
 
     {demo && <p className={noteClass}>Demo mode has no GitHub connection, so there is nothing to connect. Sign in with GitHub credentials configured to choose your repositories.</p>}

@@ -45,8 +45,14 @@ type GraphQLResponse<Data> = {
   errors?: { message?: string; path?: (string | number)[]; extensions?: { code?: string; retryAt?: string } }[];
 };
 
+export class RepositorySnapshotError extends Error {}
+
 async function graphqlQuery<Data>(queryText: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<GraphQLResponse<Data>> {
-  const response = await fetch("/graphql", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "" }, cache: "no-store", signal, body: JSON.stringify({ query: queryText, variables }) });
+  const response = await fetch("/graphql", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "" }, cache: "no-store", signal, body: JSON.stringify({ query: queryText, variables }) }).catch((error: unknown) => {
+    if (signal?.aborted || !(error instanceof TypeError)) throw error;
+    throw new RepositorySnapshotError("RepoOrbit could not reach the server.");
+  });
+  if ([502, 503, 504].includes(response.status)) throw new RepositorySnapshotError("The server is temporarily unavailable.");
   if (!response.ok) throw new Error("Unable to load repositories");
   return response.json();
 }
@@ -86,13 +92,17 @@ export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal
 type SelectedRepositoryBatch = { repositories: SelectedRepository[]; details: RepositoryDetail[] | null };
 type SelectedRepositoryPage = Omit<RepositoryConnection, "nodes"> & { batches: SelectedRepositoryBatch[] };
 
+export async function fetchSelectedRepositoryMetadata(after: string | null, signal?: AbortSignal): Promise<RepositoryConnection> {
+  const { data, errors } = await graphqlQuery<{ selectedRepositories: RepositoryConnection }>(`query SelectedRepositories($after: ID) { selectedRepositories(first: 20, after: $after) { nodes { id fullName description syncState metadataStatus { state lastSuccessAt nextAttemptAt paused failureCode followSuspended } } endCursor hasNextPage withheld retryAt } }`, { after }, signal);
+  if (!data || errors?.length) throw new Error("Unable to load repositories");
+  return data.selectedRepositories;
+}
+
 // Fetches one page of selected repositories, then their details with at most two requests in flight.
 // Pass null for the first page or the previous page’s endCursor. Batches preserve list order and retain IDs for retry.
 // List failures and cancellation reject the call. A failed detail batch has null details.
-export async function fetchSelectedRepositories(after: string | null, signal?: AbortSignal): Promise<SelectedRepositoryPage> {
-  const { data, errors } = await graphqlQuery<{ selectedRepositories: RepositoryConnection }>(`query SelectedRepositories($after: ID) { selectedRepositories(first: 20, after: $after) { nodes { id fullName description syncState metadataStatus { state lastSuccessAt nextAttemptAt paused failureCode followSuspended } } endCursor hasNextPage withheld retryAt } }`, { after }, signal);
-  if (!data || errors?.length) throw new Error("Unable to load repositories");
-  const { nodes, ...connection } = data.selectedRepositories;
+export async function fetchSelectedRepositories(metadata: Promise<RepositoryConnection>, signal?: AbortSignal): Promise<SelectedRepositoryPage> {
+  const { nodes, ...connection } = await metadata;
   const batches: SelectedRepositoryBatch[] = [];
   for (let i = 0; i < nodes.length; i += detailChunk) {
     batches.push({ repositories: nodes.slice(i, i + detailChunk), details: null });
@@ -155,6 +165,7 @@ type RepositoryOverview = {
   openIssues: CountMetric;
   staleOpenIssues: CountMetric;
   pullRequestsMerged: CountMetric;
+  openPullRequests: CountMetric;
   firstResponseTime: MedianMetric;
   issuesWithoutResponse: Pick<CountMetric, "value">;
   mergeTime: MedianMetric;
@@ -168,6 +179,12 @@ type RepositoryOverview = {
   daily: { day: string; issuesOpened: number | null; pullRequestsMerged: number | null }[];
 };
 
+export class RepositoryAccessError extends Error {
+  constructor(readonly retryAt: string | null) {
+    super(ACCESS_UNVERIFIED_MESSAGE);
+  }
+}
+
 export async function fetchRepositoryOverview(id: string, days: MetricWindow, signal: AbortSignal) {
   const coverage = "covered reason through";
   const count = `value coverage { ${coverage} }`;
@@ -177,7 +194,7 @@ export async function fetchRepositoryOverview(id: string, days: MetricWindow, si
   }>(`query RepositoryOverview($id: ID!, $days: Int!) {
     repositoryOverview(id: $id, days: $days) {
       fullName syncState activity { ${activityFields} archived }
-      openIssues { ${count} } staleOpenIssues { ${count} } pullRequestsMerged { ${count} }
+      openIssues { ${count} } staleOpenIssues { ${count} } pullRequestsMerged { ${count} } openPullRequests { ${count} }
       firstResponseTime { ${median} } mergeTime { ${median} } issuesWithoutResponse { value }
       activeBotContributors { ${count} } contributorsCoverage { ${coverage} }
       contributors { login isBot pullRequestsOpened reviewsSubmitted commentsCreated }
@@ -186,9 +203,8 @@ export async function fetchRepositoryOverview(id: string, days: MetricWindow, si
       timeline { sourceId kind occurredAt title number url actor { login isBot } }
     }
   }`, { id, days }, signal);
-  if (errors?.some(error => error.extensions?.code === "ACCESS_UNVERIFIED")) {
-    throw new Error(ACCESS_UNVERIFIED_MESSAGE);
-  }
+  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
+  if (accessError) throw new RepositoryAccessError(accessError.extensions?.retryAt ?? null);
   if (!data || errors?.length) throw new Error("Could not load repository analytics");
   return data.repositoryOverview;
 }

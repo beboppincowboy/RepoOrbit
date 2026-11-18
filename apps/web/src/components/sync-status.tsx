@@ -80,10 +80,14 @@ const tones: Record<SyncDisplay, [string, string]> = {
   "not-synchronized": ["text-muted-foreground", "bg-muted"],
 };
 
+export function LoadingCircle({ className = "size-4" }: { className?: string }) {
+  return <span aria-hidden="true" className={`inline-block shrink-0 rounded-full border-[1.5px] border-current border-r-transparent motion-safe:animate-spin ${className}`} />;
+}
+
 // The pill's 7px dot on its own (sidebar rows). Carries no label or data-sync-state; callers name the state themselves.
 export function SyncDot({ display }: { display: SyncDisplay }) {
-  const shape = display === "awaiting" ? "border-[1.5px] border-dashed border-current" : display === "syncing" ? "sync-pulse bg-current" : "bg-current";
-  return <span aria-hidden="true" className={`inline-block size-[7px] shrink-0 rounded-full ${tones[display][0]} ${shape}`} />;
+  if (display === "awaiting" || display === "syncing") return <LoadingCircle className={`size-2.5 ${tones[display][0]}`} />;
+  return <span aria-hidden="true" className={`inline-block size-[7px] shrink-0 rounded-full bg-current ${tones[display][0]}`} />;
 }
 
 export type SyncInput = {
@@ -114,7 +118,7 @@ export function syncDisplay({ syncState, activity = null, metadataStatus = null,
 export function SyncStatus({ compact = false, ...props }: SyncInput & { compact?: boolean }) {
   const display = syncDisplay(props);
   const badge = <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-[9px] py-0.5 text-xs leading-[1.5] ${tones[display].join(" ")}`} data-sync-state={display}>
-    <SyncDot display={display} />{syncLabels[display]}
+    <SyncDot display={display} /><span className={compact && display === "access-unverified" ? "sr-only" : undefined}>{syncLabels[display]}</span>
   </span>;
   if (compact) return badge;
   const metadata = props.metadataStatus ? describeMetadata(props.metadataStatus) : [];

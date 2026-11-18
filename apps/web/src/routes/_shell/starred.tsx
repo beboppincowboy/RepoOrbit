@@ -43,6 +43,7 @@ function Starred() {
     try {
       await setFollowed(repo.id, !repo.selected);
       const selected = !repo.selected;
+      if (!selected) queryClient.removeQueries({ queryKey: ["repositorySnapshot", session.mode, session.user?.login, repo.id] });
       queryClient.setQueryData<InfiniteData<StarredPage>>(["starred"], old => old && { ...old, pages: old.pages.map(p => ({ ...p, repositories: p.repositories.map(r => (r.id === repo.id ? { ...r, selected, syncState: selected ? "awaiting-sync" as const : "not-synchronized" as const } : r)) })) });
       setError(null);
       void queryClient.invalidateQueries({ queryKey: ["selectedRepositories"] });

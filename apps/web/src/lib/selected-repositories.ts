@@ -1,15 +1,35 @@
-import { useInfiniteQuery } from "@tanstack/react-query";
-import { fetchSelectedRepositories, type Me } from "@/lib/api";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { fetchSelectedRepositoryMetadata, fetchSelectedRepositories, type Me } from "@/lib/api";
 
 // One key for the shell, the overview and the Repositories screen so they share one fetch
 // (fetchSelectedRepositories also fires the per-batch detail requests).
 export const selectedRepositoriesKey = (session: Me) => ["selectedRepositories", session.mode, session.user?.login] as const;
 
+function useSelectedRepositoryMetadataPage(session: Me) {
+  const queryClient = useQueryClient();
+  return (after: string | null) => queryClient.fetchQuery({
+    queryKey: [...selectedRepositoriesKey(session), "metadata-page", after],
+    queryFn: ({ signal }) => fetchSelectedRepositoryMetadata(after, signal),
+  });
+}
+
 // Infinite query over the viewer's selected repositories. Network: each page also fetches activity/issue details per batch.
 export function useSelectedRepositories(session: Me) {
+  const fetchPage = useSelectedRepositoryMetadataPage(session);
   return useInfiniteQuery({
     queryKey: selectedRepositoriesKey(session),
-    queryFn: ({ pageParam, signal }) => fetchSelectedRepositories(pageParam, signal),
+    queryFn: ({ pageParam, signal }) => fetchSelectedRepositories(fetchPage(pageParam), signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: last => (last.hasNextPage ? last.endCursor : undefined),
+  });
+}
+
+// Navigation can render as soon as the server verifies the selected repositories.
+export function useSelectedRepositoryMetadata(session: Me) {
+  const fetchPage = useSelectedRepositoryMetadataPage(session);
+  return useInfiniteQuery({
+    queryKey: [...selectedRepositoriesKey(session), "metadata"],
+    queryFn: ({ pageParam }) => fetchPage(pageParam),
     initialPageParam: null as string | null,
     getNextPageParam: last => (last.hasNextPage ? last.endCursor : undefined),
   });
