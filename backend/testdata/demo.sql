@@ -41,7 +41,7 @@ INSERT INTO activity_issue_assignees (issue_id, source_id, login, type)
 SELECT source_id, 1, 'demo-user', 'User' FROM activity_issues
 WHERE repository_id IN (SELECT id FROM repositories WHERE is_demo) AND state = 'open' AND number % 6 = 2;
 WITH pulls AS (
-  SELECT r.id AS repo, r.name, g, 910000000 + r.id * 1000 + g AS source_id, now() - g * interval '61 hours' AS created
+  SELECT r.id AS repo, r.name, g, 910000000 + r.id * 1000 + 31 - g AS source_id, now() - g * interval '61 hours' AS created
   FROM repositories r CROSS JOIN LATERAL generate_series(1, CASE WHEN r.id = 1 THEN 30 ELSE 10 END) AS g WHERE r.is_demo
 )
 INSERT INTO activity_pull_requests (source_id, repository_id, number, title, state, html_url, created_at, updated_at, closed_at, merged_at, author_id, author_login, author_type)

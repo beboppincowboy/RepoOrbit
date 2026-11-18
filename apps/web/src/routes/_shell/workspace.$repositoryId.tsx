@@ -1,12 +1,13 @@
-import { useMemo, useState, type ReactNode } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
+import { IssueIcon, PullRequestIcon } from "@/components/needs-attention";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { selectedRows, useSelectedRepositories } from "@/lib/selected-repositories";
-import { fetchRepositoryOverview, fetchWorkspacePullRequests, type ActivityResourceStatus, type MetricWindow, type ReviewState, type WorkspacePullRequest } from "@/lib/api";
+import { selectedRepositoriesKey, selectedRows, useSelectedRepositories } from "@/lib/selected-repositories";
+import { ACCESS_UNVERIFIED_MESSAGE, fetchSelectedRepositories, fetchRepositoryOverview, fetchWorkspacePullRequests, type ActivityResourceStatus, type MetricWindow, type ReviewState, type WorkspacePullRequest } from "@/lib/api";
 
 const tabs = { overview: "Overview", pulls: "Pull Requests", contributors: "Contributors", activity: "Activity" } as const;
 type Tab = keyof typeof tabs;
@@ -23,7 +24,6 @@ export const Route = createFileRoute("/_shell/workspace/$repositoryId")({
 type Overview = NonNullable<Awaited<ReturnType<typeof fetchRepositoryOverview>>>;
 type Coverage = Overview["openIssues"]["coverage"];
 type Entry = Overview["timeline"][number];
-const accessError = "Access could not be verified";
 
 // Prototype D2 classes, as Tailwind strings.
 const card = "rounded-xl border border-border bg-card min-w-0 min-h-0";
@@ -35,8 +35,8 @@ const smallBtn = buttonVariants({ variant: "outline", size: "sm" });
 const svg = (size: number, d: ReactNode) => <svg width={size} height={size} viewBox="0 0 16 16" aria-hidden="true" className="shrink-0">{d}</svg>;
 const icons = {
   repo: svg(16, <path d="M3 2.5h8.5v10H4.5A1.5 1.5 0 0 1 3 11zM3 11a1.5 1.5 0 0 1 1.5-1.5h7" fill="none" stroke="currentColor" strokeWidth="1.4" />),
-  pr: svg(14, <><circle cx="4" cy="3.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.4" /><circle cx="4" cy="12.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.4" /><circle cx="12" cy="12.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M4 5.3v5.4M12 10.7V6a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" strokeWidth="1.4" /></>),
-  issue: svg(14, <><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.4" /><circle cx="8" cy="8" r="1.4" fill="currentColor" /></>),
+  pr: <PullRequestIcon />,
+  issue: <IssueIcon />,
   tag: svg(14, <><path d="M2.5 2.5h5.3l5.7 5.7-5.3 5.3-5.7-5.7z" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /><circle cx="5.5" cy="5.5" r="1" fill="currentColor" /></>),
   ext: svg(12, <path d="M9 3h4v4M13 3L7 9M11 9.5V13H3V5h3.5" fill="none" stroke="currentColor" strokeWidth="1.5" />),
   info: svg(14, <><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M8 7v4M8 5v.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></>),
@@ -75,23 +75,55 @@ function RepositoryWorkspace() {
   const { repositoryId } = Route.useParams();
   const search = Route.useSearch();
   const { session } = Route.useRouteContext();
+  const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: ["repositoryOverview", session.mode, session.user?.login, repositoryId, search.days],
     queryFn: ({ signal }) => fetchRepositoryOverview(repositoryId, search.days, signal),
-    placeholderData: keepPreviousData,
+    placeholderData: (previous, query) => query?.queryKey[1] === session.mode && query.queryKey[2] === session.user?.login && query.queryKey[3] === repositoryId ? previous : undefined,
     gcTime: 0,
     refetchOnWindowFocus: true,
     // Follow running or not-yet-started sync work; stop once it settles (reconciliation leaves settled streams "queued").
     refetchInterval: ({ state }) => {
-      const display = state.data && !state.error ? syncDisplay({ syncState: state.data.syncState, activity: state.data.activity }) : null;
-      return display === "syncing" ? 3000 : display === "awaiting" ? 10000 : false;
+      if (!state.data) return false;
+      const { syncState, activity } = state.data;
+      const display = syncDisplay({ syncState, activity });
+      if (display === "syncing") return 3000;
+      if (display === "awaiting") return 10000;
+      if (display !== "partial") return false;
+      const streams = [activity.issues, activity.pullRequests, activity.releases, activity.issueEvents?.traversal];
+      const children = [activity.reviews, activity.comments];
+      const queued = streams.some(stream => stream?.jobState === "queued" && stream.phase !== "current")
+        || children.some(child => child && !child.complete && child.nextAttemptAt);
+      return queued ? 10000 : false;
     },
   });
   const path = { to: Route.to, params: { repositoryId } } as const;
-  const overview = query.data;
+  const overview = query.isError ? undefined : query.data;
   const demo = session.mode === "demo";
   // Metadata refresh state and the access check's retry time come from the selection list the shell already loads.
-  const row = selectedRows(useSelectedRepositories(session)).find(r => r.repo.id === repositoryId);
+  const selection = useSelectedRepositories(session);
+  const row = selectedRows(selection).find(r => r.repo.id === repositoryId);
+  const accessRejected = query.error?.message === ACCESS_UNVERIFIED_MESSAGE || (query.isSuccess && overview === null);
+  useEffect(() => {
+    if (!accessRejected || query.isFetching || row?.detail?.state !== "available") return;
+    queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof fetchSelectedRepositories>>>>(
+      selectedRepositoriesKey(session),
+      previous => previous && {
+        ...previous,
+        pages: previous.pages.map(page => ({
+          ...page,
+          batches: page.batches.map(batch => {
+            if (!batch.details || !batch.repositories.some(repo => repo.id === repositoryId)) return batch;
+            return {
+              ...batch,
+              details: batch.details.map((detail, i) => batch.repositories[i].id === repositoryId && detail.state === "available"
+                ? { state: "access-unverified", retryAt: null } : detail),
+            };
+          }),
+        })),
+      },
+    );
+  }, [accessRejected, query.isFetching, queryClient, repositoryId, row?.detail?.state, session]);
   const retryAt = row?.detail ? (row.detail.state === "available" ? row.detail.issues.retryAt : row.detail.retryAt) : null;
   const sync: SyncInput | null = overview ? {
     syncState: overview.syncState,
@@ -103,7 +135,7 @@ function RepositoryWorkspace() {
 
   // Check access before rendering any data: a refetch that loses access keeps the last good data in the cache.
   // Only real withholding hides the page; a paused metadata refresh also reads "Access unverified" but stays explained in Sync details.
-  if (query.error?.message === accessError || row?.detail?.state === "access-unverified") return <div className="flex h-full min-h-0 flex-col gap-3">
+  if (query.error?.message === ACCESS_UNVERIFIED_MESSAGE || (overview !== null && row?.detail?.state === "access-unverified")) return <div className="flex h-full min-h-0 flex-col gap-3">
     <section className={`${card} flex flex-none flex-wrap items-center gap-x-3 gap-y-2 p-4`}>
       <Ico>{icons.repo}</Ico><h1 className="text-[19px] leading-[1.2]">Repository unavailable</h1>
       <SyncStatus compact syncState="awaiting-sync" withheld={1} retryAt={retryAt} />
@@ -114,7 +146,7 @@ function RepositoryWorkspace() {
         <Ico tone="bg-destructive-soft text-destructive">{icons.info}</Ico>
         <h2 className="text-base">Access could not be verified</h2>
         <p className={`m-0 ${muted}`}>Protected content is hidden, not deleted.</p>
-        <Button onClick={() => void query.refetch()} disabled={query.isFetching}>Re-verify access</Button>
+        <Button onClick={() => void Promise.all([query.refetch(), selection.refetch()])} disabled={query.isFetching || selection.isFetching}>Re-verify access</Button>
       </div>
     </div>
   </div>;
@@ -133,7 +165,7 @@ function RepositoryWorkspace() {
         <Ico>{icons.repo}</Ico>
         <div className="min-w-0 break-words"><div className={`text-xs ${muted}`}>{owner} /</div><h1 className="text-[19px] leading-[1.2]">{name}</h1></div>
         {!demo && <a className={smallBtn} href={github}>View on GitHub {icons.ext}</a>}
-        {demo ? <SyncStatus compact {...sync} /> : <SyncDetails sync={sync} repositoryId={repositoryId} />}
+        {demo ? <SyncStatus compact {...sync} /> : <SyncDetails sync={sync} repositoryId={repositoryId} onRefresh={() => void query.refetch()} />}
         {overview.activity.archived && <span className={`${mini} border-border text-soft`}>Archived</span>}
         <div role="group" aria-label="Time window" className="ml-auto inline-flex gap-0.5 rounded-full border border-border bg-card p-0.5">
           {windows.map(days => <Link key={days} {...path} search={{ ...search, days }} aria-current={search.days === days ? "page" : undefined}
@@ -147,14 +179,14 @@ function RepositoryWorkspace() {
     </section>
     {display && <Banner overview={overview} display={display} />}
     {search.tab === "overview" && <OverviewTab overview={overview} days={search.days} recent={<Link {...path} search={{ ...search, tab: "activity" }} className={smallBtn}>All</Link>} github={github} />}
-    {search.tab === "pulls" && <PullRequests id={repositoryId} viewer={`${session.mode}:${session.user?.login}`} github={github} />}
+    {search.tab === "pulls" && <PullRequests key={repositoryId} id={repositoryId} viewer={`${session.mode}:${session.user?.login}`} github={github} />}
     {search.tab === "contributors" && <Contributors overview={overview} days={search.days} />}
     {search.tab === "activity" && <section className={`${card} flex-1 overflow-auto`}><Timeline overview={overview} github={github} /></section>}
   </div>;
 }
 
 // The header pill opens the full sync status (same copy as SyncStatus: metadata and activity lines) and Refresh activity.
-function SyncDetails({ sync, repositoryId }: { sync: SyncInput; repositoryId: string }) {
+function SyncDetails({ sync, repositoryId, onRefresh }: { sync: SyncInput; repositoryId: string; onRefresh: () => void }) {
   const [open, setOpen] = useState(false);
   const metadata = sync.metadataStatus ? describeMetadata(sync.metadataStatus) : [];
   const activity = sync.activity ? [...(sync.activity.synchronized ? [] : [sync.activity.message]), ...describeActivity(sync.activity)] : [];
@@ -167,7 +199,7 @@ function SyncDetails({ sync, repositoryId }: { sync: SyncInput; repositoryId: st
       {lines("Metadata status", metadata)}
       {lines("Activity status", activity)}
       {sync.retryAt && <p className="m-0 text-[13px] text-warning">GitHub rate limited the access check; next check after {clock.format(new Date(sync.retryAt))}.</p>}
-      {sync.activity && <RefreshActivityButton repositoryId={repositoryId} />}
+      {sync.activity && <RefreshActivityButton repositoryId={repositoryId} onAccepted={onRefresh} />}
     </div>}
   </div>;
 }
@@ -268,7 +300,7 @@ const actor = (e: Entry) => e.actor ? `${e.actor.login}${e.actor.isBot ? " · bo
 // Full timeline with GitHub links. A hatched "History gap" row sits where issue-event coverage starts.
 function Timeline({ overview: o, github }: { overview: Overview; github: string }) {
   const gapAt = o.eventsCoveredFrom === null ? o.timeline.length
-    : Date.parse(o.eventsCoveredFrom) > Date.parse(o.windowStart) ? o.timeline.findIndex(e => Date.parse(e.occurredAt) < Date.parse(o.eventsCoveredFrom!)) : -2;
+    : Date.parse(o.eventsCoveredFrom) > Date.parse(o.windowStart) ? o.timeline.findIndex(e => Date.parse(e.occurredAt) < Date.parse(o.eventsCoveredFrom!)) : null;
   const gap = <li key="gap" className="hatch border-b border-border p-2.5 text-center text-xs text-muted-foreground">
     {o.eventsCoveredFrom ? `History gap · issue events before ${day.format(new Date(o.eventsCoveredFrom))} were never recorded` : "History gap · issue events are not recorded yet"}
   </li>;
@@ -279,8 +311,8 @@ function Timeline({ overview: o, github }: { overview: Overview; github: string 
       <span className={`font-mono text-xs ${muted}`}>{stamp.format(new Date(e.occurredAt)).replace(",", "")}</span>{icons.ext}
     </a>
   </li>);
-  if (gapAt !== -2) rows.splice(gapAt === -1 ? rows.length : gapAt, 0, gap);
-  if (!o.timeline.length && gapAt === -2) return <p className={`p-4 ${muted}`}>No activity in this window.</p>;
+  if (gapAt !== null) rows.splice(gapAt === -1 ? rows.length : gapAt, 0, gap);
+  if (!o.timeline.length && gapAt === null) return <p className={`p-4 ${muted}`}>No activity in this window.</p>;
   return <ul aria-label="Activity" className="m-0 list-none p-0">{rows}</ul>;
 }
 
@@ -321,9 +353,11 @@ const column = createColumnHelper<typeof features, WorkspacePullRequest>();
 const noPulls: WorkspacePullRequest[] = [];
 
 function PullRequests({ id, viewer, github }: { id: string; viewer: string; github: string }) {
-  const query = useQuery({
+  const query = useInfiniteQuery({
     queryKey: ["workspacePullRequests", id, viewer],
-    queryFn: ({ signal }) => fetchWorkspacePullRequests(id, signal),
+    queryFn: ({ pageParam, signal }) => fetchWorkspacePullRequests(id, pageParam, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: last => last.hasNextPage ? last.endCursor : undefined,
     gcTime: 0,
   });
   const columns = useMemo(() => column.columns([
@@ -336,18 +370,19 @@ function PullRequests({ id, viewer, github }: { id: string; viewer: string; gith
     } }),
     column.accessor("createdAt", { header: "Opened", cell: c => <span className={`font-mono text-xs ${muted}`}>{day.format(new Date(c.getValue()))}</span> }),
   ]), [github]);
-  const table = useTable({ features, columns, data: query.data?.nodes ?? noPulls });
+  const pulls = useMemo(() => query.data?.pages.flatMap(page => page.nodes) ?? noPulls, [query.data]);
+  const table = useTable({ features, columns, data: pulls });
   const th = "sticky top-0 z-[1] whitespace-nowrap border-b border-border bg-card px-3 py-2 text-left text-xs font-medium text-muted-foreground";
   return <div className={`${card} flex-1 overflow-auto`}>
-    {query.isPending ? <p role="status" className="p-4">Loading pull requests…</p> : query.isError ? <p role="alert" className="p-4">{query.error.message}</p> : <>
+    {query.isPending ? <p role="status" className="p-4">Loading pull requests…</p> : query.isError ? <p role="alert" className="p-4">{query.error.message} <Button variant="outline" onClick={() => void query.refetch()}>Retry</Button></p> : <>
       <table className="w-full border-collapse">
         <thead>{table.getHeaderGroups().map(group => <tr key={group.id}>{group.headers.map(h => <th key={h.id} className={th}><table.FlexRender header={h} /></th>)}</tr>)}</thead>
         <tbody>
           {table.getRowModel().rows.map(row => <tr key={row.id} className="hover:bg-muted">{row.getAllCells().map(cell => <td key={cell.id} className="border-b border-border px-3 py-[9px] align-middle"><table.FlexRender cell={cell} /></td>)}</tr>)}
-          {!query.data.nodes.length && <tr><td colSpan={columns.length} className={`p-6 text-center ${muted}`}>No imported pull requests.</td></tr>}
+          {!pulls.length && <tr><td colSpan={columns.length} className={`p-6 text-center ${muted}`}>No imported pull requests.</td></tr>}
         </tbody>
       </table>
-      {query.data.hasNextPage && <p className={`p-3 text-xs ${muted}`}>Showing the first 20 imported pull requests.</p>}
+      {query.hasNextPage && <div className="p-3"><Button variant="outline" onClick={() => void query.fetchNextPage()} disabled={query.isFetching}>Load more pull requests</Button></div>}
     </>}
   </div>;
 }

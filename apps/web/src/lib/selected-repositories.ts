@@ -1,8 +1,8 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { fetchSelectedRepositories, type Me } from "@/lib/api";
 
-// Must stay identical to the key and options in routes/_shell/index.tsx so the shell, the overview and the
-// Repositories screen share one fetch (fetchSelectedRepositories also fires the per-batch detail requests).
+// One key for the shell, the overview and the Repositories screen so they share one fetch
+// (fetchSelectedRepositories also fires the per-batch detail requests).
 export const selectedRepositoriesKey = (session: Me) => ["selectedRepositories", session.mode, session.user?.login] as const;
 
 // Infinite query over the viewer's selected repositories. Network: each page also fetches activity/issue details per batch.
@@ -16,9 +16,9 @@ export function useSelectedRepositories(session: Me) {
 }
 
 type Page = Awaited<ReturnType<typeof fetchSelectedRepositories>>;
-type Batch = Page["batches"][number];
+export type SelectedBatch = Page["batches"][number];
 // detail is undefined when the batch's detail request failed (or has not loaded); access-unverified rows carry that state.
-export type SelectedRow = { repo: Batch["repositories"][number]; detail: NonNullable<Batch["details"]>[number] | undefined };
+export type SelectedRow = { repo: SelectedBatch["repositories"][number]; detail: NonNullable<SelectedBatch["details"]>[number] | undefined };
 
 // Flattens the loaded pages into rows. Like the overview, a failed revalidation drops every cached row: it can no longer
 // establish access to them. Access-unverified rows ARE included: callers must withhold their names and links.

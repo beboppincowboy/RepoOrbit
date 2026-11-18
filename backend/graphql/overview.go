@@ -75,7 +75,7 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 const demoAssigneeID = 1
 
 // crossRepositoryOverview summarizes the viewer's selected repositories that pass the access check, under one fence:
-// the rest are counted in Withheld without being named, and a fence move discards everything (ACCESS_UNVERIFIED).
+// unverified repositories are counted in Withheld without being named, and a fence move discards everything (ACCESS_UNVERIFIED).
 // Demo mode summarizes the demo repositories without an access check.
 func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (*model.CrossRepositoryOverview, error) {
 	if err := analytics.ValidateDays(days); err != nil {
@@ -114,7 +114,7 @@ func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (
 		return nil, fmt.Errorf("database unavailable")
 	}
 	if len(selected) > maxRepositoryIDs {
-		return nil, fmt.Errorf("the overview supports at most %d selected repositories", maxRepositoryIDs)
+		return nil, codedError("OVERVIEW_SELECTION_LIMIT", fmt.Sprintf("The overview supports up to %d selected repositories. Disconnect or unfollow repositories to view your overview.", maxRepositoryIDs))
 	}
 	raw := make([]string, len(selected))
 	for i, id := range selected {
@@ -135,5 +135,5 @@ func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (
 	if !r.evidenceCurrent(ctx, page) {
 		return nil, unverifiedError(time.Time{})
 	}
-	return &model.CrossRepositoryOverview{CrossOverview: out, Withheld: len(selected) - len(page.ids), RetryAt: page.retry}, nil
+	return &model.CrossRepositoryOverview{CrossOverview: out, Withheld: page.withheld, RetryAt: page.retry}, nil
 }

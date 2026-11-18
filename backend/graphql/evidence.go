@@ -87,12 +87,27 @@ func actor(id *int64, login, kind *string) *model.EvidenceActor {
 }
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
-func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first int, after *string) (*model.PullRequestEvidenceConnection, error) {
+func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first int, after *string, newestFirst bool) (*model.PullRequestEvidenceConnection, error) {
 	ctx, cancel := platform.WithRequestDeadline(ctx)
 	defer cancel()
 	p, err := r.evidenceAccess(ctx, ids, first, after)
 	if err != nil {
 		return nil, err
+	}
+	pool := r.DemoPool
+	if r.Demo {
+		for _, id := range ids {
+			repo, err := r.Repository(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			if repo != nil {
+				repoID, _ := strconv.ParseInt(repo.ID, 10, 64)
+				p.ids = append(p.ids, repoID)
+			}
+		}
+	} else {
+		pool = r.RepoAccess.Pool
 	}
 	out := &model.PullRequestEvidenceConnection{Nodes: []*model.PullRequestEvidence{}, Withheld: p.withheld, RetryAt: p.retry}
 	if len(p.ids) == 0 {
@@ -100,7 +115,11 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 	}
 	// review_state (docs/metrics-definitions.md 5.7): qualifying reviews are the same as for the review backlog; each
 	// reviewer's latest APPROVED or CHANGES_REQUESTED decides; null while an open PR's review history has not converged.
-	rows, err := r.RepoAccess.Pool.Query(ctx, `SELECT p.source_id,p.repository_id,p.number,p.title,p.state,p.html_url,p.created_at,p.updated_at,p.closed_at,p.merged_at,p.author_id,p.author_login,p.author_type,
+	paging := `p.source_id > $2 ORDER BY p.source_id`
+	if newestFirst {
+		paging = `($2 = 0 OR p.source_id < $2) ORDER BY p.source_id DESC`
+	}
+	rows, err := pool.Query(ctx, `SELECT p.source_id,p.repository_id,p.number,p.title,p.state,p.html_url,p.created_at,p.updated_at,p.closed_at,p.merged_at,p.author_id,p.author_login,p.author_type,
 	  CASE WHEN p.merged_at IS NOT NULL THEN 'merged' WHEN p.state <> 'open' THEN 'closed'
 	    WHEN NOT EXISTS (SELECT 1 FROM activity_children c WHERE c.repository_id=p.repository_id AND c.resource='reviews' AND c.parent_id=p.source_id AND c.watermark IS NOT NULL) THEN NULL
 	    WHEN 'CHANGES_REQUESTED' = ANY(d.latest) THEN 'changes_requested' WHEN 'APPROVED' = ANY(d.latest) THEN 'approved'
@@ -114,7 +133,7 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 	          AND r.author_id IS NOT NULL AND r.author_type<>'Bot' AND r.author_id IS DISTINCT FROM p.author_id
 	        ORDER BY r.author_id, r.submitted_at DESC, r.source_id DESC) AS latest
 	  ) d
-	  WHERE p.repository_id=ANY($1) AND p.source_id>$2 ORDER BY p.source_id LIMIT $3`, p.ids, p.after, p.n+1)
+	  WHERE p.repository_id=ANY($1) AND `+paging+` LIMIT $3`, p.ids, p.after, p.n+1)
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
@@ -142,7 +161,7 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 		return nil, fmt.Errorf("database unavailable")
 	}
 	rows.Close()
-	if !r.evidenceCurrent(ctx, p) {
+	if !r.Demo && !r.evidenceCurrent(ctx, p) {
 		out.Nodes = nil
 		out.Nodes = []*model.PullRequestEvidence{}
 		out.EndCursor = nil

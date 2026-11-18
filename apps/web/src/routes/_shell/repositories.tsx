@@ -41,7 +41,7 @@ function Repositories() {
   // Demo mode has no GitHub list: it shows the demo selection read-only, as the prototype does.
   const selection = useSelectedRepositories(session);
   const demoRows: ListedRepo[] = selectedRows(selection)
-    .filter(row => row.detail?.state !== "access-unverified")
+    .filter(row => row.detail?.state === "available")
     .map(({ repo }) => ({ id: repo.id, fullName: repo.fullName, description: repo.description, private: false, selected: true, syncState: repo.syncState }));
   const pages: OwnedPage[] = query.data?.pages ?? [];
   const rows = demo ? demoRows : pages.flatMap(p => p.repositories);

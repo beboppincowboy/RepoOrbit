@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useMemo, useSyncExternalStore, type ReactNode } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { AssignedToMeList } from "@/components/assigned-to-me";
 import { ChevronIcon, IssueIcon, NeedsAttentionList, PullRequestIcon } from "@/components/needs-attention";
 import { segGroupClass, segItemClass, warnNoteClass } from "@/components/repository-list";
-import type { EChartsType } from "echarts/core";
-import { fetchCrossRepositoryOverview, type CrossRepositoryOverview, type MetricWindow } from "@/lib/api";
+import { LineChart, type ChartSeries } from "@/components/line-chart";
+import { ACCESS_UNVERIFIED_MESSAGE, fetchCrossRepositoryOverview, type CrossRepositoryOverview, type MetricWindow } from "@/lib/api";
 import { selectedRows, useSelectedRepositories } from "@/lib/selected-repositories";
 
 const windows = [7, 30, 90] as const;
@@ -18,11 +18,9 @@ export const Route = createFileRoute("/_shell/")({
   component: Overview,
 });
 
-const ACCESS_UNVERIFIED = "Access could not be verified";
 const card = "min-h-0 min-w-0 rounded-xl border border-border bg-card";
 const plural = (n: number) => (n === 1 ? "repository" : "repositories");
-const shortDate = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", timeZone: "UTC" });
-// Same wording as the workspace metric cards (MetricCoverage.reason).
+// Short coverage labels for overview totals.
 const coverageLabels: Record<string, string> = {
   not_synchronized: "Awaiting data",
   window_before_boundary: "Window predates imported history",
@@ -43,9 +41,9 @@ function Overview() {
   const query = useQuery({
     queryKey: ["crossRepositoryOverview", session.mode, session.user?.login, days],
     queryFn: ({ signal }) => fetchCrossRepositoryOverview(days, signal),
-    enabled: rows.length > 0,
+    enabled: rows.length > 0 || selection.hasNextPage,
     // The first read after an access revocation answers ACCESS_UNVERIFIED once; the second read is authoritative.
-    retry: (count, error) => count < 1 && error.message === ACCESS_UNVERIFIED,
+    retry: (count, error) => count < 1 && error.message === ACCESS_UNVERIFIED_MESSAGE,
     retryDelay: 0,
     placeholderData: keepPreviousData,
   });
@@ -55,11 +53,14 @@ function Overview() {
     <p>Could not load repositories. Check that the local services are running.</p>
     <Button className="mt-3" onClick={() => void selection.refetch()}>Retry</Button>
   </div>;
-  if (!rows.length && (selectionWithheld || selectionRetryAt)) return <div className="flex flex-col gap-3">
+  const data = query.data;
+  const total = data ? data.repositoriesCounted + data.repositoriesSyncing : rows.length;
+  const empty = selection.hasNextPage ? !!data && !query.isError && total === 0 : rows.length === 0;
+  if (empty && (data?.withheld || data?.retryAt || selectionWithheld || selectionRetryAt)) return <div className="flex flex-col gap-3">
     <h1 className="text-xl">Engineering overview</h1>
-    <WithheldNote withheld={selectionWithheld} retryAt={selectionRetryAt} />
+    <WithheldNote withheld={data?.withheld ?? selectionWithheld} retryAt={data?.retryAt ?? selectionRetryAt} />
   </div>;
-  if (!rows.length) return <div className="grid h-full min-h-0 place-items-center">
+  if (empty) return <div className="grid h-full min-h-0 place-items-center">
     <div className={`${card} max-w-[420px] p-4 text-center`}>
       <h2 className="text-lg">No repositories yet</h2>
       <p className="text-muted-foreground">Check repositories to sync under Repositories.</p>
@@ -67,9 +68,7 @@ function Overview() {
     </div>
   </div>;
 
-  const data = query.data;
   const syncing = data?.repositoriesSyncing ?? 0;
-  const total = data ? data.repositoriesCounted + syncing : rows.length;
   return <div className="flex h-full min-h-0 flex-col gap-3 max-[900px]:overflow-y-auto">
     <div className="flex shrink-0 flex-wrap items-end justify-between gap-2">
       <div>
@@ -80,10 +79,10 @@ function Overview() {
         {windows.map(w => <Link key={w} to="/" search={{ days: w }} aria-current={days === w ? "page" : undefined} className={segItemClass}>{w}d</Link>)}
       </nav>
     </div>
-    {data && <WithheldNote withheld={data.withheld} retryAt={data.retryAt} />}
+    {!query.isError && data && <WithheldNote withheld={data.withheld} retryAt={data.retryAt} />}
     {query.isPending ? <p role="status">Loading overview…</p>
       : query.isError ? <div role="alert" className={`${card} p-4`}>
-        <p className="font-medium">{query.error.message === ACCESS_UNVERIFIED ? "Access could not be verified. Totals are hidden until GitHub confirms your access." : "Could not load the overview. Check that the local services are running."}</p>
+        <p className="font-medium">{query.error.message === ACCESS_UNVERIFIED_MESSAGE ? "Access could not be verified. Totals are hidden until GitHub confirms your access." : query.error.message}</p>
         <Button className="mt-3" onClick={() => void query.refetch()} disabled={query.isFetching}>Retry</Button>
       </div>
       : data && <>
@@ -165,70 +164,18 @@ function Stat({ icon, metric, label, sub, warn }: { icon: ReactNode; metric: Cro
   </div>;
 }
 
-// PRs merged and issues opened per day (ECharts, styled like the prototype's SVG line chart). Days without imported data stay gaps;
-// leading ones are hatched. Hover, or focus and use the arrow keys, to read a day.
+// PRs merged and issues opened per day, on the shared LineChart (gaps for days without imported data, hatched leading days).
 function ActivityChart({ daily }: { daily: CrossRepositoryOverview["daily"] }) {
-  const el = useRef<HTMLDivElement>(null);
-  const chart = useRef<EChartsType | null>(null);
-  const [day, setDay] = useState<number | null>(null);
-  const unknownLead = daily.findIndex(d => d.issuesOpened !== null || d.pullRequestsMerged !== null);
-  const lead = unknownLead < 0 ? daily.length : unknownLead;
-
-  useEffect(() => {
-    let disposed = false;
-    let cleanup = () => {};
-    void Promise.all([import("echarts/core"), import("echarts/charts"), import("echarts/components"), import("echarts/renderers")]).then(([echarts, charts, components, renderers]) => {
-      if (disposed || !el.current) return;
-      echarts.use([charts.LineChart, components.GridComponent, components.TooltipComponent, renderers.SVGRenderer]);
-      const css = getComputedStyle(document.documentElement);
-      const color = (name: string) => css.getPropertyValue(name).trim();
-      const instance = echarts.init(el.current, null, { renderer: "svg" });
-      const line = (name: string, values: (number | null)[], c: string) => ({ name, type: "line" as const, data: values, showSymbol: false, symbol: "circle", lineStyle: { width: 2.2, color: c }, itemStyle: { color: c } });
-      instance.setOption({
-        animation: false,
-        grid: { left: 0, right: 0, top: 4, bottom: 1 },
-        // Like the prototype: 15% headroom, gridlines at thirds and a stronger baseline.
-        xAxis: { type: "category", data: daily.map(d => d.day), boundaryGap: false, axisLabel: { show: false }, axisTick: { show: false }, axisLine: { lineStyle: { color: color("--border-strong") } } },
-        yAxis: { type: "value", min: 0, max: (v: { max: number }) => Math.max(1, v.max) * 1.15, interval: (Math.max(1, ...daily.flatMap(d => [d.issuesOpened ?? 0, d.pullRequestsMerged ?? 0])) * 1.15) / 3, axisLabel: { show: false }, splitLine: { lineStyle: { color: color("--border") } } },
-        tooltip: { trigger: "axis", showContent: false, axisPointer: { type: "line", lineStyle: { color: color("--border-strong") } } },
-        series: [line("PRs merged", daily.map(d => d.pullRequestsMerged), color("--primary")), line("Issues opened", daily.map(d => d.issuesOpened), color("--chart-2"))],
-      });
-      instance.on("updateAxisPointer", (e: unknown) => {
-        const index = (e as { axesInfo?: { value: number }[] }).axesInfo?.[0]?.value;
-        setDay(typeof index === "number" ? index : null);
-      });
-      instance.getZr().on("globalout", () => setDay(null));
-      const resize = new ResizeObserver(() => instance.resize());
-      resize.observe(el.current);
-      chart.current = instance;
-      cleanup = () => { resize.disconnect(); instance.dispose(); chart.current = null; };
-    });
-    return () => { disposed = true; cleanup(); };
-  }, [daily]);
-
-  function step(delta: number) {
-    const next = Math.min(daily.length - 1, Math.max(0, (day ?? (delta > 0 ? -1 : daily.length)) + delta));
-    setDay(next);
-    chart.current?.dispatchAction({ type: "showTip", seriesIndex: 0, dataIndex: next });
-  }
-
-  const current = day !== null ? daily[day] : undefined;
-  // day is a UTC midnight timestamp (RFC 3339); a bare YYYY-MM-DD is read as UTC too.
-  const label = (day: string) => shortDate.format(new Date(day.slice(0, 10) + "T00:00:00Z"));
+  const days = useMemo(() => daily.map(d => d.day), [daily]);
+  const series = useMemo<ChartSeries[]>(() => [
+    { name: "PRs merged", unit: "PRs merged", color: "--primary", values: daily.map(d => d.pullRequestsMerged) },
+    { name: "Issues opened", unit: "issues opened", color: "--chart-2", values: daily.map(d => d.issuesOpened) },
+  ], [daily]);
   return <div className="flex h-full min-h-0 flex-col gap-1.5 px-3.5 pb-3">
-    <div className="flex flex-wrap justify-between gap-1.5 text-[12.5px]">
-      <span aria-live="polite">{current ? <><b>{label(current.day)}</b> · {current.pullRequestsMerged === null ? <span className="text-muted-foreground">not imported yet</span> : `${current.pullRequestsMerged} PRs merged · ${current.issuesOpened ?? "—"} issues opened`}</> : <span className="text-muted-foreground">Hover or focus the chart to read a day.</span>}</span>
-      <span className="flex flex-wrap gap-3.5 text-xs text-muted-foreground">
-        <span><i className="mr-1.5 inline-block size-2 rounded-full bg-primary" />PRs merged</span>
-        <span><i className="mr-1.5 inline-block size-2 rounded-full bg-chart-2" />Issues opened</span>
-      </span>
-    </div>
-    <div className="relative min-h-[120px] flex-1">
-      {lead > 0 && <div className="hatch absolute inset-y-0 left-0" style={{ width: `${Math.min(100, (lead / Math.max(1, daily.length - 1)) * 100)}%` }} />}
-      <div ref={el} role="img" tabIndex={0} aria-label="PRs merged and issues opened per day" className="absolute inset-0"
-        onKeyDown={e => { if (e.key === "ArrowRight" || e.key === "ArrowLeft") { e.preventDefault(); step(e.key === "ArrowRight" ? 1 : -1); } }}
-        onBlur={() => { setDay(null); chart.current?.dispatchAction({ type: "hideTip" }); }} />
-    </div>
-    {daily.length > 0 && <div className="flex justify-between font-mono text-xs text-muted-foreground"><span>{label(daily[0].day)}</span><span>{label(daily[daily.length - 1].day)}</span></div>}
+    <span className="flex flex-wrap justify-end gap-3.5 text-xs text-muted-foreground">
+      <span><i className="mr-1.5 inline-block size-2 rounded-full bg-primary" />PRs merged</span>
+      <span><i className="mr-1.5 inline-block size-2 rounded-full bg-chart-2" />Issues opened</span>
+    </span>
+    <LineChart days={days} series={series} />
   </div>;
 }
