@@ -60,7 +60,7 @@ func TestDemoDatabaseGraphQL(t *testing.T) {
 	if err = pool.QueryRow(ctx, "SELECT (SELECT count(*) FROM repositories), (SELECT count(*) FROM issues)").Scan(&repos, &issues); err != nil || repos != 2 || issues != 3 {
 		t.Fatalf("seed counts %d %d: %v", repos, issues, err)
 	}
-	h := Server(&Resolver{Queries: db.New(pool), Demo: true})
+	h := Server(&Resolver{Queries: db.New(pool), Demo: true, DemoPool: pool})
 	run := func(query string) string {
 		body, _ := json.Marshal(map[string]string{"query": query})
 		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
@@ -84,8 +84,34 @@ func TestDemoDatabaseGraphQL(t *testing.T) {
 			t.Fatalf("accepted %s: %s", query, got)
 		}
 	}
-	if got := run(`{ selectedRepositories(first: 100) { nodes { a:fullName b:fullName c:fullName d:fullName e:fullName f:fullName g:fullName h:fullName i:fullName j:fullName k:fullName } } }`); !strings.Contains(got, "exceeds the limit of 1000") {
+	if got := run(`{ selectedRepositories(first: 100) { nodes { a:fullName b:fullName c:fullName d:fullName e:fullName f:fullName g:fullName h:fullName i:fullName j:fullName k:fullName } } }`); !strings.Contains(got, "exceeds the limit of 1200") {
 		t.Fatalf("expected the alias-heavy query to exceed the existing complexity budget: %s", got)
+	}
+	// Demo analytics are populated from the seeded evidence, and the overview sums the same per-repository metrics.
+	var demo struct {
+		Data struct {
+			CrossRepositoryOverview struct {
+				RepositoriesCounted int
+				OpenIssues          struct{ Value *int64 }
+				NeedsAttention      []struct{ Kind string }
+				AssignedToMe        []struct{ FullName string }
+			}
+			A, B struct{ OpenIssues struct{ Value *int64 } }
+		}
+	}
+	got := run(`{ crossRepositoryOverview(days: 30) { repositoriesCounted openIssues { value } needsAttention { kind } assignedToMe { fullName } } }`)
+	perRepo := run(`{ A: repositoryOverview(id: "1", days: 30) { openIssues { value } } }`)
+	perRepo2 := run(`{ B: repositoryOverview(id: "2", days: 30) { openIssues { value } contributors { login } } }`)
+	for _, part := range []string{got, perRepo, perRepo2} {
+		if err := json.Unmarshal([]byte(part), &demo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := demo.Data.CrossRepositoryOverview
+	if c.RepositoriesCounted != 2 || c.OpenIssues.Value == nil || demo.Data.A.OpenIssues.Value == nil || demo.Data.B.OpenIssues.Value == nil ||
+		*c.OpenIssues.Value != *demo.Data.A.OpenIssues.Value+*demo.Data.B.OpenIssues.Value || len(c.NeedsAttention) == 0 || len(c.AssignedToMe) == 0 ||
+		!strings.Contains(perRepo2, `"login"`) {
+		t.Fatalf("demo analytics: %s %s %s", got, perRepo, perRepo2)
 	}
 	if _, err = pool.Exec(ctx, "UPDATE repositories SET name='changed/database' WHERE id=1"); err != nil {
 		t.Fatal(err)

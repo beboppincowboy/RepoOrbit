@@ -121,6 +121,7 @@ type PullRequestEvidence struct {
 	ClosedAt     *string        `json:"closedAt,omitempty"`
 	MergedAt     *string        `json:"mergedAt,omitempty"`
 	Author       *EvidenceActor `json:"author,omitempty"`
+	ReviewState  *string        `json:"reviewState,omitempty"`
 }
 
 type PullRequestEvidenceConnection struct {

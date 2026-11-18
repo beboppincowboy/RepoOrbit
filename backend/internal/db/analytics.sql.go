@@ -180,6 +180,16 @@ WITH pr_children AS (
   FROM activity_issues i
   LEFT JOIN activity_children c ON c.repository_id = i.repository_id AND c.resource = 'comments' AND c.parent_id = i.number
   WHERE i.repository_id = $1
+), comment_children AS (
+  -- Comment histories of every issue or PR updated in the window (a new comment moves its parent's updated_at).
+  SELECT count(*) FILTER (WHERE c.watermark IS NULL) AS updated_missing, min(c.watermark) AS updated_through
+  FROM (
+    SELECT xi.number, xi.updated_at FROM activity_issues xi WHERE xi.repository_id = $1
+    UNION ALL
+    SELECT xp.number, xp.updated_at FROM activity_pull_requests xp WHERE xp.repository_id = $1
+  ) parents
+  LEFT JOIN activity_children c ON c.repository_id = $1 AND c.resource = 'comments' AND c.parent_id = parents.number
+  WHERE parents.updated_at >= $2::timestamptz
 )
 SELECT
   si.boundary AS issues_boundary, si.watermark AS issues_watermark,
@@ -191,8 +201,9 @@ SELECT
   pc.created_missing AS created_pr_reviews_missing, pc.created_through::timestamptz AS created_pr_reviews_through,
   pc.updated_missing AS updated_pr_reviews_missing, pc.updated_through::timestamptz AS updated_pr_reviews_through,
   ic.open_missing AS open_issue_comments_missing, ic.open_through::timestamptz AS open_issue_comments_through,
-  ic.created_missing AS created_issue_comments_missing, ic.created_through::timestamptz AS created_issue_comments_through
-FROM pr_children pc CROSS JOIN issue_children ic
+  ic.created_missing AS created_issue_comments_missing, ic.created_through::timestamptz AS created_issue_comments_through,
+  cc.updated_missing AS updated_comments_missing, cc.updated_through::timestamptz AS updated_comments_through
+FROM pr_children pc CROSS JOIN issue_children ic CROSS JOIN comment_children cc
 LEFT JOIN activity_resources si ON si.repository_id = $1 AND si.resource = 'issues'
 LEFT JOIN activity_resources sp ON sp.repository_id = $1 AND sp.resource = 'pull_requests'
 LEFT JOIN activity_resources sr ON sr.repository_id = $1 AND sr.resource = 'releases'
@@ -225,6 +236,8 @@ type GetMetricCoverageRow struct {
 	OpenIssueCommentsThrough    pgtype.Timestamptz
 	CreatedIssueCommentsMissing int64
 	CreatedIssueCommentsThrough pgtype.Timestamptz
+	UpdatedCommentsMissing      int64
+	UpdatedCommentsThrough      pgtype.Timestamptz
 }
 
 // Repository metrics (docs/metrics-definitions.md). Every query reads exactly one repository_id; callers check access first.
@@ -254,29 +267,119 @@ func (q *Queries) GetMetricCoverage(ctx context.Context, arg GetMetricCoveragePa
 		&i.OpenIssueCommentsThrough,
 		&i.CreatedIssueCommentsMissing,
 		&i.CreatedIssueCommentsThrough,
+		&i.UpdatedCommentsMissing,
+		&i.UpdatedCommentsThrough,
 	)
 	return i, err
 }
 
+const listAllSelectedIDs = `-- name: ListAllSelectedIDs :many
+SELECT s.repository_id FROM selections s JOIN repositories r ON r.id = s.repository_id
+WHERE s.user_id = $1 AND s.deselected_at IS NULL AND NOT r.is_demo
+ORDER BY s.repository_id
+LIMIT 101
+`
+
+// Every repository the user currently selects (unlike ListSelectedIDs, not filtered by a given ID list) (no demo rows), at most 101 so the caller can detect more than 100.
+func (q *Queries) ListAllSelectedIDs(ctx context.Context, userID int64) ([]int64, error) {
+	rows, err := q.db.Query(ctx, listAllSelectedIDs, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []int64
+	for rows.Next() {
+		var repository_id int64
+		if err := rows.Scan(&repository_id); err != nil {
+			return nil, err
+		}
+		items = append(items, repository_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAssignedOpenIssues = `-- name: ListAssignedOpenIssues :many
+SELECT i.repository_id, r.name AS full_name, i.number, i.title, i.html_url AS url, i.updated_at
+FROM activity_issues i JOIN repositories r ON r.id = i.repository_id
+WHERE i.repository_id = ANY($1::bigint[]) AND i.state = 'open'
+  AND EXISTS (SELECT 1 FROM activity_issue_assignees a WHERE a.issue_id = i.source_id AND a.source_id = $2::bigint)
+ORDER BY i.updated_at DESC, i.source_id DESC
+LIMIT 25
+`
+
+type ListAssignedOpenIssuesParams struct {
+	RepositoryIds    []int64
+	AssigneeGithubID int64
+}
+
+type ListAssignedOpenIssuesRow struct {
+	RepositoryID int64
+	FullName     string
+	Number       int64
+	Title        string
+	Url          string
+	UpdatedAt    pgtype.Timestamptz
+}
+
+// Up to 25 open issues assigned to the GitHub user ID assignee_github_id (activity_issue_assignees.source_id), most recently updated first.
+func (q *Queries) ListAssignedOpenIssues(ctx context.Context, arg ListAssignedOpenIssuesParams) ([]ListAssignedOpenIssuesRow, error) {
+	rows, err := q.db.Query(ctx, listAssignedOpenIssues, arg.RepositoryIds, arg.AssigneeGithubID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAssignedOpenIssuesRow
+	for rows.Next() {
+		var i ListAssignedOpenIssuesRow
+		if err := rows.Scan(
+			&i.RepositoryID,
+			&i.FullName,
+			&i.Number,
+			&i.Title,
+			&i.Url,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMetricContributors = `-- name: ListMetricContributors :many
 WITH contributions AS (
-  SELECT p.author_id, p.author_login, p.created_at AS at, p.source_id, 1 AS opened, 0 AS reviewed FROM activity_pull_requests p
+  SELECT p.author_id, p.author_login, p.author_type = 'Bot' AS is_bot, p.created_at AS at, p.source_id, 1 AS opened, 0 AS reviewed FROM activity_pull_requests p
   WHERE p.repository_id = $1 AND p.created_at BETWEEN $2::timestamptz AND $3::timestamptz
-    AND p.author_id IS NOT NULL AND p.author_type <> 'Bot'
+    AND p.author_id IS NOT NULL AND p.author_type IS NOT NULL
   UNION ALL
-  SELECT r.author_id, r.author_login, r.submitted_at, r.source_id, 0, 1 FROM activity_reviews r
+  SELECT r.author_id, r.author_login, r.author_type = 'Bot', r.submitted_at, r.source_id, 0, 1 FROM activity_reviews r
   WHERE r.repository_id = $1 AND upper(r.state) <> 'PENDING'
     AND r.submitted_at BETWEEN $2::timestamptz AND $3::timestamptz
-    AND r.author_id IS NOT NULL AND r.author_type <> 'Bot'
+    AND r.author_id IS NOT NULL AND r.author_type IS NOT NULL
 ), people AS (
-  SELECT c.author_id,
+  SELECT c.author_id, bool_or(c.is_bot) AS is_bot,
     COALESCE((array_agg(c.author_login ORDER BY c.at DESC, c.source_id DESC))[1], '')::text AS login,
     sum(c.opened)::bigint AS pull_requests_opened, sum(c.reviewed)::bigint AS reviews_submitted
   FROM contributions c GROUP BY c.author_id
+), comments AS (
+  SELECT m.author_id, count(*)::bigint AS n FROM activity_comments m
+  WHERE m.repository_id = $1 AND m.created_at BETWEEN $2::timestamptz AND $3::timestamptz
+    AND m.author_id IN (SELECT author_id FROM people)
+  GROUP BY m.author_id
+), ranked AS (
+  SELECT p.author_id, p.is_bot, p.login, p.pull_requests_opened, p.reviews_submitted, COALESCE(m.n, 0)::bigint AS comments_created,
+    row_number() OVER (PARTITION BY p.is_bot ORDER BY p.pull_requests_opened + p.reviews_submitted + COALESCE(m.n, 0) DESC, p.login ASC, p.author_id ASC) AS position
+  FROM people p LEFT JOIN comments m ON m.author_id = p.author_id
 )
-SELECT author_id, login, pull_requests_opened, reviews_submitted FROM people
-ORDER BY pull_requests_opened + reviews_submitted DESC, login ASC, author_id ASC
-LIMIT 20
+SELECT author_id, is_bot, login, pull_requests_opened, reviews_submitted, comments_created FROM ranked
+WHERE position <= CASE WHEN is_bot THEN 5 ELSE 20 END
+ORDER BY is_bot, position
 `
 
 type ListMetricContributorsParams struct {
@@ -287,12 +390,15 @@ type ListMetricContributorsParams struct {
 
 type ListMetricContributorsRow struct {
 	AuthorID           pgtype.Int8
+	IsBot              bool
 	Login              string
 	PullRequestsOpened int64
 	ReviewsSubmitted   int64
+	CommentsCreated    int64
 }
 
-// Up to 20 active humans; login is taken from the author's most recent contributing row.
+// Active participants (PR authors and qualifying reviewers in the window): up to 20 humans, then up to 5 bots.
+// comments_created counts their issue and PR comments in the window; login comes from the most recent PR or review row.
 func (q *Queries) ListMetricContributors(ctx context.Context, arg ListMetricContributorsParams) ([]ListMetricContributorsRow, error) {
 	rows, err := q.db.Query(ctx, listMetricContributors, arg.RepositoryID, arg.WindowStart, arg.Now)
 	if err != nil {
@@ -304,9 +410,11 @@ func (q *Queries) ListMetricContributors(ctx context.Context, arg ListMetricCont
 		var i ListMetricContributorsRow
 		if err := rows.Scan(
 			&i.AuthorID,
+			&i.IsBot,
 			&i.Login,
 			&i.PullRequestsOpened,
 			&i.ReviewsSubmitted,
+			&i.CommentsCreated,
 		); err != nil {
 			return nil, err
 		}
@@ -473,6 +581,91 @@ func (q *Queries) ListMetricTimeline(ctx context.Context, arg ListMetricTimeline
 			&i.Label,
 			&i.Number,
 			&i.Url,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNeedsAttention = `-- name: ListNeedsAttention :many
+
+SELECT kind, repository_id, full_name, number, title, url, since FROM (
+  SELECT 'pr_awaiting_review'::text AS kind, p.repository_id, r.name AS full_name, p.number, p.title, p.html_url AS url, p.created_at AS since
+  FROM activity_pull_requests p JOIN repositories r ON r.id = p.repository_id
+  WHERE p.repository_id = ANY($1::bigint[]) AND p.state = 'open'
+    AND NOT EXISTS (
+      SELECT 1 FROM activity_reviews v
+      WHERE v.repository_id = p.repository_id AND v.pull_request_id = p.source_id AND upper(v.state) <> 'PENDING'
+        AND v.author_id IS NOT NULL AND v.author_type <> 'Bot' AND v.author_id IS DISTINCT FROM p.author_id
+        AND v.submitted_at <= $2::timestamptz)
+  UNION ALL
+  SELECT CASE WHEN q.answered THEN 'stale_issue' ELSE 'issue_no_response' END, q.repository_id, q.full_name, q.number, q.title, q.html_url,
+    CASE WHEN q.answered THEN q.updated_at ELSE q.created_at END
+  FROM (
+    SELECT i.repository_id, r.name AS full_name, i.number, i.title, i.html_url, i.created_at, i.updated_at,
+      EXISTS (
+        SELECT 1 FROM activity_comments c
+        WHERE c.repository_id = i.repository_id AND c.issue_number = i.number
+          AND c.author_id IS NOT NULL AND c.author_type <> 'Bot' AND c.author_id IS DISTINCT FROM i.author_id
+          AND c.created_at <= $2::timestamptz) AS answered
+    FROM activity_issues i JOIN repositories r ON r.id = i.repository_id
+    WHERE i.repository_id = ANY($3::bigint[]) AND i.state = 'open'
+  ) q
+  WHERE NOT q.answered OR q.updated_at < $4::timestamptz
+) t
+ORDER BY since ASC, kind ASC, repository_id ASC, number ASC
+LIMIT 25
+`
+
+type ListNeedsAttentionParams struct {
+	PullRequestRepositoryIds []int64
+	Now                      pgtype.Timestamptz
+	IssueRepositoryIds       []int64
+	StaleBefore              pgtype.Timestamptz
+}
+
+type ListNeedsAttentionRow struct {
+	Kind         string
+	RepositoryID int64
+	FullName     string
+	Number       int64
+	Title        string
+	Url          string
+	Since        pgtype.Timestamptz
+}
+
+// Cross-repository lists (U5d). Every repository ID passed in is already authorized and covered for that list by the caller.
+// The qualifying review/comment predicates are the same as GetMetricCounts, so rows agree with the per-repository counts.
+// Up to 25 problems, oldest first: open PRs (in pull_request_repository_ids) with no qualifying review, and open issues
+// (in issue_repository_ids) with no qualifying first comment
+// or, when answered, with no update since stale_before. One row per item; since is created_at, or updated_at for stale.
+func (q *Queries) ListNeedsAttention(ctx context.Context, arg ListNeedsAttentionParams) ([]ListNeedsAttentionRow, error) {
+	rows, err := q.db.Query(ctx, listNeedsAttention,
+		arg.PullRequestRepositoryIds,
+		arg.Now,
+		arg.IssueRepositoryIds,
+		arg.StaleBefore,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListNeedsAttentionRow
+	for rows.Next() {
+		var i ListNeedsAttentionRow
+		if err := rows.Scan(
+			&i.Kind,
+			&i.RepositoryID,
+			&i.FullName,
+			&i.Number,
+			&i.Title,
+			&i.Url,
+			&i.Since,
 		); err != nil {
 			return nil, err
 		}

@@ -41,6 +41,8 @@ type Config struct {
 }
 
 type ResolverRoot interface {
+	AssignedIssue() AssignedIssueResolver
+	AttentionItem() AttentionItemResolver
 	Query() QueryResolver
 }
 
@@ -71,6 +73,25 @@ type ComplexityRoot struct {
 		Synchronized    func(childComplexity int) int
 	}
 
+	AssignedIssue struct {
+		FullName     func(childComplexity int) int
+		Number       func(childComplexity int) int
+		RepositoryID func(childComplexity int) int
+		Title        func(childComplexity int) int
+		URL          func(childComplexity int) int
+		UpdatedAt    func(childComplexity int) int
+	}
+
+	AttentionItem struct {
+		FullName     func(childComplexity int) int
+		Kind         func(childComplexity int) int
+		Number       func(childComplexity int) int
+		RepositoryID func(childComplexity int) int
+		Since        func(childComplexity int) int
+		Title        func(childComplexity int) int
+		URL          func(childComplexity int) int
+	}
+
 	ChildResourceStatus struct {
 		Complete        func(childComplexity int) int
 		FailureCode     func(childComplexity int) int
@@ -96,6 +117,27 @@ type ComplexityRoot struct {
 		Nodes       func(childComplexity int) int
 		RetryAt     func(childComplexity int) int
 		Withheld    func(childComplexity int) int
+	}
+
+	CrossDailyPoint struct {
+		Day                func(childComplexity int) int
+		IssuesOpened       func(childComplexity int) int
+		PullRequestsMerged func(childComplexity int) int
+	}
+
+	CrossRepositoryOverview struct {
+		AssignedToMe        func(childComplexity int) int
+		Daily               func(childComplexity int) int
+		Days                func(childComplexity int) int
+		NeedsAttention      func(childComplexity int) int
+		Now                 func(childComplexity int) int
+		OpenIssues          func(childComplexity int) int
+		RepositoriesCounted func(childComplexity int) int
+		RepositoriesSyncing func(childComplexity int) int
+		RetryAt             func(childComplexity int) int
+		ReviewBacklog       func(childComplexity int) int
+		WindowStart         func(childComplexity int) int
+		Withheld            func(childComplexity int) int
 	}
 
 	EvidenceActor struct {
@@ -161,6 +203,8 @@ type ComplexityRoot struct {
 	}
 
 	MetricContributor struct {
+		CommentsCreated    func(childComplexity int) int
+		IsBot              func(childComplexity int) int
 		Login              func(childComplexity int) int
 		PullRequestsOpened func(childComplexity int) int
 		ReviewsSubmitted   func(childComplexity int) int
@@ -217,6 +261,7 @@ type ComplexityRoot struct {
 		MergedAt     func(childComplexity int) int
 		Number       func(childComplexity int) int
 		RepositoryID func(childComplexity int) int
+		ReviewState  func(childComplexity int) int
 		State        func(childComplexity int) int
 		Title        func(childComplexity int) int
 		URL          func(childComplexity int) int
@@ -232,16 +277,17 @@ type ComplexityRoot struct {
 	}
 
 	Query struct {
-		CommentEvidence      func(childComplexity int, repositoryIds []string, first int, after *string) int
-		IssueEventEvidence   func(childComplexity int, repositoryIds []string, first int, after *string) int
-		Issues               func(childComplexity int, repositoryIds []string, first int, after *string) int
-		PullRequestEvidence  func(childComplexity int, repositoryIds []string, first int, after *string) int
-		ReleaseEvidence      func(childComplexity int, repositoryIds []string, first int, after *string) int
-		Repository           func(childComplexity int, id string) int
-		RepositoryOverview   func(childComplexity int, id string, days int) int
-		ReviewEvidence       func(childComplexity int, repositoryIds []string, first int, after *string) int
-		SelectedRepositories func(childComplexity int, first int, after *string) int
-		Viewer               func(childComplexity int) int
+		CommentEvidence         func(childComplexity int, repositoryIds []string, first int, after *string) int
+		CrossRepositoryOverview func(childComplexity int, days int) int
+		IssueEventEvidence      func(childComplexity int, repositoryIds []string, first int, after *string) int
+		Issues                  func(childComplexity int, repositoryIds []string, first int, after *string) int
+		PullRequestEvidence     func(childComplexity int, repositoryIds []string, first int, after *string) int
+		ReleaseEvidence         func(childComplexity int, repositoryIds []string, first int, after *string) int
+		Repository              func(childComplexity int, id string) int
+		RepositoryOverview      func(childComplexity int, id string, days int) int
+		ReviewEvidence          func(childComplexity int, repositoryIds []string, first int, after *string) int
+		SelectedRepositories    func(childComplexity int, first int, after *string) int
+		Viewer                  func(childComplexity int) int
 	}
 
 	ReleaseEvidence struct {
@@ -346,6 +392,12 @@ type ComplexityRoot struct {
 	}
 }
 
+type AssignedIssueResolver interface {
+	RepositoryID(ctx context.Context, obj *analytics.AssignedIssue) (string, error)
+}
+type AttentionItemResolver interface {
+	RepositoryID(ctx context.Context, obj *analytics.AttentionItem) (string, error)
+}
 type QueryResolver interface {
 	Viewer(ctx context.Context) (*model.Viewer, error)
 	SelectedRepositories(ctx context.Context, first int, after *string) (*model.RepositoryConnection, error)
@@ -357,6 +409,7 @@ type QueryResolver interface {
 	ReleaseEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.ReleaseEvidenceConnection, error)
 	IssueEventEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.IssueEventEvidenceConnection, error)
 	RepositoryOverview(ctx context.Context, id string, days int) (*model.RepositoryOverview, error)
+	CrossRepositoryOverview(ctx context.Context, days int) (*model.CrossRepositoryOverview, error)
 }
 
 type executableSchema struct {
@@ -497,6 +550,97 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.ActivityStatus.Synchronized(childComplexity), true
 
+	case "AssignedIssue.fullName":
+		if e.complexity.AssignedIssue.FullName == nil {
+			break
+		}
+
+		return e.complexity.AssignedIssue.FullName(childComplexity), true
+
+	case "AssignedIssue.number":
+		if e.complexity.AssignedIssue.Number == nil {
+			break
+		}
+
+		return e.complexity.AssignedIssue.Number(childComplexity), true
+
+	case "AssignedIssue.repositoryId":
+		if e.complexity.AssignedIssue.RepositoryID == nil {
+			break
+		}
+
+		return e.complexity.AssignedIssue.RepositoryID(childComplexity), true
+
+	case "AssignedIssue.title":
+		if e.complexity.AssignedIssue.Title == nil {
+			break
+		}
+
+		return e.complexity.AssignedIssue.Title(childComplexity), true
+
+	case "AssignedIssue.url":
+		if e.complexity.AssignedIssue.URL == nil {
+			break
+		}
+
+		return e.complexity.AssignedIssue.URL(childComplexity), true
+
+	case "AssignedIssue.updatedAt":
+		if e.complexity.AssignedIssue.UpdatedAt == nil {
+			break
+		}
+
+		return e.complexity.AssignedIssue.UpdatedAt(childComplexity), true
+
+	case "AttentionItem.fullName":
+		if e.complexity.AttentionItem.FullName == nil {
+			break
+		}
+
+		return e.complexity.AttentionItem.FullName(childComplexity), true
+
+	case "AttentionItem.kind":
+		if e.complexity.AttentionItem.Kind == nil {
+			break
+		}
+
+		return e.complexity.AttentionItem.Kind(childComplexity), true
+
+	case "AttentionItem.number":
+		if e.complexity.AttentionItem.Number == nil {
+			break
+		}
+
+		return e.complexity.AttentionItem.Number(childComplexity), true
+
+	case "AttentionItem.repositoryId":
+		if e.complexity.AttentionItem.RepositoryID == nil {
+			break
+		}
+
+		return e.complexity.AttentionItem.RepositoryID(childComplexity), true
+
+	case "AttentionItem.since":
+		if e.complexity.AttentionItem.Since == nil {
+			break
+		}
+
+		return e.complexity.AttentionItem.Since(childComplexity), true
+
+	case "AttentionItem.title":
+		if e.complexity.AttentionItem.Title == nil {
+			break
+		}
+
+		return e.complexity.AttentionItem.Title(childComplexity), true
+
+	case "AttentionItem.url":
+		if e.complexity.AttentionItem.URL == nil {
+			break
+		}
+
+		return e.complexity.AttentionItem.URL(childComplexity), true
+
 	case "ChildResourceStatus.complete":
 		if e.complexity.ChildResourceStatus.Complete == nil {
 			break
@@ -622,6 +766,111 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.CommentEvidenceConnection.Withheld(childComplexity), true
+
+	case "CrossDailyPoint.day":
+		if e.complexity.CrossDailyPoint.Day == nil {
+			break
+		}
+
+		return e.complexity.CrossDailyPoint.Day(childComplexity), true
+
+	case "CrossDailyPoint.issuesOpened":
+		if e.complexity.CrossDailyPoint.IssuesOpened == nil {
+			break
+		}
+
+		return e.complexity.CrossDailyPoint.IssuesOpened(childComplexity), true
+
+	case "CrossDailyPoint.pullRequestsMerged":
+		if e.complexity.CrossDailyPoint.PullRequestsMerged == nil {
+			break
+		}
+
+		return e.complexity.CrossDailyPoint.PullRequestsMerged(childComplexity), true
+
+	case "CrossRepositoryOverview.assignedToMe":
+		if e.complexity.CrossRepositoryOverview.AssignedToMe == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.AssignedToMe(childComplexity), true
+
+	case "CrossRepositoryOverview.daily":
+		if e.complexity.CrossRepositoryOverview.Daily == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.Daily(childComplexity), true
+
+	case "CrossRepositoryOverview.days":
+		if e.complexity.CrossRepositoryOverview.Days == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.Days(childComplexity), true
+
+	case "CrossRepositoryOverview.needsAttention":
+		if e.complexity.CrossRepositoryOverview.NeedsAttention == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.NeedsAttention(childComplexity), true
+
+	case "CrossRepositoryOverview.now":
+		if e.complexity.CrossRepositoryOverview.Now == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.Now(childComplexity), true
+
+	case "CrossRepositoryOverview.openIssues":
+		if e.complexity.CrossRepositoryOverview.OpenIssues == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.OpenIssues(childComplexity), true
+
+	case "CrossRepositoryOverview.repositoriesCounted":
+		if e.complexity.CrossRepositoryOverview.RepositoriesCounted == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.RepositoriesCounted(childComplexity), true
+
+	case "CrossRepositoryOverview.repositoriesSyncing":
+		if e.complexity.CrossRepositoryOverview.RepositoriesSyncing == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.RepositoriesSyncing(childComplexity), true
+
+	case "CrossRepositoryOverview.retryAt":
+		if e.complexity.CrossRepositoryOverview.RetryAt == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.RetryAt(childComplexity), true
+
+	case "CrossRepositoryOverview.reviewBacklog":
+		if e.complexity.CrossRepositoryOverview.ReviewBacklog == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.ReviewBacklog(childComplexity), true
+
+	case "CrossRepositoryOverview.windowStart":
+		if e.complexity.CrossRepositoryOverview.WindowStart == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.WindowStart(childComplexity), true
+
+	case "CrossRepositoryOverview.withheld":
+		if e.complexity.CrossRepositoryOverview.Withheld == nil {
+			break
+		}
+
+		return e.complexity.CrossRepositoryOverview.Withheld(childComplexity), true
 
 	case "EvidenceActor.id":
 		if e.complexity.EvidenceActor.ID == nil {
@@ -889,6 +1138,20 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.MetricActor.Login(childComplexity), true
 
+	case "MetricContributor.commentsCreated":
+		if e.complexity.MetricContributor.CommentsCreated == nil {
+			break
+		}
+
+		return e.complexity.MetricContributor.CommentsCreated(childComplexity), true
+
+	case "MetricContributor.isBot":
+		if e.complexity.MetricContributor.IsBot == nil {
+			break
+		}
+
+		return e.complexity.MetricContributor.IsBot(childComplexity), true
+
 	case "MetricContributor.login":
 		if e.complexity.MetricContributor.Login == nil {
 			break
@@ -1134,6 +1397,13 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.PullRequestEvidence.RepositoryID(childComplexity), true
 
+	case "PullRequestEvidence.reviewState":
+		if e.complexity.PullRequestEvidence.ReviewState == nil {
+			break
+		}
+
+		return e.complexity.PullRequestEvidence.ReviewState(childComplexity), true
+
 	case "PullRequestEvidence.state":
 		if e.complexity.PullRequestEvidence.State == nil {
 			break
@@ -1208,6 +1478,18 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Query.CommentEvidence(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string)), true
+
+	case "Query.crossRepositoryOverview":
+		if e.complexity.Query.CrossRepositoryOverview == nil {
+			break
+		}
+
+		args, err := ec.field_Query_crossRepositoryOverview_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.CrossRepositoryOverview(childComplexity, args["days"].(int)), true
 
 	case "Query.issueEventEvidence":
 		if e.complexity.Query.IssueEventEvidence == nil {
@@ -2058,6 +2340,34 @@ func (ec *executionContext) field_Query_commentEvidence_argsAfter(
 	}
 
 	var zeroVal *string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_crossRepositoryOverview_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_crossRepositoryOverview_argsDays(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["days"] = arg0
+	return args, nil
+}
+func (ec *executionContext) field_Query_crossRepositoryOverview_argsDays(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (int, error) {
+	if _, ok := rawArgs["days"]; !ok {
+		var zeroVal int
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("days"))
+	if tmp, ok := rawArgs["days"]; ok {
+		return ec.unmarshalNInt2int(ctx, tmp)
+	}
+
+	var zeroVal int
 	return zeroVal, nil
 }
 
@@ -3477,6 +3787,578 @@ func (ec *executionContext) fieldContext_ActivityStatus_archived(_ context.Conte
 	return fc, nil
 }
 
+func (ec *executionContext) _AssignedIssue_repositoryId(ctx context.Context, field graphql.CollectedField, obj *analytics.AssignedIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AssignedIssue_repositoryId(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.AssignedIssue().RepositoryID(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AssignedIssue_repositoryId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AssignedIssue",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AssignedIssue_fullName(ctx context.Context, field graphql.CollectedField, obj *analytics.AssignedIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AssignedIssue_fullName(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.FullName, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AssignedIssue_fullName(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AssignedIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AssignedIssue_number(ctx context.Context, field graphql.CollectedField, obj *analytics.AssignedIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AssignedIssue_number(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Number, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int64)
+	fc.Result = res
+	return ec.marshalNInt642int64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AssignedIssue_number(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AssignedIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AssignedIssue_title(ctx context.Context, field graphql.CollectedField, obj *analytics.AssignedIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AssignedIssue_title(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Title, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AssignedIssue_title(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AssignedIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AssignedIssue_url(ctx context.Context, field graphql.CollectedField, obj *analytics.AssignedIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AssignedIssue_url(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.URL, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AssignedIssue_url(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AssignedIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AssignedIssue_updatedAt(ctx context.Context, field graphql.CollectedField, obj *analytics.AssignedIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AssignedIssue_updatedAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.UpdatedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(time.Time)
+	fc.Result = res
+	return ec.marshalNTime2timeᚐTime(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AssignedIssue_updatedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AssignedIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Time does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AttentionItem_kind(ctx context.Context, field graphql.CollectedField, obj *analytics.AttentionItem) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AttentionItem_kind(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Kind, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AttentionItem_kind(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AttentionItem",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AttentionItem_repositoryId(ctx context.Context, field graphql.CollectedField, obj *analytics.AttentionItem) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AttentionItem_repositoryId(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.AttentionItem().RepositoryID(rctx, obj)
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNID2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AttentionItem_repositoryId(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AttentionItem",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ID does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AttentionItem_fullName(ctx context.Context, field graphql.CollectedField, obj *analytics.AttentionItem) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AttentionItem_fullName(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.FullName, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AttentionItem_fullName(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AttentionItem",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AttentionItem_number(ctx context.Context, field graphql.CollectedField, obj *analytics.AttentionItem) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AttentionItem_number(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Number, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int64)
+	fc.Result = res
+	return ec.marshalNInt642int64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AttentionItem_number(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AttentionItem",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AttentionItem_title(ctx context.Context, field graphql.CollectedField, obj *analytics.AttentionItem) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AttentionItem_title(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Title, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AttentionItem_title(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AttentionItem",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AttentionItem_url(ctx context.Context, field graphql.CollectedField, obj *analytics.AttentionItem) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AttentionItem_url(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.URL, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AttentionItem_url(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AttentionItem",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _AttentionItem_since(ctx context.Context, field graphql.CollectedField, obj *analytics.AttentionItem) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AttentionItem_since(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Since, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(time.Time)
+	fc.Result = res
+	return ec.marshalNTime2timeᚐTime(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AttentionItem_since(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AttentionItem",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Time does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _ChildResourceStatus_complete(ctx context.Context, field graphql.CollectedField, obj *model.ChildResourceStatus) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_ChildResourceStatus_complete(ctx, field)
 	if err != nil {
@@ -4272,6 +5154,707 @@ func (ec *executionContext) fieldContext_CommentEvidenceConnection_retryAt(_ con
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossDailyPoint_day(ctx context.Context, field graphql.CollectedField, obj *analytics.CrossDailyPoint) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossDailyPoint_day(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Day, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(time.Time)
+	fc.Result = res
+	return ec.marshalNTime2timeᚐTime(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossDailyPoint_day(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossDailyPoint",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Time does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossDailyPoint_issuesOpened(ctx context.Context, field graphql.CollectedField, obj *analytics.CrossDailyPoint) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossDailyPoint_issuesOpened(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.IssuesOpened, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*int64)
+	fc.Result = res
+	return ec.marshalOInt642ᚖint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossDailyPoint_issuesOpened(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossDailyPoint",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossDailyPoint_pullRequestsMerged(ctx context.Context, field graphql.CollectedField, obj *analytics.CrossDailyPoint) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossDailyPoint_pullRequestsMerged(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.PullRequestsMerged, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*int64)
+	fc.Result = res
+	return ec.marshalOInt642ᚖint64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossDailyPoint_pullRequestsMerged(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossDailyPoint",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_days(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_days(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Days, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_days(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_windowStart(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_windowStart(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.WindowStart, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(time.Time)
+	fc.Result = res
+	return ec.marshalNTime2timeᚐTime(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_windowStart(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Time does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_now(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_now(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Now, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(time.Time)
+	fc.Result = res
+	return ec.marshalNTime2timeᚐTime(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_now(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Time does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_repositoriesCounted(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_repositoriesCounted(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RepositoriesCounted, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_repositoriesCounted(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_repositoriesSyncing(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_repositoriesSyncing(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RepositoriesSyncing, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_repositoriesSyncing(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_withheld(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_withheld(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Withheld, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_withheld(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_retryAt(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_retryAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.RetryAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_retryAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_openIssues(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_openIssues(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.OpenIssues, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(analytics.Count)
+	fc.Result = res
+	return ec.marshalNMetricCount2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐCount(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_openIssues(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "value":
+				return ec.fieldContext_MetricCount_value(ctx, field)
+			case "coverage":
+				return ec.fieldContext_MetricCount_coverage(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type MetricCount", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_reviewBacklog(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_reviewBacklog(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ReviewBacklog, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(analytics.Count)
+	fc.Result = res
+	return ec.marshalNMetricCount2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐCount(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_reviewBacklog(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "value":
+				return ec.fieldContext_MetricCount_value(ctx, field)
+			case "coverage":
+				return ec.fieldContext_MetricCount_coverage(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type MetricCount", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_needsAttention(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_needsAttention(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.NeedsAttention, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]analytics.AttentionItem)
+	fc.Result = res
+	return ec.marshalNAttentionItem2ᚕgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐAttentionItemᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_needsAttention(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "kind":
+				return ec.fieldContext_AttentionItem_kind(ctx, field)
+			case "repositoryId":
+				return ec.fieldContext_AttentionItem_repositoryId(ctx, field)
+			case "fullName":
+				return ec.fieldContext_AttentionItem_fullName(ctx, field)
+			case "number":
+				return ec.fieldContext_AttentionItem_number(ctx, field)
+			case "title":
+				return ec.fieldContext_AttentionItem_title(ctx, field)
+			case "url":
+				return ec.fieldContext_AttentionItem_url(ctx, field)
+			case "since":
+				return ec.fieldContext_AttentionItem_since(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type AttentionItem", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_assignedToMe(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_assignedToMe(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.AssignedToMe, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]analytics.AssignedIssue)
+	fc.Result = res
+	return ec.marshalNAssignedIssue2ᚕgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐAssignedIssueᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_assignedToMe(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "repositoryId":
+				return ec.fieldContext_AssignedIssue_repositoryId(ctx, field)
+			case "fullName":
+				return ec.fieldContext_AssignedIssue_fullName(ctx, field)
+			case "number":
+				return ec.fieldContext_AssignedIssue_number(ctx, field)
+			case "title":
+				return ec.fieldContext_AssignedIssue_title(ctx, field)
+			case "url":
+				return ec.fieldContext_AssignedIssue_url(ctx, field)
+			case "updatedAt":
+				return ec.fieldContext_AssignedIssue_updatedAt(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type AssignedIssue", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _CrossRepositoryOverview_daily(ctx context.Context, field graphql.CollectedField, obj *model.CrossRepositoryOverview) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_CrossRepositoryOverview_daily(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Daily, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]analytics.CrossDailyPoint)
+	fc.Result = res
+	return ec.marshalNCrossDailyPoint2ᚕgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐCrossDailyPointᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_CrossRepositoryOverview_daily(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "CrossRepositoryOverview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "day":
+				return ec.fieldContext_CrossDailyPoint_day(ctx, field)
+			case "issuesOpened":
+				return ec.fieldContext_CrossDailyPoint_issuesOpened(ctx, field)
+			case "pullRequestsMerged":
+				return ec.fieldContext_CrossDailyPoint_pullRequestsMerged(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type CrossDailyPoint", field.Name)
 		},
 	}
 	return fc, nil
@@ -6026,6 +7609,50 @@ func (ec *executionContext) fieldContext_MetricContributor_login(_ context.Conte
 	return fc, nil
 }
 
+func (ec *executionContext) _MetricContributor_isBot(ctx context.Context, field graphql.CollectedField, obj *analytics.Contributor) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_MetricContributor_isBot(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.IsBot, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_MetricContributor_isBot(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "MetricContributor",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _MetricContributor_pullRequestsOpened(ctx context.Context, field graphql.CollectedField, obj *analytics.Contributor) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_MetricContributor_pullRequestsOpened(ctx, field)
 	if err != nil {
@@ -6102,6 +7729,50 @@ func (ec *executionContext) _MetricContributor_reviewsSubmitted(ctx context.Cont
 }
 
 func (ec *executionContext) fieldContext_MetricContributor_reviewsSubmitted(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "MetricContributor",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int64 does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _MetricContributor_commentsCreated(ctx context.Context, field graphql.CollectedField, obj *analytics.Contributor) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_MetricContributor_commentsCreated(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.CommentsCreated, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int64)
+	fc.Result = res
+	return ec.marshalNInt642int64(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_MetricContributor_commentsCreated(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "MetricContributor",
 		Field:      field,
@@ -7715,6 +9386,47 @@ func (ec *executionContext) fieldContext_PullRequestEvidence_author(_ context.Co
 	return fc, nil
 }
 
+func (ec *executionContext) _PullRequestEvidence_reviewState(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidence) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_PullRequestEvidence_reviewState(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.ReviewState, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_PullRequestEvidence_reviewState(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequestEvidence",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _PullRequestEvidenceConnection_nodes(ctx context.Context, field graphql.CollectedField, obj *model.PullRequestEvidenceConnection) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_PullRequestEvidenceConnection_nodes(ctx, field)
 	if err != nil {
@@ -7776,6 +9488,8 @@ func (ec *executionContext) fieldContext_PullRequestEvidenceConnection_nodes(_ c
 				return ec.fieldContext_PullRequestEvidence_mergedAt(ctx, field)
 			case "author":
 				return ec.fieldContext_PullRequestEvidence_author(ctx, field)
+			case "reviewState":
+				return ec.fieldContext_PullRequestEvidence_reviewState(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type PullRequestEvidence", field.Name)
 		},
@@ -8651,6 +10365,84 @@ func (ec *executionContext) fieldContext_Query_repositoryOverview(ctx context.Co
 	}()
 	ctx = graphql.WithFieldContext(ctx, fc)
 	if fc.Args, err = ec.field_Query_repositoryOverview_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Query_crossRepositoryOverview(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_crossRepositoryOverview(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().CrossRepositoryOverview(rctx, fc.Args["days"].(int))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.CrossRepositoryOverview)
+	fc.Result = res
+	return ec.marshalOCrossRepositoryOverview2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐCrossRepositoryOverview(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_crossRepositoryOverview(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "days":
+				return ec.fieldContext_CrossRepositoryOverview_days(ctx, field)
+			case "windowStart":
+				return ec.fieldContext_CrossRepositoryOverview_windowStart(ctx, field)
+			case "now":
+				return ec.fieldContext_CrossRepositoryOverview_now(ctx, field)
+			case "repositoriesCounted":
+				return ec.fieldContext_CrossRepositoryOverview_repositoriesCounted(ctx, field)
+			case "repositoriesSyncing":
+				return ec.fieldContext_CrossRepositoryOverview_repositoriesSyncing(ctx, field)
+			case "withheld":
+				return ec.fieldContext_CrossRepositoryOverview_withheld(ctx, field)
+			case "retryAt":
+				return ec.fieldContext_CrossRepositoryOverview_retryAt(ctx, field)
+			case "openIssues":
+				return ec.fieldContext_CrossRepositoryOverview_openIssues(ctx, field)
+			case "reviewBacklog":
+				return ec.fieldContext_CrossRepositoryOverview_reviewBacklog(ctx, field)
+			case "needsAttention":
+				return ec.fieldContext_CrossRepositoryOverview_needsAttention(ctx, field)
+			case "assignedToMe":
+				return ec.fieldContext_CrossRepositoryOverview_assignedToMe(ctx, field)
+			case "daily":
+				return ec.fieldContext_CrossRepositoryOverview_daily(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type CrossRepositoryOverview", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_crossRepositoryOverview_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
 		ec.Error(ctx, err)
 		return fc, err
 	}
@@ -11549,10 +13341,14 @@ func (ec *executionContext) fieldContext_RepositoryOverview_contributors(_ conte
 			switch field.Name {
 			case "login":
 				return ec.fieldContext_MetricContributor_login(ctx, field)
+			case "isBot":
+				return ec.fieldContext_MetricContributor_isBot(ctx, field)
 			case "pullRequestsOpened":
 				return ec.fieldContext_MetricContributor_pullRequestsOpened(ctx, field)
 			case "reviewsSubmitted":
 				return ec.fieldContext_MetricContributor_reviewsSubmitted(ctx, field)
+			case "commentsCreated":
+				return ec.fieldContext_MetricContributor_commentsCreated(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type MetricContributor", field.Name)
 		},
@@ -14543,6 +16339,201 @@ func (ec *executionContext) _ActivityStatus(ctx context.Context, sel ast.Selecti
 	return out
 }
 
+var assignedIssueImplementors = []string{"AssignedIssue"}
+
+func (ec *executionContext) _AssignedIssue(ctx context.Context, sel ast.SelectionSet, obj *analytics.AssignedIssue) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, assignedIssueImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("AssignedIssue")
+		case "repositoryId":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._AssignedIssue_repositoryId(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "fullName":
+			out.Values[i] = ec._AssignedIssue_fullName(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "number":
+			out.Values[i] = ec._AssignedIssue_number(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "title":
+			out.Values[i] = ec._AssignedIssue_title(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "url":
+			out.Values[i] = ec._AssignedIssue_url(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "updatedAt":
+			out.Values[i] = ec._AssignedIssue_updatedAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var attentionItemImplementors = []string{"AttentionItem"}
+
+func (ec *executionContext) _AttentionItem(ctx context.Context, sel ast.SelectionSet, obj *analytics.AttentionItem) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, attentionItemImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("AttentionItem")
+		case "kind":
+			out.Values[i] = ec._AttentionItem_kind(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "repositoryId":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._AttentionItem_repositoryId(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "fullName":
+			out.Values[i] = ec._AttentionItem_fullName(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "number":
+			out.Values[i] = ec._AttentionItem_number(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "title":
+			out.Values[i] = ec._AttentionItem_title(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "url":
+			out.Values[i] = ec._AttentionItem_url(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		case "since":
+			out.Values[i] = ec._AttentionItem_since(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				atomic.AddUint32(&out.Invalids, 1)
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
 var childResourceStatusImplementors = []string{"ChildResourceStatus"}
 
 func (ec *executionContext) _ChildResourceStatus(ctx context.Context, sel ast.SelectionSet, obj *model.ChildResourceStatus) graphql.Marshaler {
@@ -14694,6 +16685,140 @@ func (ec *executionContext) _CommentEvidenceConnection(ctx context.Context, sel 
 			}
 		case "retryAt":
 			out.Values[i] = ec._CommentEvidenceConnection_retryAt(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var crossDailyPointImplementors = []string{"CrossDailyPoint"}
+
+func (ec *executionContext) _CrossDailyPoint(ctx context.Context, sel ast.SelectionSet, obj *analytics.CrossDailyPoint) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, crossDailyPointImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("CrossDailyPoint")
+		case "day":
+			out.Values[i] = ec._CrossDailyPoint_day(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "issuesOpened":
+			out.Values[i] = ec._CrossDailyPoint_issuesOpened(ctx, field, obj)
+		case "pullRequestsMerged":
+			out.Values[i] = ec._CrossDailyPoint_pullRequestsMerged(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var crossRepositoryOverviewImplementors = []string{"CrossRepositoryOverview"}
+
+func (ec *executionContext) _CrossRepositoryOverview(ctx context.Context, sel ast.SelectionSet, obj *model.CrossRepositoryOverview) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, crossRepositoryOverviewImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("CrossRepositoryOverview")
+		case "days":
+			out.Values[i] = ec._CrossRepositoryOverview_days(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "windowStart":
+			out.Values[i] = ec._CrossRepositoryOverview_windowStart(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "now":
+			out.Values[i] = ec._CrossRepositoryOverview_now(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "repositoriesCounted":
+			out.Values[i] = ec._CrossRepositoryOverview_repositoriesCounted(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "repositoriesSyncing":
+			out.Values[i] = ec._CrossRepositoryOverview_repositoriesSyncing(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "withheld":
+			out.Values[i] = ec._CrossRepositoryOverview_withheld(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "retryAt":
+			out.Values[i] = ec._CrossRepositoryOverview_retryAt(ctx, field, obj)
+		case "openIssues":
+			out.Values[i] = ec._CrossRepositoryOverview_openIssues(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "reviewBacklog":
+			out.Values[i] = ec._CrossRepositoryOverview_reviewBacklog(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "needsAttention":
+			out.Values[i] = ec._CrossRepositoryOverview_needsAttention(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "assignedToMe":
+			out.Values[i] = ec._CrossRepositoryOverview_assignedToMe(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "daily":
+			out.Values[i] = ec._CrossRepositoryOverview_daily(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -15162,6 +17287,11 @@ func (ec *executionContext) _MetricContributor(ctx context.Context, sel ast.Sele
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
+		case "isBot":
+			out.Values[i] = ec._MetricContributor_isBot(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
 		case "pullRequestsOpened":
 			out.Values[i] = ec._MetricContributor_pullRequestsOpened(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
@@ -15169,6 +17299,11 @@ func (ec *executionContext) _MetricContributor(ctx context.Context, sel ast.Sele
 			}
 		case "reviewsSubmitted":
 			out.Values[i] = ec._MetricContributor_reviewsSubmitted(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "commentsCreated":
+			out.Values[i] = ec._MetricContributor_commentsCreated(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
@@ -15545,6 +17680,8 @@ func (ec *executionContext) _PullRequestEvidence(ctx context.Context, sel ast.Se
 			out.Values[i] = ec._PullRequestEvidence_mergedAt(ctx, field, obj)
 		case "author":
 			out.Values[i] = ec._PullRequestEvidence_author(ctx, field, obj)
+		case "reviewState":
+			out.Values[i] = ec._PullRequestEvidence_reviewState(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -15842,6 +17979,25 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 					}
 				}()
 				res = ec._Query_repositoryOverview(ctx, field)
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "crossRepositoryOverview":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_crossRepositoryOverview(ctx, field)
 				return res
 			}
 
@@ -16851,6 +19007,102 @@ func (ec *executionContext) marshalNActivityStatus2ᚖgithubᚗcomᚋrepoorbit�
 	return ec._ActivityStatus(ctx, sel, v)
 }
 
+func (ec *executionContext) marshalNAssignedIssue2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐAssignedIssue(ctx context.Context, sel ast.SelectionSet, v analytics.AssignedIssue) graphql.Marshaler {
+	return ec._AssignedIssue(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNAssignedIssue2ᚕgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐAssignedIssueᚄ(ctx context.Context, sel ast.SelectionSet, v []analytics.AssignedIssue) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNAssignedIssue2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐAssignedIssue(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNAttentionItem2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐAttentionItem(ctx context.Context, sel ast.SelectionSet, v analytics.AttentionItem) graphql.Marshaler {
+	return ec._AttentionItem(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNAttentionItem2ᚕgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐAttentionItemᚄ(ctx context.Context, sel ast.SelectionSet, v []analytics.AttentionItem) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNAttentionItem2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐAttentionItem(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
 func (ec *executionContext) unmarshalNBoolean2bool(ctx context.Context, v any) (bool, error) {
 	res, err := graphql.UnmarshalBoolean(v)
 	return res, graphql.ErrorOnPath(ctx, err)
@@ -16933,6 +19185,54 @@ func (ec *executionContext) marshalNCommentEvidenceConnection2ᚖgithubᚗcomᚋ
 		return graphql.Null
 	}
 	return ec._CommentEvidenceConnection(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNCrossDailyPoint2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐCrossDailyPoint(ctx context.Context, sel ast.SelectionSet, v analytics.CrossDailyPoint) graphql.Marshaler {
+	return ec._CrossDailyPoint(ctx, sel, &v)
+}
+
+func (ec *executionContext) marshalNCrossDailyPoint2ᚕgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐCrossDailyPointᚄ(ctx context.Context, sel ast.SelectionSet, v []analytics.CrossDailyPoint) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNCrossDailyPoint2githubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋinternalᚋanalyticsᚐCrossDailyPoint(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
 }
 
 func (ec *executionContext) unmarshalNID2string(ctx context.Context, v any) (string, error) {
@@ -17938,6 +20238,13 @@ func (ec *executionContext) marshalOChildResourceStatus2ᚖgithubᚗcomᚋrepoor
 		return graphql.Null
 	}
 	return ec._ChildResourceStatus(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalOCrossRepositoryOverview2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐCrossRepositoryOverview(ctx context.Context, sel ast.SelectionSet, v *model.CrossRepositoryOverview) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._CrossRepositoryOverview(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalOEvidenceActor2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐEvidenceActor(ctx context.Context, sel ast.SelectionSet, v *model.EvidenceActor) graphql.Marshaler {

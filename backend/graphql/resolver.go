@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
@@ -13,4 +14,5 @@ type Resolver struct {
 	Clock      jobs.Clock
 	Demo       bool
 	RepoAccess *repositories.Service // nil in Demo mode
+	DemoPool   *pgxpool.Pool         // analytics reads in Demo mode only; real mode reads through RepoAccess.Pool
 }
