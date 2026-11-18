@@ -19,7 +19,7 @@ function Starred() {
   const queryClient = useQueryClient();
   const demo = session.mode === "demo";
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [savingFollow, setSavingFollow] = useState(false);
 
   // The first page re-reads stars from GitHub (refresh); "Load more" pages through the stored snapshot.
   const query = useInfiniteQuery({
@@ -34,15 +34,16 @@ function Starred() {
   const listing = pages.at(-1);
   const withheld = pages.reduce((sum, p) => sum + p.withheld, 0);
   const visible = rows.filter(r => matchesListSearch(r, search.q));
+  const controlsDisabled = savingFollow || query.isFetching;
 
   async function toggle(repo: ListedRepo) {
-    setBusy(repo.id);
+    setSavingFollow(true);
     try {
       await setFollowed(repo.id, !repo.selected);
       const selected = !repo.selected;
       queryClient.setQueryData<InfiniteData<StarredPage>>(["starred"], old => old && { ...old, pages: old.pages.map(p => ({ ...p, repositories: p.repositories.map(r => (r.id === repo.id ? { ...r, selected, syncState: selected ? "awaiting-sync" as const : "not-synchronized" as const } : r)) })) });
       setError(null);
-    } catch (e) { setError(e instanceof Error ? e.message : "Something went wrong."); } finally { setBusy(null); }
+    } catch (e) { setError(e instanceof Error ? e.message : "Something went wrong."); } finally { setSavingFollow(false); }
   }
 
   if (demo) return <div className="h-full overflow-y-auto p-6"><h1 className="text-2xl font-bold">Starred repositories</h1><p className="mt-4 text-muted-foreground">Demo mode has no GitHub connection, so there are no stars to follow.</p></div>;
@@ -50,7 +51,7 @@ function Starred() {
     <header className="shrink-0 border-b border-border px-6 py-4">
       <div className="flex items-end justify-between gap-4">
         <div><h1 className="text-2xl font-bold">Starred repositories</h1><p className="mt-1 text-sm text-muted-foreground">Follow the repositories you want to find issues in.</p></div>
-        <Button onClick={() => queryClient.resetQueries({ queryKey: ["starred"] })} disabled={query.isFetching}>Refresh</Button>
+        <Button onClick={() => queryClient.resetQueries({ queryKey: ["starred"] })} disabled={controlsDisabled}>Refresh</Button>
       </div>
       <input type="search" aria-label="Search starred repositories" placeholder="Search starred repositories" value={search.q ?? ""} onChange={e => navigate({ search: prev => ({ ...prev, q: e.target.value || undefined }), replace: true })} className="mt-3 w-64 rounded-md border border-border bg-card px-3 py-1.5 text-sm" />
     </header>
@@ -68,9 +69,9 @@ function Starred() {
           {repo.description && <p className="mt-0.5 text-sm text-muted-foreground">{repo.description}</p>}
           <p className="mt-1 text-sm text-muted-foreground">{repo.selected ? "Following, awaiting sync" : "Not following"}</p>
         </div>
-        <Button onClick={() => toggle(repo)} disabled={busy === repo.id}>{repo.selected ? "Unfollow" : "Follow"}<span className="sr-only"> {repo.fullName}</span></Button>
+        <Button onClick={() => toggle(repo)} disabled={controlsDisabled}>{repo.selected ? "Unfollow" : "Follow"}<span className="sr-only"> {repo.fullName}</span></Button>
       </li>)}</ul>
-      {query.hasNextPage && <div className="p-6"><Button onClick={() => query.fetchNextPage()} disabled={query.isFetchingNextPage}>Load more repositories</Button></div>}
+      {query.hasNextPage && <div className="p-6"><Button onClick={() => query.fetchNextPage()} disabled={controlsDisabled}>Load more repositories</Button></div>}
     </div>
   </div>;
 }

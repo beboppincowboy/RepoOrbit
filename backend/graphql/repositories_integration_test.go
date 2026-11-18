@@ -79,10 +79,13 @@ func TestDemoDatabaseGraphQL(t *testing.T) {
 	if !strings.Contains(result, "orbit/launchpad") || !strings.Contains(result, "Add keyboard shortcuts") {
 		t.Fatal(result)
 	}
-	for _, query := range []string{`{ selectedRepositories(first: 101) { nodes { fullName } } }`, `{ selectedRepositories(first: 100) { nodes { a:fullName b:fullName c:fullName d:fullName e:fullName f:fullName g:fullName h:fullName i:fullName j:fullName k:fullName } } }`, `{ selectedRepositories(after: "bad") { nodes { fullName } } }`, `{ ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { selectedRepositories { nodes { fullName } } } } } } } } }`} {
+	for _, query := range []string{`{ selectedRepositories(first: 101) { nodes { fullName } } }`, `{ selectedRepositories(after: "bad") { nodes { fullName } } }`, `{ ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { selectedRepositories { nodes { fullName } } } } } } } } }`} {
 		if got := run(query); !strings.Contains(got, `"errors"`) {
 			t.Fatalf("accepted %s: %s", query, got)
 		}
+	}
+	if got := run(`{ selectedRepositories(first: 100) { nodes { a:fullName b:fullName c:fullName d:fullName e:fullName f:fullName g:fullName h:fullName i:fullName j:fullName k:fullName } } }`); !strings.Contains(got, "exceeds the limit of 1000") {
+		t.Fatalf("expected the alias-heavy query to exceed the existing complexity budget: %s", got)
 	}
 	if _, err = pool.Exec(ctx, "UPDATE repositories SET name='changed/database' WHERE id=1"); err != nil {
 		t.Fatal(err)

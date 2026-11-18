@@ -147,60 +147,85 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 	if strings.Contains(got, "private ") {
 		t.Fatalf("other viewer saw evidence: %s", got)
 	}
-	// Block the evidence query after its fresh access check, then invalidate the viewer before the final fence check.
-	tx, err := pool.Begin(ctx)
-	if err != nil {
+	overviewQuery := fmt.Sprintf(`{ repositoryOverview(id:"%d", days:7) {
+	  openPullRequests { value coverage { covered } }
+	  releasesPublished { value coverage { covered } }
+	  firstReviewTime { sampleSize coverage { reason } }
+	  timeline { title }
+	  contributors { login }
+	} }`, repo)
+	if _, err := pool.Exec(ctx, `INSERT INTO activity_resources(repository_id,resource,boundary,watermark)
+	  VALUES ($1,'pull_requests',now()-interval '90 days',now()), ($1,'releases',now()-interval '90 days',now())`, repo); err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `LOCK TABLE activity_pull_requests IN ACCESS EXCLUSIVE MODE`); err != nil {
-		t.Fatal(err)
-	}
-	result := make(chan string, 1)
-	go func() {
-		result <- run(alice, fmt.Sprintf(`{ pullRequestEvidence(repositoryIds:["%d"]) { nodes { title } withheld } }`, repo))
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	blocked := false
-	for time.Now().Before(deadline) {
-		if err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%FROM activity_pull_requests WHERE repository_id%')`).Scan(&blocked); err != nil {
-			t.Fatal(err)
+	got = run(alice, overviewQuery)
+	for _, want := range []string{`"openPullRequests":{"value":2,"coverage":{"covered":true}}`, `"releasesPublished":{"value":0`, `"sampleSize":null`, "children_incomplete"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("authorized overview missing %s: %s", want, got)
 		}
-		if blocked {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
-	if !blocked {
-		t.Fatal("evidence read did not block")
+	if got = run(bob, overviewQuery); !strings.Contains(got, `"repositoryOverview":null`) || strings.Contains(got, "errors") {
+		t.Fatalf("unexpected cross-user overview: %s", got)
 	}
-	fenceTx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = accessfence.InvalidateAccess(ctx, fenceTx, accessfence.ScopeUser, aliceID); err != nil {
-		t.Fatal(err)
-	}
-	if err = fenceTx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err = tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	got = <-result
-	var out struct {
-		Data struct {
-			PullRequestEvidence struct {
-				Nodes    []json.RawMessage
-				Withheld int
+
+	// Pause each read after authorization so the final fence must discard its result.
+	for _, scenario := range []struct {
+		name, query, blockedSQL string
+	}{
+		{"evidence", fmt.Sprintf(`{ pullRequestEvidence(repositoryIds:["%d"]) { nodes { title } withheld } }`, repo), "%FROM activity_pull_requests WHERE repository_id%"},
+		{"overview", overviewQuery, "%name: GetMetricCoverage%"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	}
-	if err = json.Unmarshal([]byte(got), &out); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(got, "private PR") || len(out.Data.PullRequestEvidence.Nodes) != 0 || out.Data.PullRequestEvidence.Withheld != 1 {
-		t.Fatalf("fenced read leaked: %s", got)
+			defer tx.Rollback(ctx)
+			if _, err = tx.Exec(ctx, `LOCK TABLE activity_pull_requests IN ACCESS EXCLUSIVE MODE`); err != nil {
+				t.Fatal(err)
+			}
+			result := make(chan string, 1)
+			go func() {
+				result <- run(alice, scenario.query)
+			}()
+			deadline := time.Now().Add(2 * time.Second)
+			blocked := false
+			for time.Now().Before(deadline) {
+				if err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE $1)`, scenario.blockedSQL).Scan(&blocked); err != nil {
+					t.Fatal(err)
+				}
+				if blocked {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !blocked {
+				t.Fatal("evidence read did not block")
+			}
+			fenceTx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = accessfence.InvalidateAccess(ctx, fenceTx, accessfence.ScopeUser, aliceID); err != nil {
+				t.Fatal(err)
+			}
+			if err = fenceTx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err = tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			got := <-result
+			if scenario.name == "overview" {
+				if !strings.Contains(got, `"repositoryOverview":null`) || !strings.Contains(got, "ACCESS_UNVERIFIED") {
+					t.Fatalf("fenced overview leaked: %s", got)
+				}
+				return
+			}
+			if !strings.Contains(got, `"nodes":[],"withheld":1`) {
+				t.Fatalf("fenced read leaked: %s", got)
+			}
+		})
 	}
 	gh.Uninstall(9)
 	got = run(alice, query)

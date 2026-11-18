@@ -9,9 +9,13 @@ export type ActivityResourceStatus = { phase: string; boundary: string; catchupT
 export type ChildResourceStatus = { complete: boolean; pendingChildren: number; lastSuccessAt: string | null; failureCode: string | null; nextAttemptAt: string | null };
 export type ActivityStatus = { synchronized: boolean; message: string; issues: ActivityResourceStatus | null; pullRequests: ActivityResourceStatus | null; releases: ActivityResourceStatus | null; reviews: ChildResourceStatus | null; comments: ChildResourceStatus | null; issueEvents: { traversal: ActivityResourceStatus | null; historicalGap: boolean } | null; futureResources: string[] };
 // fullName is "owner/name".
-export type Repository = { id: string; fullName: string; description: string; syncState: SyncState; metadataStatus: MetadataStatus | null; activity: ActivityStatus | null; issues: { nodes: Issue[]; hasNextPage: boolean; withheld: number; retryAt: string | null } };
+type SelectedRepository = { id: string; fullName: string; description: string; syncState: SyncState; metadataStatus: MetadataStatus | null };
+type IssueConnection = { nodes: Issue[]; hasNextPage: boolean; withheld: number; retryAt: string | null };
+type RepositoryDetail =
+  | { state: "available"; activity: ActivityStatus | null; issues: IssueConnection }
+  | { state: "access-unverified"; retryAt: string | null };
 // withheld counts selected repositories hidden because access could not be verified; retryAt is set when GitHub rate limited the check.
-export type RepositoryConnection = { nodes: Repository[]; endCursor: string | null; hasNextPage: boolean; withheld: number; retryAt: string | null };
+type RepositoryConnection = { nodes: SelectedRepository[]; endCursor: string | null; hasNextPage: boolean; withheld: number; retryAt: string | null };
 // One row of a REST repository list. `selected` means connected on the owned list and followed on the starred list.
 export type ListedRepo = { id: string; fullName: string; description: string; private: boolean; selected: boolean; syncState: SyncState };
 export type OwnedPage = { repositories: ListedRepo[]; nextPage: number; refreshFailed: boolean; withheld: number; retryAt: string | null; installUrl: string };
@@ -19,7 +23,7 @@ export type StarredPage = { repositories: ListedRepo[]; nextPage: number; refres
 export type Me = { mode: "demo" | "real"; user: { login: string; demo: boolean } | null; csrfToken: string | null };
 let csrfToken: string | null = null;
 // me() fetches the session and, as a side effect, stores its CSRF token in this module for every later
-// mutating call (logout, setSelected, setFollowed, GraphQL). Call it (AuthShell does) before any of them.
+// mutating call (logout, setSelected, setFollowed, GraphQL). The workspace loads it before any of them.
 export async function me(): Promise<Me> {
   const response = await fetch("/auth/me", { cache: "no-store" });
   if (!response.ok) throw new Error("Unable to load session");
@@ -27,44 +31,80 @@ export async function me(): Promise<Me> {
   csrfToken = result.csrfToken;
   return result;
 }
-// Session query. staleTime 0: every entry into the workspace re-reads /auth/me, as the old AuthShell did on navigation.
+// Fetches the current session on workspace entry and supplies the CSRF token for subsequent requests.
 export const sessionQuery = { queryKey: ["session"], queryFn: me, staleTime: 0 } as const;
+// Ends the current session in Go. The caller owns navigation and local query state. Rejects on HTTP or network failure.
 export async function logout() {
-  await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
+  const response = await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
+  if (!response.ok) throw new Error("Could not sign out. Try again.");
 }
-async function graphqlQuery(queryText: string, variables: Record<string, unknown>) {
-  const response = await fetch("/graphql", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "" }, cache: "no-store", body: JSON.stringify({ query: queryText, variables }) });
+type GraphQLResponse<Data> = {
+  data?: Data | null;
+  errors?: { path?: (string | number)[]; extensions?: { code?: string; retryAt?: string } }[];
+};
+
+async function graphqlQuery<Data>(queryText: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<GraphQLResponse<Data>> {
+  const response = await fetch("/graphql", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "" }, cache: "no-store", signal, body: JSON.stringify({ query: queryText, variables }) });
   if (!response.ok) throw new Error("Unable to load repositories");
-  const result = await response.json();
-  if (result.errors || !result.data) throw new Error("Unable to load repositories");
-  return result.data;
+  return response.json();
 }
 // The backend caps GraphQL nesting at 6 levels (a leaf one level deeper is rejected) and query complexity at 1000.
 // So the list query stays shallow, and activity and issues come from aliased queries of at most 8 repositories each:
 // repository(id) and issues(repositoryIds) are each one level shallower than selectedRepositories { nodes { activity { issueEvents { traversal } } } }.
-const activityFields = `synchronized message issues { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } pullRequests { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } releases { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } reviews { complete pendingChildren lastSuccessAt failureCode nextAttemptAt } comments { complete pendingChildren lastSuccessAt failureCode nextAttemptAt } issueEvents { traversal { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } historicalGap } futureResources`;
+const activityResourceFields = "phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt";
+const childResourceFields = "complete pendingChildren lastSuccessAt failureCode nextAttemptAt";
+const activityFields = `synchronized message issues { ${activityResourceFields} } pullRequests { ${activityResourceFields} } releases { ${activityResourceFields} } reviews { ${childResourceFields} } comments { ${childResourceFields} } issueEvents { traversal { ${activityResourceFields} } historicalGap } futureResources`;
 const detailChunk = 8;
-type Details = { activity: ActivityStatus | null; issues: Repository["issues"] };
-async function repositoryDetails(ids: string[]): Promise<Details[]> {
+type DetailResponse = Partial<Record<`a${number}`, { activity: ActivityStatus | null } | null>>
+  & Partial<Record<`r${number}`, IssueConnection | null>>;
+
+// Rechecks access and fetches activity and up to five issues per ID, in input order.
+// Accepts one to eight IDs. Access-unverified entries carry only an optional retry time.
+// Rejects an invalid batch size, cancellation, or a request or unexpected GraphQL error.
+export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal): Promise<RepositoryDetail[]> {
+  if (ids.length === 0 || ids.length > detailChunk) throw new RangeError("Expected one to eight repository IDs");
   const declarations = ids.map((_, i) => `$id${i}: ID!`).join(", ");
   const fields = ids.map((_, i) => `a${i}: repository(id: $id${i}) { activity { ${activityFields} } } r${i}: issues(repositoryIds: [$id${i}], first: 5) { nodes { id repositoryId title state } hasNextPage withheld retryAt }`).join(" ");
-  const data = await graphqlQuery(`query RepositoryDetails(${declarations}) { ${fields} }`, Object.fromEntries(ids.map((id, i) => [`id${i}`, id])));
-  return ids.map((_, i) => ({ activity: data[`a${i}`]?.activity ?? null, issues: data[`r${i}`] }));
-}
-// Loads one page of the viewer's SELECTED repositories (not every accessible one) with their activity and first 5 issues.
-// Pass the previous page's endCursor as `after`.
-export async function selectedRepositories(after: string | null = null): Promise<RepositoryConnection> {
-  const { selectedRepositories: connection } = await graphqlQuery(`query SelectedRepositories($after: ID) { selectedRepositories(first: 20, after: $after) { nodes { id fullName description syncState metadataStatus { state lastSuccessAt nextAttemptAt paused failureCode followSuspended } } endCursor hasNextPage withheld retryAt } }`, { after });
-  const listed: Array<Omit<Repository, "activity" | "issues">> = connection.nodes;
-  const chunks: string[][] = [];
-  for (let i = 0; i < listed.length; i += detailChunk) chunks.push(listed.slice(i, i + detailChunk).map(repo => repo.id));
-  const details = (await Promise.all(chunks.map(repositoryDetails))).flat();
-  const nodes: Repository[] = listed.map((repo, i) => {
-    // A repository GitHub no longer lets the viewer read (access changed after the list was loaded) shows as access unverified; the rest of the page still loads.
-    if (!details[i].activity) return { ...repo, activity: null, issues: { nodes: [], hasNextPage: false, withheld: 1, retryAt: null } };
-    return { ...repo, activity: details[i].activity, issues: details[i].issues };
+  const { data, errors = [] } = await graphqlQuery<DetailResponse>(`query RepositoryDetails(${declarations}) { ${fields} }`, Object.fromEntries(ids.map((id, i) => [`id${i}`, id])), signal);
+  if (!data || errors.some(error => error.extensions?.code !== "ACCESS_UNVERIFIED" || !error.path?.length)) {
+    throw new Error("Unable to load repository details");
+  }
+  return ids.map((_, i) => {
+    const repository = data[`a${i}`];
+    const issues = data[`r${i}`];
+    const accessError = errors.find(error => error.path?.[0] === `a${i}` || error.path?.[0] === `r${i}`);
+    if (repository === null || accessError || issues?.withheld) {
+      return { state: "access-unverified", retryAt: accessError?.extensions?.retryAt ?? issues?.retryAt ?? null };
+    }
+    if (!repository || !issues) throw new Error("Unable to load repository details");
+    return { state: "available", activity: repository.activity, issues };
   });
-  return { ...connection, nodes };
+}
+
+type SelectedRepositoryBatch = { repositories: SelectedRepository[]; details: RepositoryDetail[] | null };
+type SelectedRepositoryPage = Omit<RepositoryConnection, "nodes"> & { batches: SelectedRepositoryBatch[] };
+
+// Fetches one page of selected repositories, then their details with at most two requests in flight.
+// Pass null for the first page or the previous page’s endCursor. Batches preserve list order and retain IDs for retry.
+// List failures and cancellation reject the call. A failed detail batch has null details.
+export async function fetchSelectedRepositories(after: string | null, signal?: AbortSignal): Promise<SelectedRepositoryPage> {
+  const { data, errors } = await graphqlQuery<{ selectedRepositories: RepositoryConnection }>(`query SelectedRepositories($after: ID) { selectedRepositories(first: 20, after: $after) { nodes { id fullName description syncState metadataStatus { state lastSuccessAt nextAttemptAt paused failureCode followSuspended } } endCursor hasNextPage withheld retryAt } }`, { after }, signal);
+  if (!data || errors?.length) throw new Error("Unable to load repositories");
+  const { nodes, ...connection } = data.selectedRepositories;
+  const batches: SelectedRepositoryBatch[] = [];
+  for (let i = 0; i < nodes.length; i += detailChunk) {
+    batches.push({ repositories: nodes.slice(i, i + detailChunk), details: null });
+  }
+  for (let i = 0; i < batches.length; i += 2) {
+    signal?.throwIfAborted();
+    const pair = batches.slice(i, i + 2);
+    const results = await Promise.allSettled(pair.map(batch => fetchRepositoryDetails(batch.repositories.map(repo => repo.id), signal)));
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") pair[index].details = result.value;
+    });
+  }
+  signal?.throwIfAborted();
+  return { ...connection, batches };
 }
 // Loads one page of repositories on the user's personal GitHub account (selected or not) from GitHub.
 export async function ownedRepositories(page = 1): Promise<OwnedPage> {
@@ -99,4 +139,64 @@ export async function refreshActivity(id: string): Promise<"accepted" | "coalesc
   if (response.status === 404) throw new Error("This repository is no longer eligible for activity sync.");
   if (response.status === 503) throw new Error("GitHub could not verify access right now. Try again shortly.");
   throw new Error("Could not request an activity refresh.");
+}
+
+export type MetricWindow = 7 | 30 | 90;
+type Coverage = { covered: boolean; reason: string | null; through: string | null };
+type CountMetric = { value: number | null; coverage: Coverage };
+type MedianMetric = { seconds: number | null; sampleSize: number | null; coverage: Coverage };
+
+type RepositoryOverview = {
+  fullName: string;
+  syncState: SyncState;
+  activity: ActivityStatus & { archived: boolean };
+  openIssues: CountMetric;
+  staleOpenIssues: CountMetric;
+  pullRequestsMerged: CountMetric;
+  firstResponseTime: MedianMetric;
+  issuesWithoutResponse: Pick<CountMetric, "value">;
+  mergeTime: MedianMetric;
+  eventsCoveredFrom: string | null;
+  windowStart: string;
+  activeBotContributors: CountMetric;
+  contributorsCoverage: Coverage;
+  contributors: { login: string; pullRequestsOpened: number; reviewsSubmitted: number }[];
+  timeline: { url: string; sourceId: number; kind: string; occurredAt: string; title: string; number: number | null; actor: { login: string; isBot: boolean } | null }[];
+  daily: { day: string; issuesOpened: number | null; pullRequestsMerged: number | null }[];
+};
+
+export async function fetchRepositoryOverview(id: string, days: MetricWindow, signal: AbortSignal) {
+  const coverage = "covered reason through";
+  const count = `value coverage { ${coverage} }`;
+  const median = `seconds sampleSize coverage { ${coverage} }`;
+  const { data, errors } = await graphqlQuery<{
+    repositoryOverview: RepositoryOverview | null;
+  }>(`query RepositoryOverview($id: ID!, $days: Int!) {
+    repositoryOverview(id: $id, days: $days) {
+      fullName syncState activity { ${activityFields} archived }
+      openIssues { ${count} } staleOpenIssues { ${count} } pullRequestsMerged { ${count} }
+      firstResponseTime { ${median} } mergeTime { ${median} } issuesWithoutResponse { value }
+      activeBotContributors { ${count} } contributorsCoverage { ${coverage} }
+      contributors { login pullRequestsOpened reviewsSubmitted }
+      windowStart eventsCoveredFrom
+      daily { day issuesOpened pullRequestsMerged }
+      timeline { sourceId kind occurredAt title number url actor { login isBot } }
+    }
+  }`, { id, days }, signal);
+  if (errors?.some(error => error.extensions?.code === "ACCESS_UNVERIFIED")) {
+    throw new Error("Access could not be verified");
+  }
+  if (!data || errors?.length) throw new Error("Could not load repository analytics");
+  return data.repositoryOverview;
+}
+
+export async function fetchWorkspacePullRequests(id: string, signal: AbortSignal) {
+  const { data, errors } = await graphqlQuery<{
+    pullRequestEvidence: { nodes: { id: string; number: number; title: string; state: string; mergedAt: string | null }[]; withheld: number; hasNextPage: boolean };
+  }>(`query WorkspacePullRequests($id: ID!) {
+    pullRequestEvidence(repositoryIds: [$id], first: 20) { nodes { id number title state mergedAt } withheld hasNextPage }
+  }`, { id }, signal);
+  if (!data || errors?.length) throw new Error("Could not load pull requests");
+  if (data.pullRequestEvidence.withheld) throw new Error("Access could not be verified");
+  return data.pullRequestEvidence;
 }

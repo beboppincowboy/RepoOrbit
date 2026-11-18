@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { demo, metadata, mockSelected, mockSession, quietActivity, selectedRepo, signedIn } from './mocks';
+import { demo, listed, metadata, mockOwned, mockSelected, mockSession, quietActivity, selectedRepo, signedIn } from './mocks';
 
 // Fully mocked API: runs against whatever web server the config starts.
 const res = (over: object = {}) => ({ phase: 'current', boundary: '2026-11-01T00:00:00Z', catchupThrough: null, lastSuccessAt: '2026-11-16T08:00:00Z', failureCode: null, jobState: 'idle', nextAttemptAt: null, ...over });
@@ -8,7 +8,7 @@ async function mockRepository(page: Page, meta: object | null, activity: object 
   await mockSession(page, signedIn);
   await mockSelected(page, [selectedRepo('10', { metadataStatus: meta, activity, ...extra })], issues);
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'ada/repo-10' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'withheld' in issues ? 'Repository unavailable' : 'ada/repo-10' })).toBeVisible();
 }
 
 test('metadata success still says activity is not synchronized', async ({ page }) => {
@@ -71,6 +71,13 @@ for (const c of stateCases) {
     await expect(badge).toHaveText(c.label);
   });
 }
+
+test('SyncStatus renders a repository that has not been selected', async ({ page }) => {
+  await mockSession(page, signedIn);
+  await mockOwned(page, [listed('10')]);
+  await page.goto('/repositories');
+  await expect(page.locator('[data-sync-state="not-synchronized"]')).toHaveText('Not synchronized');
+});
 
 test('demo data is always labeled, and the demo fixture never shows a live-data state', async ({ page }) => {
   await mockSession(page, demo);

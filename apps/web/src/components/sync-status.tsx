@@ -104,13 +104,17 @@ export function syncDisplay({ syncState, activity = null, metadataStatus = null,
 }
 
 // One reusable status: the state badge, then the detail lines for whatever data is passed in.
-export function SyncStatus(props: SyncInput) {
+export function SyncStatus({ compact = false, ...props }: SyncInput & { compact?: boolean }) {
   const display = syncDisplay(props);
+  const badge = <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${tones[display]}`} data-sync-state={display}>
+    <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />{labels[display]}
+  </span>;
+  if (compact) return badge;
   const metadata = props.metadataStatus ? describeMetadata(props.metadataStatus) : [];
   const activity = props.activity ? [...(props.activity.synchronized ? [] : [props.activity.message]), ...describeActivity(props.activity)] : [];
   const list = (label: string, lines: string[]) => <ul aria-label={label} className="space-y-1 text-sm text-muted-foreground">{lines.map(line => <li key={line}>{line}</li>)}</ul>;
   return <div className="space-y-2">
-    <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${tones[display]}`} data-sync-state={display}>{labels[display]}</span>
+    {badge}
     {metadata.length > 0 && list("Metadata status", metadata)}
     {activity.length > 0 && list("Activity status", activity)}
   </div>;

@@ -1,39 +1,37 @@
 // Production server: serves the built app shell and assets, and forwards /auth, /api and /graphql to the Go API
 // on the same origin. Uses only Node built-ins so the Docker image needs no node_modules at runtime.
-import { createServer } from "node:http";
+import { createServer, request as requestHTTP } from "node:http";
+import { request as requestHTTPS } from "node:https";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "dist", "client");
-const api = process.env.API_ORIGIN ?? "http://127.0.0.1:8080";
+const api = new URL(process.env.API_ORIGIN ?? "http://127.0.0.1:8080");
+const requestAPI = api.protocol === "https:" ? requestHTTPS : requestHTTP;
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? "127.0.0.1";
 const forwarded = /^\/(auth|api|graphql)(\/|$)/;
 const types = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2", ".json": "application/json", ".txt": "text/plain; charset=utf-8" };
 
-// Relays the request unchanged (Origin, Cookie and X-CSRF-Token matter to the API). Redirects pass through to the browser.
-async function forward(req, res) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  const headers = { ...req.headers };
-  delete headers.host;
-  const upstream = await fetch(new URL(req.url, api), {
-    method: req.method,
-    headers,
-    body: chunks.length ? Buffer.concat(chunks) : undefined,
-    redirect: "manual",
+// Stream through the configured Go origin so Go can enforce its request limits as data arrives.
+function forward(req, res, { pathname, search }) {
+  const headers = { ...req.headers, host: api.host };
+  delete headers.connection;
+  const upstream = requestAPI(api, { path: pathname + search, method: req.method, headers }, response => {
+    const headers = { ...response.headers };
+    delete headers.connection;
+    res.writeHead(response.statusCode, headers);
+    response.on("error", error => res.destroy(error));
+    response.pipe(res);
   });
-  const body = Buffer.from(await upstream.arrayBuffer());
-  const outHeaders = {};
-  upstream.headers.forEach((value, name) => {
-    if (!["set-cookie", "content-encoding", "content-length", "transfer-encoding"].includes(name)) outHeaders[name] = value;
+  upstream.on("error", error => {
+    if (res.headersSent) res.destroy(error);
+    else res.writeHead(502, { "content-type": "text/plain" }).end("Bad gateway");
   });
-  const cookies = upstream.headers.getSetCookie();
-  if (cookies.length) outHeaders["set-cookie"] = cookies;
-  outHeaders["content-length"] = body.length;
-  res.writeHead(upstream.status, outHeaders);
-  res.end(req.method === "HEAD" ? undefined : body);
+  req.on("error", error => upstream.destroy(error));
+  res.on("close", () => upstream.destroy());
+  req.pipe(upstream);
 }
 
 // Built files are served as-is; every other GET gets the shell, and the client router renders the route.
@@ -64,9 +62,9 @@ async function serveStatic(req, res, pathname) {
 
 const server = createServer(async (req, res) => {
   try {
-    const { pathname } = new URL(req.url, "http://localhost");
-    if (forwarded.test(pathname)) await forward(req, res);
-    else if (req.method === "GET" || req.method === "HEAD") await serveStatic(req, res, pathname);
+    const url = new URL(req.url, "http://localhost");
+    if (forwarded.test(url.pathname)) forward(req, res, url);
+    else if (req.method === "GET" || req.method === "HEAD") await serveStatic(req, res, url.pathname);
     else res.writeHead(405).end();
   } catch (error) {
     console.error(error);

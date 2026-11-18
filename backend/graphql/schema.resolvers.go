@@ -248,6 +248,11 @@ func (r *queryResolver) IssueEventEvidence(ctx context.Context, repositoryIds []
 	return r.issueEvents(ctx, repositoryIds, first, after)
 }
 
+// RepositoryOverview is the resolver for the repositoryOverview field.
+func (r *queryResolver) RepositoryOverview(ctx context.Context, id string, days int) (*model.RepositoryOverview, error) {
+	return r.repositoryOverview(ctx, id, days)
+}
+
 // Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 

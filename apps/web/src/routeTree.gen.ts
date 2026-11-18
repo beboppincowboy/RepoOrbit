@@ -14,6 +14,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as ShellIndexRouteImport } from './routes/_shell/index'
 import { Route as ShellRepositoriesRouteImport } from './routes/_shell/repositories'
 import { Route as ShellStarredRouteImport } from './routes/_shell/starred'
+import { Route as ShellWorkspaceRepositoryIdRouteImport } from './routes/_shell/workspace.$repositoryId'
 
 const ShellRoute = ShellRouteImport.update({
   id: '/_shell',
@@ -39,18 +40,26 @@ const ShellStarredRoute = ShellStarredRouteImport.update({
   path: '/starred',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellWorkspaceRepositoryIdRoute =
+  ShellWorkspaceRepositoryIdRouteImport.update({
+    id: '/workspace/$repositoryId',
+    path: '/workspace/$repositoryId',
+    getParentRoute: () => ShellRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/login': typeof LoginRoute
   '/repositories': typeof ShellRepositoriesRoute
   '/starred': typeof ShellStarredRoute
+  '/workspace/$repositoryId': typeof ShellWorkspaceRepositoryIdRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/repositories': typeof ShellRepositoriesRoute
   '/starred': typeof ShellStarredRoute
   '/': typeof ShellIndexRoute
+  '/workspace/$repositoryId': typeof ShellWorkspaceRepositoryIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -59,12 +68,14 @@ export interface FileRoutesById {
   '/_shell/repositories': typeof ShellRepositoriesRoute
   '/_shell/starred': typeof ShellStarredRoute
   '/_shell/': typeof ShellIndexRoute
+  '/_shell/workspace/$repositoryId': typeof ShellWorkspaceRepositoryIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/repositories' | '/starred'
+  fullPaths:
+    '/' | '/login' | '/repositories' | '/starred' | '/workspace/$repositoryId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/repositories' | '/starred' | '/'
+  to: '/login' | '/repositories' | '/starred' | '/' | '/workspace/$repositoryId'
   id:
     | '__root__'
     | '/_shell'
@@ -72,6 +83,7 @@ export interface FileRouteTypes {
     | '/_shell/repositories'
     | '/_shell/starred'
     | '/_shell/'
+    | '/_shell/workspace/$repositoryId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -116,6 +128,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellStarredRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/workspace/$repositoryId': {
+      id: '/_shell/workspace/$repositoryId'
+      path: '/workspace/$repositoryId'
+      fullPath: '/workspace/$repositoryId'
+      preLoaderRoute: typeof ShellWorkspaceRepositoryIdRouteImport
+      parentRoute: typeof ShellRoute
+    }
   }
 }
 
@@ -123,12 +142,14 @@ interface ShellRouteChildren {
   ShellRepositoriesRoute: typeof ShellRepositoriesRoute
   ShellStarredRoute: typeof ShellStarredRoute
   ShellIndexRoute: typeof ShellIndexRoute
+  ShellWorkspaceRepositoryIdRoute: typeof ShellWorkspaceRepositoryIdRoute
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
   ShellRepositoriesRoute: ShellRepositoriesRoute,
   ShellStarredRoute: ShellStarredRoute,
   ShellIndexRoute: ShellIndexRoute,
+  ShellWorkspaceRepositoryIdRoute: ShellWorkspaceRepositoryIdRoute,
 }
 
 const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)
