@@ -1,9 +1,9 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { fetchRepositoryDetails, fetchSelectedRepositories, logout, type Me } from "@/lib/api";
-import { selectedRepositoriesKey, selectedRows, useSelectedRepositories, type SelectedBatch, type SelectedRow } from "@/lib/selected-repositories";
-import { SyncDot, syncDisplay, syncLabels } from "@/components/sync-status";
+import { fetchRepositoryDetails, fetchSelectedRepositories, logout, RepositorySnapshotError, type Me, type MetricWindow } from "@/lib/api";
+import { selectedRepositoriesKey, selectedRows, useSelectedRepositories, useSelectedRepositoryMetadata, type SelectedBatch, type SelectedRow } from "@/lib/selected-repositories";
+import { LoadingCircle, SyncDot, syncDisplay, syncLabels } from "@/components/sync-status";
 
 // RepoOrbit mark: a planet with an orbit ring (prototype D2 logo).
 export function LogoMark() {
@@ -22,7 +22,7 @@ const card = "rounded-xl border border-border bg-card";
 
 // A row's display state, mirroring the overview: access-unverified rows are withheld (no name, no link).
 function rowDisplay({ repo, detail }: SelectedRow) {
-  if (detail?.state !== "available") return syncDisplay({ syncState: repo.syncState, withheld: 1, retryAt: detail?.retryAt });
+  if (detail?.state === "access-unverified") return syncDisplay({ syncState: repo.syncState, withheld: 1, retryAt: detail.retryAt });
   return syncDisplay({ syncState: repo.syncState, activity: detail?.activity ?? null, metadataStatus: repo.syncState === "awaiting-sync" ? repo.metadataStatus : null, retryAt: detail?.issues.retryAt ?? null });
 }
 
@@ -33,6 +33,7 @@ export function AppShell({ session, children }: { session: Me; children: ReactNo
   const pathname = useRouterState({ select: state => state.location.pathname });
   const navigate = useNavigate();
   const selection = useSelectedRepositories(session);
+  const metadata = useSelectedRepositoryMetadata(session);
   const queryClient = useQueryClient();
   const retryDetails = useMutation({
     mutationFn: async (batch: SelectedBatch) => {
@@ -50,8 +51,38 @@ export function AppShell({ session, children }: { session: Me; children: ReactNo
     },
   });
   const failedBatches = selection.isRefetchError ? [] : selection.data?.pages.flatMap(page => page.batches.filter(batch => batch.details === null)) ?? [];
-  const rows = selectedRows(selection);
-  const visible = rows.filter(row => row.detail?.state === "available");
+  const details = new Map(selectedRows(selection).map(row => [row.repo.id, row.detail]));
+  const rows = metadata.isRefetchError || selection.isRefetchError ? [] : (metadata.data?.pages ?? []).flatMap(page =>
+    page.nodes.map(repo => ({ repo, detail: details.get(repo.id) })),
+  );
+  const retryAt = [
+    ...(metadata.data?.pages ?? []).map(page => page.retryAt),
+    ...rows.map(row => row.detail?.state === "access-unverified" ? row.detail.retryAt : null),
+  ].filter((value): value is string => !!value).sort().at(-1);
+  const retryTime = retryAt ? Date.parse(retryAt) : NaN;
+  const limited = Number.isFinite(retryTime);
+  const { mode, user } = session;
+  const login = user?.login;
+  useEffect(() => {
+    const delay = retryTime - Date.now();
+    if (!Number.isFinite(delay)) return;
+    const timer = window.setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: ["selectedRepositories", mode, login] });
+      void queryClient.invalidateQueries({ queryKey: ["owned"] });
+      void queryClient.invalidateQueries({ queryKey: ["starred"] });
+    }, Math.max(1000, delay + 1000));
+    return () => window.clearTimeout(timer);
+  }, [login, mode, queryClient, retryTime]);
+  const visible = rows.filter(row => row.detail?.state !== "access-unverified");
+  const saved = new Map<string, { fullName: string; days: MetricWindow }>();
+  if (!demo && (limited || metadata.error instanceof RepositorySnapshotError)) {
+    for (const [key, snapshot] of queryClient.getQueriesData<{ fullName: string }>({ queryKey: ["repositorySnapshot", mode, login] })) {
+      const [, , , id, days] = key;
+      if (snapshot && typeof id === "string" && (days === 7 || days === 30 || days === 90) && !visible.some(row => row.repo.id === id)) {
+        saved.set(id, { fullName: snapshot.fullName, days });
+      }
+    }
+  }
   const workspaceId = pathname.match(/^\/workspace\/([^/]+)/)?.[1];
   const current = workspaceId ? visible.find(row => row.repo.id === decodeURIComponent(workspaceId)) : undefined;
   const reposActive = pathname === "/repositories" || pathname === "/starred";
@@ -63,7 +94,7 @@ export function AppShell({ session, children }: { session: Me; children: ReactNo
     if (row) navigate({ to: "/workspace/$repositoryId", params: { repositoryId: row.repo.id }, search: { days: 30, tab: "overview" } });
   }
 
-  return <div data-app-shell className="mx-auto grid h-full max-w-[1600px] grid-cols-[216px_minmax(0,1fr)] gap-3 max-[900px]:grid-cols-1 max-[900px]:grid-rows-[auto_minmax(0,1fr)]">
+  return <div data-app-shell className="grid h-full w-full grid-cols-[216px_minmax(0,1fr)] gap-3 max-[900px]:grid-cols-1 max-[900px]:grid-rows-[auto_minmax(0,1fr)]">
     <aside aria-label="Main" className={`${card} flex min-h-0 flex-col gap-0.5 overflow-auto px-3 py-4 max-[900px]:flex-row max-[900px]:items-center max-[900px]:overflow-x-auto max-[900px]:p-2`}>
       <div className="flex items-center gap-2 px-2 pb-3 text-[15px] font-semibold max-[900px]:hidden"><LogoMark />RepoOrbit</div>
       <nav aria-label="Primary" className="contents">
@@ -71,14 +102,20 @@ export function AppShell({ session, children }: { session: Me; children: ReactNo
         <Link to="/" activeOptions={{ exact: true }} className={navbtn}>{gridIcon}Overview</Link>
         <Link to="/repositories" aria-current={reposActive ? "page" : undefined} className={navbtn}>{repoIcon}Repositories{rows.length > 0 && <span aria-hidden="true" className="ml-auto font-mono text-xs font-normal text-muted-foreground">{rows.length}</span>}</Link>
         {rows.length > 0 && <div className={navlabel}>Repositories</div>}
+        {metadata.isPending && <span role="status" className={`${navbtn} text-xs`}><LoadingCircle />Loading repositories…</span>}
+        {limited && <span role="status" className={`${navbtn} text-xs`}>Waiting for GitHub</span>}
         {rows.map(row => {
+          if (limited && row.detail?.state === "access-unverified") return null;
           const display = rowDisplay(row);
-          if (row.detail?.state !== "available") return <span key={row.repo.id} title={syncLabels[display]} className={`${navbtn} text-[12.5px] text-muted-foreground hover:bg-transparent max-[900px]:hidden`}><SyncDot display={display} />Repository unavailable</span>;
+          if (row.detail?.state === "access-unverified") return <span key={row.repo.id} title={syncLabels[display]} className={`${navbtn} text-[12.5px] text-muted-foreground hover:bg-transparent max-[900px]:hidden`}><SyncDot display={display} /><span className="truncate">Repository</span></span>;
           return <Link key={row.repo.id} to="/workspace/$repositoryId" params={{ repositoryId: row.repo.id }} search={{ days: 30, tab: "overview" }} activeOptions={{ includeSearch: false }} title={`${row.repo.fullName} · ${syncLabels[display]}`} className={`${navbtn} text-[12.5px] max-[900px]:hidden`}>
             <SyncDot display={display} /><span className="truncate">{row.repo.fullName.split("/")[1]}</span>
           </Link>;
         })}
-        {selection.hasNextPage && <button type="button" className={navbtn} disabled={selection.isFetching} onClick={() => void selection.fetchNextPage()}>Load more selected repositories</button>}
+        {[...saved].map(([id, { fullName, days }]) => <Link key={id} to="/workspace/$repositoryId" params={{ repositoryId: id }} search={{ days, tab: "overview" }} activeOptions={{ includeSearch: false }} title={`${fullName} · Saved data`} className={`${navbtn} text-[12.5px] max-[900px]:hidden`}>
+          <SyncDot display="access-unverified" /><span className="truncate">{fullName.split("/")[1]}</span>
+        </Link>)}
+        {metadata.hasNextPage && <button type="button" className={navbtn} disabled={metadata.isFetching || selection.isFetching} onClick={() => { void metadata.fetchNextPage(); if (selection.hasNextPage) void selection.fetchNextPage(); }}>Load more selected repositories</button>}
         {failedBatches.map(batch => <button key={batch.repositories[0].id} type="button" className={navbtn} disabled={selection.isFetching || retryDetails.isPending} onClick={() => retryDetails.mutate(batch)}>Retry details</button>)}
         {retryDetails.isError && failedBatches.length > 0 && <span role="alert" className="px-2 text-xs text-destructive">Could not verify repository details.</span>}
       </nav>

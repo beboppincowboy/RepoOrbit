@@ -57,12 +57,13 @@ test('loads ordered chunks with two requests in flight, and a failed chunk does 
   await page.goto('/workspace/1');
   try {
     await expect.poll(() => inFlight).toBe(2);
+    await expect(sidebar(page).getByRole("link", { name: "repo-9", exact: true })).toBeVisible();
   } finally {
     releaseInitial();
   }
-  await expect(sidebar(page).getByRole('link', { name: /^repo-\d+$/ })).toHaveText(repositories.filter((_, i) => i < 8 || i >= 16).map(repo => repo.fullName.split('/')[1]));
-  await expect(sidebar(page).getByRole('link', { name: 'repo-9', exact: true })).toHaveCount(0);
-  await expect(page.locator('#repolist option[value="ada/repo-9"]')).toHaveCount(0);
+  await expect(sidebar(page).getByRole('link', { name: /^repo-\d+$/ })).toHaveText(repositories.map(repo => repo.fullName.split('/')[1]));
+  await expect(sidebar(page).getByRole('link', { name: 'repo-9', exact: true })).toBeVisible();
+  await expect(page.locator('#repolist option[value="ada/repo-9"]')).toHaveCount(1);
   await expect.poll(() => calls.length).toBe(3);
   // Repository 9's chunk failed; its workspace still opens from its own analytics read.
   await expect(page.getByRole('heading', { name: 'repo-1', exact: true })).toBeVisible();

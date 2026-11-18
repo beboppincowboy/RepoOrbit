@@ -4,10 +4,10 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 import { IssueIcon, PullRequestIcon } from "@/components/needs-attention";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
-import { describeActivity, describeMetadata, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
+import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { selectedRepositoriesKey, selectedRows, useSelectedRepositories } from "@/lib/selected-repositories";
-import { ACCESS_UNVERIFIED_MESSAGE, fetchSelectedRepositories, fetchRepositoryOverview, fetchWorkspacePullRequests, type ActivityResourceStatus, type MetricWindow, type ReviewState, type WorkspacePullRequest } from "@/lib/api";
+import { ACCESS_UNVERIFIED_MESSAGE, RepositoryAccessError, RepositorySnapshotError, fetchSelectedRepositories, fetchRepositoryOverview, fetchWorkspacePullRequests, type ActivityResourceStatus, type MetricWindow, type ReviewState, type WorkspacePullRequest } from "@/lib/api";
 
 const tabs = { overview: "Overview", pulls: "Pull Requests", contributors: "Contributors", activity: "Activity" } as const;
 type Tab = keyof typeof tabs;
@@ -76,14 +76,32 @@ function RepositoryWorkspace() {
   const search = Route.useSearch();
   const { session } = Route.useRouteContext();
   const queryClient = useQueryClient();
+  const overviewKey = ["repositoryOverview", session.mode, session.user?.login, repositoryId, search.days] as const;
+  const snapshotPrefix = ["repositorySnapshot", session.mode, session.user?.login, repositoryId] as const;
+  const snapshotKey = [...snapshotPrefix, search.days] as const;
   const query = useQuery({
-    queryKey: ["repositoryOverview", session.mode, session.user?.login, repositoryId, search.days],
-    queryFn: ({ signal }) => fetchRepositoryOverview(repositoryId, search.days, signal),
+    queryKey: overviewKey,
+    queryFn: async ({ signal }) => {
+      try {
+        const data = await fetchRepositoryOverview(repositoryId, search.days, signal);
+        signal.throwIfAborted();
+        if (data) queryClient.setQueryData(snapshotKey, data);
+        else queryClient.removeQueries({ queryKey: snapshotPrefix });
+        return data;
+      } catch (error) {
+        if (!signal.aborted && !(error instanceof RepositorySnapshotError) && !(error instanceof RepositoryAccessError && error.retryAt)) {
+          queryClient.removeQueries({ queryKey: snapshotPrefix });
+        }
+        throw error;
+      }
+    },
     placeholderData: (previous, query) => query?.queryKey[1] === session.mode && query.queryKey[2] === session.user?.login && query.queryKey[3] === repositoryId ? previous : undefined,
     gcTime: 0,
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: ({ state }) => !(state.error instanceof RepositoryAccessError && state.error.retryAt),
+    retry: (count, error) => !(error instanceof RepositoryAccessError || error instanceof RepositorySnapshotError) && count < 3,
     // Follow running or not-yet-started sync work; stop once it settles (reconciliation leaves settled streams "queued").
     refetchInterval: ({ state }) => {
+      if (state.error instanceof RepositoryAccessError && state.error.retryAt) return false;
       if (!state.data) return false;
       const { syncState, activity } = state.data;
       const display = syncDisplay({ syncState, activity });
@@ -98,7 +116,10 @@ function RepositoryWorkspace() {
     },
   });
   const path = { to: Route.to, params: { repositoryId } } as const;
-  const overview = query.isError ? undefined : query.data;
+  const snapshotReason = query.error instanceof RepositorySnapshotError ? query.error.message
+    : query.error instanceof RepositoryAccessError && query.error.retryAt ? "GitHub rate-limited access checks." : null;
+  const snapshot = snapshotReason ? queryClient.getQueryState<Overview>(snapshotKey) : undefined;
+  const overview = query.isError ? snapshot?.data : query.data;
   const demo = session.mode === "demo";
   // Metadata refresh state and the access check's retry time come from the selection list the shell already loads.
   const selection = useSelectedRepositories(session);
@@ -124,21 +145,40 @@ function RepositoryWorkspace() {
       },
     );
   }, [accessRejected, query.isFetching, queryClient, repositoryId, row?.detail?.state, session]);
-  const retryAt = row?.detail ? (row.detail.state === "available" ? row.detail.issues.retryAt : row.detail.retryAt) : null;
+  const accessRetryAt = query.error instanceof RepositoryAccessError ? query.error.retryAt : null;
+  const retryAt = accessRetryAt ?? (row?.detail?.state === "access-unverified" ? row.detail.retryAt : null);
+  const retryTime = retryAt ? Date.parse(retryAt) : NaN;
+  const rateLimited = Number.isFinite(retryTime);
+  const refetchOverview = query.refetch;
+  useEffect(() => {
+    const delay = retryTime - Date.now();
+    if (!accessRejected || !Number.isFinite(delay)) return;
+    const timer = window.setTimeout(() => {
+      void refetchOverview();
+      void queryClient.invalidateQueries({ queryKey: selectedRepositoriesKey(session) });
+    }, Math.max(1000, delay + 1000));
+    return () => window.clearTimeout(timer);
+  }, [accessRejected, queryClient, refetchOverview, retryTime, session]);
   const sync: SyncInput | null = overview ? {
     syncState: overview.syncState,
     activity: demo ? null : overview.activity,
     metadataStatus: overview.syncState === "awaiting-sync" ? row?.repo.metadataStatus ?? null : null,
-    retryAt,
+    retryAt: row?.detail?.state === "available" ? row.detail.issues.retryAt : retryAt,
   } : null;
   const display = sync ? syncDisplay(sync) : null;
 
   // Check access before rendering any data: a refetch that loses access keeps the last good data in the cache.
   // Only real withholding hides the page; a paused metadata refresh also reads "Access unverified" but stays explained in Sync details.
-  if (query.error?.message === ACCESS_UNVERIFIED_MESSAGE || (overview !== null && row?.detail?.state === "access-unverified")) return <div className="flex h-full min-h-0 flex-col gap-3">
+  if (!snapshot && (query.error?.message === ACCESS_UNVERIFIED_MESSAGE || (overview !== null && row?.detail?.state === "access-unverified"))) return <div className="flex h-full min-h-0 flex-col gap-3">
+    {rateLimited && retryAt ? <div role="status" className={`${card} flex items-center gap-3 p-4`}>
+      <Ico>{icons.info}</Ico>
+      <div><h1 className="text-base">Waiting for GitHub</h1>
+        <p className={`m-0 ${muted}`}>GitHub limited access checks. RepoOrbit will retry after {clock.format(new Date(retryAt))}.</p>
+      </div>
+    </div> : <>
     <section className={`${card} flex flex-none flex-wrap items-center gap-x-3 gap-y-2 p-4`}>
-      <Ico>{icons.repo}</Ico><h1 className="text-[19px] leading-[1.2]">Repository unavailable</h1>
       <SyncStatus compact syncState="awaiting-sync" withheld={1} retryAt={retryAt} />
+      <h1 className="text-[19px] leading-[1.2]">Repository</h1>
       {retryAt && <span className={`text-xs ${muted}`}>GitHub rate limited the access check; next check after {clock.format(new Date(retryAt))}.</span>}
     </section>
     <div className="grid min-h-0 flex-1 place-items-center">
@@ -149,10 +189,11 @@ function RepositoryWorkspace() {
         <Button onClick={() => void Promise.all([query.refetch(), selection.refetch()])} disabled={query.isFetching || selection.isFetching}>Re-verify access</Button>
       </div>
     </div>
+    </>}
   </div>;
-  if (query.isPending) return <p role="status" className={`${card} p-4`}>Loading repository workspace…</p>;
+  if (query.isPending) return <p role="status" className={`${card} flex items-center gap-2 p-4`}><LoadingCircle />Loading repository workspace…</p>;
   if (!overview || !sync) return <div role="alert" className={`${card} p-4`}>
-    <h1 className="text-base">{query.isError ? "Could not load repository analytics. Check that the local services are running." : "Repository unavailable"}</h1>
+    <h1 className="text-base">{query.isError ? "Could not load repository analytics. Check that the local services are running." : <span className="inline-flex items-center gap-2"><SyncStatus compact syncState="awaiting-sync" withheld={1} />Repository</span>}</h1>
     {query.isError && <Button className="mt-3" onClick={() => void query.refetch()} disabled={query.isFetching}>Retry</Button>}
   </div>;
 
@@ -165,7 +206,7 @@ function RepositoryWorkspace() {
         <Ico>{icons.repo}</Ico>
         <div className="min-w-0 break-words"><div className={`text-xs ${muted}`}>{owner} /</div><h1 className="text-[19px] leading-[1.2]">{name}</h1></div>
         {!demo && <a className={smallBtn} href={github}>View on GitHub {icons.ext}</a>}
-        {demo ? <SyncStatus compact {...sync} /> : <SyncDetails sync={sync} repositoryId={repositoryId} onRefresh={() => void query.refetch()} />}
+        {snapshot ? <span className={smallBtn}>Frozen snapshot</span> : demo ? <SyncStatus compact {...sync} /> : <SyncDetails sync={sync} repositoryId={repositoryId} onRefresh={() => void query.refetch()} />}
         {overview.activity.archived && <span className={`${mini} border-border text-soft`}>Archived</span>}
         <div role="group" aria-label="Time window" className="ml-auto inline-flex gap-0.5 rounded-full border border-border bg-card p-0.5">
           {windows.map(days => <Link key={days} {...path} search={{ ...search, days }} aria-current={search.days === days ? "page" : undefined}
@@ -177,9 +218,13 @@ function RepositoryWorkspace() {
           className="-mb-px border-b-2 border-transparent py-2 text-muted-foreground aria-[current=page]:border-foreground aria-[current=page]:font-semibold aria-[current=page]:text-foreground">{tabs[tab]}</Link>)}
       </nav>
     </section>
-    {display && <Banner overview={overview} display={display} />}
+    {snapshot ? <div role="status" className="flex flex-none flex-wrap items-center gap-2 rounded-[10px] border border-warning bg-warning-soft px-3 py-2.5 text-[13px]">
+      <strong>Showing saved data from {new Date(snapshot.dataUpdatedAt).toLocaleString()}.</strong>
+      <span>{snapshotReason} {retryAt && `Retry after ${clock.format(new Date(retryAt))}.`}</span>
+      {!rateLimited && <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>Retry</Button>}
+    </div> : display && <Banner overview={overview} display={display} />}
     {search.tab === "overview" && <OverviewTab overview={overview} days={search.days} recent={<Link {...path} search={{ ...search, tab: "activity" }} className={smallBtn}>All</Link>} github={github} />}
-    {search.tab === "pulls" && <PullRequests key={repositoryId} id={repositoryId} viewer={`${session.mode}:${session.user?.login}`} github={github} />}
+    {search.tab === "pulls" && (snapshot ? <p className={`${card} p-4`}>The pull request list needs a live connection. Saved PR counts are available on Overview.</p> : <PullRequests key={repositoryId} id={repositoryId} viewer={`${session.mode}:${session.user?.login}`} github={github} />)}
     {search.tab === "contributors" && <Contributors overview={overview} days={search.days} />}
     {search.tab === "activity" && <section className={`${card} flex-1 overflow-auto`}><Timeline overview={overview} github={github} /></section>}
   </div>;
@@ -265,7 +310,7 @@ function OverviewTab({ overview: o, days, recent, github }: { overview: Overview
       <Kpi label="Median first response" value={duration(o.firstResponseTime.seconds)} coverage={o.firstResponseTime.coverage} detail="Issue responsiveness" tone="text-success-foreground" />
       <Kpi label="Median merge time" value={duration(o.mergeTime.seconds)} coverage={o.mergeTime.coverage} detail="Merged PRs" />
       <Kpi label="Open issues" value={o.openIssues.value} coverage={o.openIssues.coverage} detail={o.staleOpenIssues.value === null ? "" : `${o.staleOpenIssues.value} stale`} />
-      <Kpi label="Merged PRs" value={o.pullRequestsMerged.value} coverage={o.pullRequestsMerged.coverage} detail={`last ${days} days`} />
+      <Kpi label="Merged PRs" value={o.pullRequestsMerged.value} coverage={o.pullRequestsMerged.coverage} detail={o.openPullRequests?.value != null ? `${o.openPullRequests.value} open now · last ${days} days` : `last ${days} days`} />
     </section>
     <div className="flex min-h-0 flex-1 gap-3 max-[900px]:flex-col">
       <section className={`${card} flex flex-[999_1_520px] flex-col gap-2 p-4 max-[900px]:min-h-[280px]`}>

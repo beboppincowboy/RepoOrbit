@@ -135,6 +135,17 @@ test('access unverified hides the repository name and offers re-verify', async (
   await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'repo-1', exact: true })).toHaveCount(0);
 });
 
+test('waits for a rate-limited access check and retries automatically', async ({ page }) => {
+  const retryAt = new Date(Date.now() + 3000).toISOString();
+  const errors = [{ message: 'access', extensions: { code: 'ACCESS_UNVERIFIED', retryAt } }];
+  const calls = await mockWorkspace(page, () => null, errors);
+  await page.goto('/workspace/1');
+  await expect(page.getByRole('heading', { name: 'Waiting for GitHub' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Re-verify access' })).toHaveCount(0);
+  expect(calls.overview).toBe(1);
+  await expect.poll(() => calls.overview, { timeout: 7000 }).toBeGreaterThan(1);
+});
+
 test('rate limited and awaiting states show their banners', async ({ page }) => {
   let state = 'rate';
   const calls = await mockWorkspace(page, () => state === 'rate'
@@ -170,7 +181,7 @@ test('polls while syncing and stops once settled', async ({ page }) => {
   expect(calls.overview).toBe(settled);
 });
 
-test('polling recovers from a failed refresh and hides stale figures while access is unknown', async ({ page }) => {
+test('polling shows a frozen snapshot during a temporary outage and clears it after recovery', async ({ page }) => {
   await mockWorkspace(page, () => overview());
   let reads = 0;
   await page.route('**/graphql', route => {
@@ -185,9 +196,11 @@ test('polling recovers from a failed refresh and hides stale figures while acces
   await page.goto('/workspace/1');
   const metrics = page.getByRole('region', { name: 'Repository metrics' });
   await expect(metrics).toBeVisible();
-  await expect(page.getByRole('heading', { name: /Could not load repository analytics/ })).toBeVisible();
-  await expect(metrics).toHaveCount(0);
+  await expect(page.getByText(/Showing saved data from/)).toBeVisible();
+  await expect(page.getByText('The server is temporarily unavailable.')).toBeVisible();
+  await expect(metrics).toBeVisible();
   await expect(page.locator('[data-sync-state="synced"]')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/Showing saved data from/)).toHaveCount(0);
   await expect(metrics).toBeVisible();
 });
 
@@ -221,7 +234,7 @@ test('a repository the selection list withholds is unavailable, without its name
   await page.route('**/graphql', route => String(route.request().postDataJSON().query).startsWith('query RepositoryDetails')
     ? route.fulfill({ json: { data: { a0: { activity: null }, r0: { nodes: [], hasNextPage: false, withheld: 1, retryAt: null } } } }) : route.fallback());
   await page.goto('/workspace/1');
-  await expect(page.getByRole('heading', { name: 'Repository unavailable' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /^(Access unverified )?Repository$/ })).toBeVisible();
   await expect(page.locator('[data-sync-state="access-unverified"]')).toHaveText('Access unverified');
   await expect(page.getByRole('main').getByText('repo-1')).toHaveCount(0);
 });
@@ -245,7 +258,7 @@ test('a paused metadata refresh stays on the workspace and explains itself in Sy
     ? route.fulfill({ json: { data: { repositoryOverview: overview() } } }) : route.fallback());
   await page.goto('/workspace/1');
   await expect(page.getByRole('heading', { name: 'repo-1', exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Repository unavailable' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: /^(Access unverified )?Repository$/ })).toHaveCount(0);
   const toggle = page.getByRole('button', { name: 'Sync details' });
   await expect(toggle.locator('[data-sync-state]')).toHaveText('Access unverified');
   await toggle.click();

@@ -11,6 +11,9 @@ async function expectNoPageScroll(page: Page) {
   expect(shell).not.toBeNull();
   expect(shell!.y + shell!.height).toBeLessThanOrEqual(height);
   expect(shell!.width).toBeLessThanOrEqual(width);
+  expect(shell!.width).toBeGreaterThanOrEqual(width - 32);
+  const sidebar = await page.getByRole("complementary", { name: "Main" }).boundingBox();
+  expect(sidebar?.width).toBe(216);
   // Scrolling the window does nothing: the document is no taller than the viewport.
   await page.evaluate(() => window.scrollBy(0, 400));
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
