@@ -125,11 +125,12 @@ for (const action of ['navigating away', 'signing out'] as const) {
     });
     try {
       if (action === 'signing out') {
+        await page.getByRole('button', { name: 'Account menu' }).click();
         await page.getByRole('button', { name: 'Sign out' }).click();
         await canceled;
-        await expect(page.getByRole('link', { name: 'Sign in with GitHub' })).toBeVisible();
+        await expect(page.getByRole('link', { name: 'Continue with GitHub' })).toBeVisible();
         await page.goto('/');
-        await expect(page.getByRole('link', { name: 'Sign in with GitHub' })).toBeVisible();
+        await expect(page.getByRole('link', { name: 'Continue with GitHub' })).toBeVisible();
       } else {
         await page.getByRole('link', { name: 'Repositories', exact: true }).click();
         await canceled;

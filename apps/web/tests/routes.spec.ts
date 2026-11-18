@@ -31,7 +31,7 @@ test('a signed-out deep link goes to sign-in', async ({ page }) => {
   await mockSession(page, signedOut);
   await page.goto('/repositories');
   await expect(page).toHaveURL(/\/login$/);
-  await expect(page.getByRole('link', { name: 'Sign in with GitHub' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Continue with GitHub' })).toBeVisible();
 });
 
 test('a failed sign-in is reported on the login page', async ({ page }) => {
@@ -46,5 +46,5 @@ test('a failed session load can be retried on login', async ({ page }) => {
   await expect(page.getByRole('alert')).toContainText('Could not load the session.');
   await mockSession(page, signedOut);
   await page.getByRole('button', { name: 'Try again' }).click();
-  await expect(page.getByRole('link', { name: 'Sign in with GitHub' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Continue with GitHub' })).toBeVisible();
 });

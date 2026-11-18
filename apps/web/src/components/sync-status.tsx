@@ -56,7 +56,7 @@ export function describeMetadata(s: MetadataStatus): string[] {
 
 // Every state the UI can show for one repository. "demo" is always labeled, never implied.
 export type SyncDisplay = "demo" | "access-unverified" | "rate-limited" | "syncing" | "stopped" | "synced" | "partial" | "awaiting" | "not-synchronized";
-const labels: Record<SyncDisplay, string> = {
+export const syncLabels: Record<SyncDisplay, string> = {
   demo: "Demo data",
   "access-unverified": "Access unverified",
   "rate-limited": "Rate limited",
@@ -67,17 +67,24 @@ const labels: Record<SyncDisplay, string> = {
   awaiting: "Awaiting sync",
   "not-synchronized": "Not synchronized",
 };
-const tones: Record<SyncDisplay, string> = {
-  demo: "bg-warning/15 text-warning",
-  "access-unverified": "bg-destructive/10 text-destructive",
-  "rate-limited": "bg-warning/15 text-warning",
-  syncing: "bg-primary/10 text-primary",
-  stopped: "bg-destructive/10 text-destructive",
-  synced: "bg-success/10 text-success",
-  partial: "bg-warning/15 text-warning",
-  awaiting: "bg-muted text-muted-foreground",
-  "not-synchronized": "bg-muted text-muted-foreground",
+// Prototype `.sync` pill tones: [text color, background].
+const tones: Record<SyncDisplay, [string, string]> = {
+  demo: ["text-demo", "bg-demo-soft"],
+  "access-unverified": ["text-destructive", "bg-destructive-soft"],
+  "rate-limited": ["text-warning", "bg-warning-soft"],
+  syncing: ["text-run", "bg-run-soft"],
+  stopped: ["text-destructive", "bg-destructive-soft"],
+  synced: ["text-success-foreground", "bg-success-soft"],
+  partial: ["text-warning", "bg-warning-soft"],
+  awaiting: ["text-muted-foreground", "bg-muted"],
+  "not-synchronized": ["text-muted-foreground", "bg-muted"],
 };
+
+// The pill's 7px dot on its own (sidebar rows). Carries no label or data-sync-state; callers name the state themselves.
+export function SyncDot({ display }: { display: SyncDisplay }) {
+  const shape = display === "awaiting" ? "border-[1.5px] border-dashed border-current" : display === "syncing" ? "sync-pulse bg-current" : "bg-current";
+  return <span aria-hidden="true" className={`inline-block size-[7px] shrink-0 rounded-full ${tones[display][0]} ${shape}`} />;
+}
 
 export type SyncInput = {
   syncState: SyncState;
@@ -106,8 +113,8 @@ export function syncDisplay({ syncState, activity = null, metadataStatus = null,
 // One reusable status: the state badge, then the detail lines for whatever data is passed in.
 export function SyncStatus({ compact = false, ...props }: SyncInput & { compact?: boolean }) {
   const display = syncDisplay(props);
-  const badge = <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${tones[display]}`} data-sync-state={display}>
-    <span aria-hidden="true" className="size-1.5 rounded-full bg-current" />{labels[display]}
+  const badge = <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-[9px] py-0.5 text-xs leading-[1.5] ${tones[display].join(" ")}`} data-sync-state={display}>
+    <SyncDot display={display} />{syncLabels[display]}
   </span>;
   if (compact) return badge;
   const metadata = props.metadataStatus ? describeMetadata(props.metadataStatus) : [];

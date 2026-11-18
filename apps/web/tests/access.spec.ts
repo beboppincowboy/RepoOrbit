@@ -8,7 +8,8 @@ test('select an owned repository, then install the app to reveal a private one',
   await page.context().addCookies([{ name: 'fake_as', value: 'ada', url: 'http://127.0.0.1:9090' }]);
 
   await page.goto('/login');
-  await page.getByRole('link', { name: 'Sign in with GitHub' }).click();
+  await page.getByRole('link', { name: 'Continue with GitHub' }).click();
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await expect(page.getByText('Signed in as')).toBeVisible();
   await page.getByRole('link', { name: 'Repositories', exact: true }).click();
 
@@ -49,18 +50,21 @@ test('select an owned repository, then install the app to reveal a private one',
   await page.getByRole('button', { name: 'Refresh activity' }).click();
   await expect(page.getByText(/Activity refresh requested|A refresh is already queued/)).toBeVisible();
 
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page).toHaveURL(/\/login$/);
   await page.context().addCookies([{ name: 'fake_as', value: 'grace', url: 'http://127.0.0.1:9090' }]);
-  await page.getByRole('link', { name: 'Sign in with GitHub' }).click();
+  await page.getByRole('link', { name: 'Continue with GitHub' }).click();
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await expect(page.getByRole('navigation', { name: 'Account' }).getByText('grace')).toBeVisible();
   await expect(page.getByText('No repositories connected yet.')).toBeVisible();
   await expect(page.getByText('ada/secret')).toHaveCount(0);
 
+  // The account menu is still open from the identity check above.
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page).toHaveURL(/\/login$/);
   await page.context().addCookies([{ name: 'fake_as', value: 'ada', url: 'http://127.0.0.1:9090' }]);
-  await page.getByRole('link', { name: 'Sign in with GitHub' }).click();
+  await page.getByRole('link', { name: 'Continue with GitHub' }).click();
   await page.getByRole('link', { name: 'Repositories', exact: true }).click();
   await page.getByRole('checkbox', { name: 'ada/secret' }).uncheck();
   await page.getByRole('button', { name: 'Apply' }).click();
@@ -70,8 +74,10 @@ test('select an owned repository, then install the app to reveal a private one',
 test('follow a public starred repository without installing the app', async ({ page }) => {
   await page.context().addCookies([{ name: 'fake_as', value: 'ada', url: 'http://127.0.0.1:9090' }]);
   await page.goto('/login');
-  await page.getByRole('link', { name: 'Sign in with GitHub' }).click();
+  await page.getByRole('link', { name: 'Continue with GitHub' }).click();
+  await page.getByRole('button', { name: 'Account menu' }).click();
   await expect(page.getByText('Signed in as')).toBeVisible();
+  await page.getByRole('link', { name: 'Repositories', exact: true }).click();
   await page.getByRole('link', { name: 'Starred', exact: true }).click();
 
   await expect(page.getByRole('heading', { name: 'grace/compiler' })).toBeVisible();
@@ -83,6 +89,7 @@ test('follow a public starred repository without installing the app', async ({ p
   await expect(page.getByRole('heading', { name: 'grace/compiler' })).toBeVisible();
   await expect(page.getByText('Activity import in progress; continuous reconciliation is not yet complete.')).toBeVisible();
 
+  await page.getByRole('link', { name: 'Repositories', exact: true }).click();
   await page.getByRole('link', { name: 'Starred', exact: true }).click();
   await page.getByRole('button', { name: 'Unfollow grace/compiler', exact: true }).click();
   await page.getByRole('link', { name: 'Overview', exact: true }).click();
