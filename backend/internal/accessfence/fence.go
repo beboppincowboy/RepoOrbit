@@ -15,6 +15,8 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 )
 
+// Scope names what an access fence epoch covers; the subject ID is a users.id (user), an installation ID
+// (installation), a repository's GitHub ID (repository) or 0 (global).
 type Scope string
 
 const (
@@ -38,10 +40,9 @@ type DB interface {
 const bumpSQL = `INSERT INTO access_fences (scope, subject_id, epoch) VALUES ($1, $2, 1)
 	ON CONFLICT (scope, subject_id) DO UPDATE SET epoch = access_fences.epoch + 1`
 
-// InvalidateAccess durably invalidates access for a subject by incrementing its epoch, and the global permissions
-// version, inside the caller's transaction (before any slower cleanup). The global row is locked first, then the
-// subject row, the same order StillCurrent takes them. Never grants access.
-// BumpAccess fences observed authorization restoration without scheduling cleanup.
+// BumpAccess increments the subject's epoch and the global permissions version inside the caller's transaction, so
+// every Snapshot taken before it stops being current. The global row is locked first, then the subject row, the same
+// order StillCurrent takes them. It schedules no cleanup: use it alone for observed authorization restoration.
 func BumpAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) error {
 	if _, err := tx.Exec(ctx, bumpSQL, string(ScopeGlobal), int64(0)); err != nil {
 		return err
@@ -53,6 +54,13 @@ func BumpAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) er
 	return err
 }
 
+// InvalidateAccess durably records lost access inside the caller's transaction, before any slower cleanup: it bumps
+// the fences (BumpAccess), wipes issue-write drafts and redacts their outcomes now for ScopeUser (that user's, on
+// private repositories) and ScopeRepository (everyone's, on that repository), and queues an activity_cleanup row plus
+// job for that repository (ScopeRepository) or every non-demo private repository (other scopes). ScopeInstallation
+// also records the installation's current holders in activity_cleanup.wipe_users, so their private drafts are wiped
+// even if the cleanup cannot get a complete inventory. ScopeInstallation and ScopeGlobal wipe nothing themselves; the
+// queued cleanups wipe the drafts of actors no installation covers any more. Never grants access.
 func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) error {
 	if err := BumpAccess(ctx, tx, scope, subjectID); err != nil {
 		return err

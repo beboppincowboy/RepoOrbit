@@ -237,15 +237,18 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 	return &jobs.Pause{Reason: CodeNoCredential}
 }
 
-// ProjectIssue upserts one GitHub issue fetched by a sync with its labels and assignees into the activity projection,
-// inside the caller's fenced transaction. A stored copy that is as new or newer, or a tombstoned issue, is left alone:
-// a sync page may have been fetched before the stored copy.
+// ProjectIssue upserts one GitHub issue (from a sync page or a create response) with its labels and assignees into the
+// activity projection, inside tx. The caller must already have checked its access fence in tx (a sync: claim fence
+// and accessfence StillCurrent; a write: StillCurrent); ProjectIssue does not check it. The caller must skip pull requests (issue.PullRequest).
+// A stored copy that is as new or newer, or a tombstoned issue, is left alone and nil returned: a sync page may have
+// been fetched before the stored copy. An invalid author, label or assignee is an error.
 func ProjectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue) error {
 	return projectIssue(ctx, tx, repoID, issue, false)
 }
 
-// ProjectConfirmedIssue is ProjectIssue for an issue read back right after a confirmed write. It also replaces a
-// stored copy with the same updated_at: GitHub's timestamps have one-second resolution, so an edit in the same second
+// ProjectConfirmedIssue is ProjectIssue for an issue read back right after a confirmed write, by a caller that
+// serializes readbacks of that issue (so the later readback is projected last). It also replaces a stored copy with
+// the same updated_at: GitHub's timestamps have one-second resolution, so an edit in the same second
 // as the stored copy would otherwise be lost.
 func ProjectConfirmedIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue) error {
 	return projectIssue(ctx, tx, repoID, issue, true)

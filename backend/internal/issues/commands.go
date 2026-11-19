@@ -53,17 +53,21 @@ type Service struct {
 	// Access decides live repository access and permissions; its TokenSource supplies the actor's own user token.
 	// Installation credentials are never used for these writes.
 	Access    *repositories.Service
-	GitHubURL string // browser-facing GitHub origin, for the search link of an unresolved create
+	GitHubURL string // browser-facing GitHub origin without a trailing slash (platform.Config.GitHubURL), for an unknown create's searchUrl
 }
 
-// Register adds the issue write routes to mux.
+// Register adds the issue write routes to mux; docs/api.md ("REST: issue writes") gives each route's body, status
+// codes and errors. A repository {id} is its GitHub ID; an operation {id} is the operation's id. Behind
+// auth.Handler.Protect a request without a session gets 401 there; a demo viewer gets 404 here, and a 401 from here
+// means the user's GitHub token is gone. Errors are plain text, except a duplicate create's 409 ({"error",
+// "operationId"}) and a recheck's 409 (the unchanged operation).
 func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/repositories/{id}/issue-capabilities", s.capabilities)
 	mux.HandleFunc("POST /api/repositories/{id}/issues", s.create)
-	mux.HandleFunc("POST /api/repositories/{id}/issues/{number}/changes", s.update)
+	mux.HandleFunc("POST /api/repositories/{id}/issues/{number}/updates", s.update)
 	mux.HandleFunc("GET /api/repositories/{id}/write-operations", s.list)
-	mux.HandleFunc("GET /api/write-operations/{op}", s.get)
-	mux.HandleFunc("POST /api/write-operations/{op}/recheck", s.recheck)
+	mux.HandleFunc("GET /api/write-operations/{id}", s.get)
+	mux.HandleFunc("POST /api/write-operations/{id}/recheck", s.recheck)
 }
 
 // createDraft is a new issue as the user reviewed it.
@@ -74,7 +78,8 @@ type createDraft struct {
 	Assignees []string `json:"assignees"`
 }
 
-// delta expresses add/remove intent; values not named are never touched.
+// delta expresses add/remove intent; values not named are never touched. Names compare case-insensitively, and one
+// name may not appear in both lists.
 type delta struct {
 	Add    []string `json:"add"`
 	Remove []string `json:"remove"`
@@ -84,37 +89,43 @@ type delta struct {
 type updateDraft struct {
 	Labels    delta  `json:"labels"`
 	Assignees delta  `json:"assignees"`
-	State     string `json:"state"` // "", "open" or "closed"
+	State     string `json:"state"` // requested issue state: "" (unchanged), "open" or "closed"
 }
 
+// issueView is an issue as GitHub returned or re-read it.
 type issueView struct {
 	Number    int64    `json:"number"`
 	URL       string   `json:"url"`
 	Title     string   `json:"title"`
-	State     string   `json:"state"`
+	State     string   `json:"state"` // the issue's GitHub state, "open" or "closed" (not the operation's state)
 	Labels    []string `json:"labels"`
 	Assignees []string `json:"assignees"`
 }
 
-// outcome is what GitHub actually did. Unapplied lists requested changes the confirmed issue does not show. Settled
-// marks an unknown update that no request of which can still land (every step was answered), so a recheck may fail it.
+// outcome is what GitHub actually did. Unapplied lists requested changes the confirmed issue does not show, each as
+// "add label X", "remove label X", "add assignee X", "remove assignee X" or "state open|closed" (or one fixed
+// sentence when a wiped create's labels and assignees cannot be verified). AllStepsAnswered (updates only) means every
+// step that was sent got a definite answer (2xx or 4xx), so nothing of the update can still land and a recheck may
+// fail it. Once the draft is wiped the stored outcome is redacted instead, by SQL redacted_write_outcome, to
+// {issue: {number, url, state}, unappliedCount, error, redacted: true}; clients must accept both shapes.
 type outcome struct {
-	Issue     *issueView `json:"issue,omitempty"`
-	Unapplied []string   `json:"unapplied,omitempty"`
-	Error     string     `json:"error,omitempty"`
-	Settled   bool       `json:"settled,omitempty"`
+	Issue            *issueView `json:"issue,omitempty"`
+	Unapplied        []string   `json:"unapplied,omitempty"`
+	Error            string     `json:"error,omitempty"` // a summary that never quotes credentials or content
+	AllStepsAnswered bool       `json:"allStepsAnswered,omitempty"`
 }
 
+// opView is one write operation as the API returns it.
 type opView struct {
 	ID           int64           `json:"id"`
-	RepositoryID int64           `json:"repositoryId"`
-	Kind         string          `json:"kind"`
-	State        string          `json:"state"`
-	IssueNumber  *int64          `json:"issueNumber"`
-	Draft        json.RawMessage `json:"draft"` // null once wiped after the actor lost access
-	Outcome      json.RawMessage `json:"outcome"`
-	Actor        string          `json:"actor"`
-	SearchURL    string          `json:"searchUrl,omitempty"` // unresolved creates: where to look for the issue on GitHub
+	RepositoryID int64           `json:"repositoryId"`        // the repository's GitHub ID
+	Kind         string          `json:"kind"`                // "create" or "update"
+	State        string          `json:"state"`               // the operation's state: "pending", "unknown", "succeeded" or "failed"
+	IssueNumber  *int64          `json:"issueNumber"`         // an update's target; a create's issue once confirmed, else null
+	Draft        json.RawMessage `json:"draft"`               // null once wiped after the actor lost access
+	Outcome      json.RawMessage `json:"outcome"`             // an outcome, full or redacted
+	Actor        string          `json:"actor"`               // the initiating user's GitHub login
+	SearchURL    string          `json:"searchUrl,omitempty"` // unknown creates only: a GitHub issue search for the actor's issue with the draft title
 	CreatedAt    time.Time       `json:"createdAt"`
 	UpdatedAt    time.Time       `json:"updatedAt"`
 }
@@ -216,10 +227,10 @@ func canPush(r githubapp.Repo) bool { p := r.Permissions; return p.Push || p.Mai
 func canTriage(r githubapp.Repo) bool {
 	return r.Permissions.Triage || canPush(r)
 }
-func writable(r githubapp.Repo) bool { return r.HasIssues && !r.Archived }
-func canOpen(r githubapp.Repo) bool  { return writable(r) && (r.Permissions.Pull || canTriage(r)) }
-func canOpenWithMetadata(r githubapp.Repo) bool {
-	return canOpen(r) && canPush(r)
+func writable(r githubapp.Repo) bool  { return r.HasIssues && !r.Archived }
+func canCreate(r githubapp.Repo) bool { return writable(r) && (r.Permissions.Pull || canTriage(r)) }
+func canCreateWithMetadata(r githubapp.Repo) bool {
+	return canCreate(r) && canPush(r)
 }
 func canManage(r githubapp.Repo) bool {
 	return writable(r) && canTriage(r)
@@ -244,7 +255,7 @@ func pathID(r *http.Request, name string) (int64, bool) {
 // ponytail: a silently removed collaborator keeps their drafts until their next read here or a user/installation
 // revocation; handle GitHub's member webhook or sweep drafts periodically if that window matters.
 func (s *Service) access(w http.ResponseWriter, r *http.Request, userID, repoID int64, fresh bool) (repositories.Decision, bool) {
-	private, err := s.Queries.GetWriteRepository(r.Context(), repoID)
+	private, err := s.Queries.GetRepositoryIsPrivate(r.Context(), repoID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return repositories.Decision{}, false
@@ -404,7 +415,7 @@ func (s *Service) capabilities(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"createIssue": canOpen(d.Repo), "createWithMetadata": canOpenWithMetadata(d.Repo), "manageIssues": canManage(d.Repo)})
+	writeJSON(w, http.StatusOK, map[string]bool{"canCreateIssue": canCreate(d.Repo), "canCreateIssueWithMetadata": canCreateWithMetadata(d.Repo), "canManageIssues": canManage(d.Repo)})
 }
 
 // list returns the viewer's own operations on one repository; other users' operations are never listed.
@@ -439,7 +450,7 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 // one the access check was made under.
 func (s *Service) operation(w http.ResponseWriter, r *http.Request) (int64, db.GetWriteOperationRow, repositories.Decision, accessfence.Snapshot, bool) {
 	userID, ok := auth.SignedInUserID(r.Context())
-	opID, idOK := pathID(r, "op")
+	opID, idOK := pathID(r, "id")
 	if !ok || !idOK {
 		http.Error(w, "not found", http.StatusNotFound)
 		return 0, db.GetWriteOperationRow{}, repositories.Decision{}, accessfence.Snapshot{}, false
@@ -484,7 +495,7 @@ type command struct {
 	issueNumber int64  // update target
 	draft       any    // *createDraft or *updateDraft
 	contentHash []byte // create only
-	metadata    bool   // create only: labels or assignees requested
+	hasMetadata bool   // create only: labels or assignees requested
 	assignees   []string
 	allowed     func(githubapp.Repo) bool // the per-action permission rule
 	authorMay   bool                      // update only: the issue's author may do this without allowed (close/reopen)
@@ -500,11 +511,11 @@ func (s *Service) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	allowed := canOpen
+	allowed := canCreate
 	if len(d.Labels)+len(d.Assignees) > 0 {
-		allowed = canOpenWithMetadata
+		allowed = canCreateWithMetadata
 	}
-	s.submit(w, r, command{kind: "create", draft: &d, contentHash: contentHash(d.Title, d.Body), metadata: len(d.Labels)+len(d.Assignees) > 0, assignees: d.Assignees, allowed: allowed})
+	s.submit(w, r, command{kind: "create", draft: &d, contentHash: contentHash(d.Title, d.Body), hasMetadata: len(d.Labels)+len(d.Assignees) > 0, assignees: d.Assignees, allowed: allowed})
 }
 
 func (s *Service) update(w http.ResponseWriter, r *http.Request) {
@@ -604,7 +615,7 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 				s.internal(w, err)
 				return
 			}
-			if issue.User == nil || issue.User.ID != actor || !canOpen(d.Repo) {
+			if issue.User == nil || issue.User.ID != actor || !canCreate(d.Repo) {
 				denied()
 				return
 			}
@@ -636,7 +647,7 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 			}
 			var err error
 			opID, err = s.Queries.WithTx(tx).InsertWriteOperation(ctx, db.InsertWriteOperationParams{UserID: userID, RepositoryID: repoID, IdempotencyKey: key, Kind: c.kind,
-				IssueNumber: pgtype.Int8{Int64: c.issueNumber, Valid: c.kind == "update"}, RequestHash: hash, ContentHash: c.contentHash, RequestedMetadata: c.metadata, Draft: draft})
+				IssueNumber: pgtype.Int8{Int64: c.issueNumber, Valid: c.kind == "update"}, RequestHash: hash, ContentHash: c.contentHash, HasRequestedMetadata: c.hasMetadata, Draft: draft})
 			return err
 		})
 	}
@@ -646,15 +657,15 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 	for attempt := 0; ; attempt++ {
 		err = insert()
 		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.ConstraintName != "write_operations_open_create" {
+		if !errors.As(err, &pgErr) || pgErr.ConstraintName != "write_operations_unresolved_create" {
 			break
 		}
-		openCreate := db.FindOpenCreateParams{UserID: userID, RepositoryID: repoID, ContentHash: c.contentHash}
-		if _, err := s.Queries.FailStalePendingCreate(ctx, db.FailStalePendingCreateParams(openCreate)); err != nil {
+		unresolved := db.FindUnresolvedCreateParams{UserID: userID, RepositoryID: repoID, ContentHash: c.contentHash}
+		if _, err := s.Queries.FailStalePendingCreate(ctx, db.FailStalePendingCreateParams(unresolved)); err != nil {
 			s.internal(w, err)
 			return
 		}
-		prior, err := s.Queries.FindOpenCreate(ctx, openCreate)
+		prior, err := s.Queries.FindUnresolvedCreate(ctx, unresolved)
 		switch {
 		case err == nil:
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "an earlier create of this issue is still unresolved; recheck it instead of resubmitting", "operationId": prior})
@@ -799,12 +810,12 @@ func (s *Service) applyUpdate(ctx context.Context, userID int64, token, fullName
 	if d.State != "" {
 		steps = append(steps, func() error { return s.GitHub.SetIssueState(ctx, token, fullName, number, d.State) })
 	}
-	out := outcome{Settled: true}
+	out := outcome{AllStepsAnswered: true}
 	for _, step := range steps {
 		if err := step(); err != nil {
 			var state string
 			state, out.Error = s.classify(ctx, userID, err)
-			out.Settled = state == "failed" // a definite rejection; an ambiguous step may still land
+			out.AllStepsAnswered = state == "failed" // a definite rejection; an ambiguous step may still land
 			break
 		}
 	}
@@ -823,7 +834,7 @@ func (s *Service) readBack(ctx context.Context, userID int64, token, fullName st
 	}
 	out.Issue = viewIssue(issue)
 	out.Unapplied = unapplied(out.Issue, d.Labels, d.Assignees, d.State)
-	if len(out.Unapplied) > 0 && !out.Settled {
+	if len(out.Unapplied) > 0 && !out.AllStepsAnswered {
 		return "unknown", out, &issue
 	}
 	return resolved(out), out, &issue
@@ -962,7 +973,7 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 					return "", outcome{}, nil, err
 				}
 				out.Unapplied = unapplied(out.Issue, delta{Add: draft.Labels}, delta{Add: draft.Assignees}, "")
-			case row.RequestedMetadata: // the draft was wiped: the requested labels and assignees cannot be verified
+			case row.HasRequestedMetadata: // the draft was wiped: the requested labels and assignees cannot be verified
 				out.Unapplied = []string{"requested labels or assignees (unverifiable: the draft was removed)"}
 			}
 		} else {
@@ -973,11 +984,11 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 				return "", outcome{}, nil, errAnswered
 			}
 			out.Unapplied = unapplied(out.Issue, draft.Labels, draft.Assignees, draft.State)
-			if len(out.Unapplied) > 0 && !sent.Settled {
+			if len(out.Unapplied) > 0 && !sent.AllStepsAnswered {
 				mismatch() // not visible yet, and the original request may still land
 				return "", outcome{}, nil, errAnswered
 			}
-			out.Error, out.Settled = sent.Error, sent.Settled
+			out.Error, out.AllStepsAnswered = sent.Error, sent.AllStepsAnswered
 		}
 		return resolved(out), out, &issue, nil
 	})

@@ -11,14 +11,14 @@ import (
 	"time"
 )
 
-// IssueWriteFault changes how the next issue creations behave until it is replaced. The zero value is GitHub's
-// normal behavior.
+// IssueWriteFault changes how the next issue creations (POST /repos/{owner}/{repo}/issues only; other writes are
+// never faulted) behave until it is replaced. The zero value is GitHub's normal behavior.
 type IssueWriteFault struct {
-	DropAssignees bool          // answer 201 but silently leave every requested assignee off the issue
-	Delay         time.Duration // create the issue, then wait this long before answering
-	Status        int           // answer with this status instead of 201
-	Applied       bool          // with Status: create the issue anyway, as when a gateway fails after GitHub committed
-	Before        func()        // runs when the create request arrives, before anything is stored
+	DropAssignees       bool          // answer 201 but silently leave every requested assignee off the issue
+	Delay               time.Duration // once the issue is stored, sleep this long before answering; ignores request cancellation
+	Status              int           // answer with this status instead of 201
+	CreateDespiteStatus bool          // with Status: store the issue anyway, as when a gateway fails after GitHub committed
+	Before              func()        // runs when the request arrives, without the server lock held, before access checks or storing
 }
 
 // maxAssignees is GitHub's per-issue cap; assignees beyond it are silently ignored.
@@ -30,7 +30,7 @@ func atLeast(level, min string) bool {
 	return slices.Index(levels, level) >= slices.Index(levels, min) && level != ""
 }
 
-// SetPermission grants login a level on a repository ("" removes it). The owner is always admin. A grant never makes a
+// SetPermission grants login a level on a repository: "read", "triage", "write", "maintain" or "admin" ("" removes it). The owner is always admin. A grant never makes a
 // private repository readable: the fake models private reads as owner-only.
 func (s *Server) SetPermission(login string, repoID int64, level string) {
 	s.mu.Lock()
@@ -44,14 +44,15 @@ func (s *Server) SetPermission(login string, repoID int64, level string) {
 // SetIssueWriteFault replaces the fault applied to issue creation.
 func (s *Server) SetIssueWriteFault(f IssueWriteFault) { s.mu.Lock(); s.writeFault = f; s.mu.Unlock() }
 
-// Issues returns a copy of a repository's issues, including those created through the API.
+// Issues returns a copy of a repository's issues in insertion order, including those created through the API.
 func (s *Server) Issues(repoID int64) []IssueFixture {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]IssueFixture(nil), s.issues[repoID]...)
 }
 
-// WriteTokens lists the bearer tokens that issue write requests carried, in order.
+// WriteTokens lists, in order, the bearer token of every non-GET issue request (create, label, assignee or state
+// change) whose body parsed, including ones then rejected for access or permission; reads are not recorded.
 func (s *Server) WriteTokens() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -180,7 +181,7 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request, login strin
 		http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
 		return
 	}
-	if fault.Status != 0 && !fault.Applied {
+	if fault.Status != 0 && !fault.CreateDespiteStatus {
 		s.mu.Unlock()
 		http.Error(w, `{"message":"fault"}`, fault.Status)
 		return

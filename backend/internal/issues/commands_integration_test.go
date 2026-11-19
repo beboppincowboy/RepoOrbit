@@ -241,7 +241,7 @@ func decodeOp(t *testing.T, resp *http.Response) operation {
 
 func create(repoID int64) string { return fmt.Sprintf("/api/repositories/%d/issues", repoID) }
 func changes(repoID, number int64) string {
-	return fmt.Sprintf("/api/repositories/%d/issues/%d/changes", repoID, number)
+	return fmt.Sprintf("/api/repositories/%d/issues/%d/updates", repoID, number)
 }
 func opPath(id int64) string { return fmt.Sprintf("/api/write-operations/%d", id) }
 
@@ -312,8 +312,8 @@ func TestForgedAndStaleCommandsAreDenied(t *testing.T) {
 	}
 
 	// Render: with triage carol may manage issues, but labels or assignees on a new issue need push.
-	var caps struct{ CreateIssue, CreateWithMetadata, ManageIssues bool }
-	if resp := carol.do("GET", fmt.Sprintf("/api/repositories/%d/issue-capabilities", repo), "", nil); resp.StatusCode != 200 || json.Unmarshal(carol.body(resp), &caps) != nil || !caps.ManageIssues || caps.CreateWithMetadata || !caps.CreateIssue {
+	var caps struct{ CanCreateIssue, CanCreateIssueWithMetadata, CanManageIssues bool }
+	if resp := carol.do("GET", fmt.Sprintf("/api/repositories/%d/issue-capabilities", repo), "", nil); resp.StatusCode != 200 || json.Unmarshal(carol.body(resp), &caps) != nil || !caps.CanManageIssues || caps.CanCreateIssueWithMetadata || !caps.CanCreateIssue {
 		t.Fatalf("capabilities at render: %d %+v", resp.StatusCode, caps)
 	}
 	if resp, _ := carol.send(create(repo), "triage-create", `{"title":"t","labels":["bug"]}`); resp.StatusCode != http.StatusForbidden {
@@ -327,7 +327,7 @@ func TestForgedAndStaleCommandsAreDenied(t *testing.T) {
 	if resp, _ := carol.send(create(repo), "stale-2", `{"title":"t","assignees":["alice"]}`); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("metadata create without push: %d", resp.StatusCode)
 	}
-	if resp := carol.do("GET", fmt.Sprintf("/api/repositories/%d/issue-capabilities", repo), "", nil); json.Unmarshal(carol.body(resp), &caps) != nil || caps.ManageIssues || caps.CreateWithMetadata || !caps.CreateIssue {
+	if resp := carol.do("GET", fmt.Sprintf("/api/repositories/%d/issue-capabilities", repo), "", nil); json.Unmarshal(carol.body(resp), &caps) != nil || caps.CanManageIssues || caps.CanCreateIssueWithMetadata || !caps.CanCreateIssue {
 		t.Fatalf("capabilities after downgrade: %+v", caps)
 	}
 	if n := e.count(`SELECT count(*) FROM write_operations`); n != 0 {
@@ -479,7 +479,7 @@ func TestCreateErrorClassification(t *testing.T) {
 		{fake.IssueWriteFault{Status: http.StatusUnprocessableEntity}, "failed"},
 		{fake.IssueWriteFault{Status: http.StatusForbidden}, "failed"},
 		{fake.IssueWriteFault{Status: http.StatusBadGateway}, "unknown"},
-		{fake.IssueWriteFault{Status: http.StatusBadGateway, Applied: true}, "unknown"},
+		{fake.IssueWriteFault{Status: http.StatusBadGateway, CreateDespiteStatus: true}, "unknown"},
 	} {
 		e.gh.SetIssueWriteFault(c.fault)
 		_, op := alice.send(create(repo), fmt.Sprintf("class-%d", i), fmt.Sprintf(`{"title":"Case %d"}`, i))

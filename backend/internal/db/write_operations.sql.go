@@ -25,6 +25,7 @@ type FailStalePendingCreateParams struct {
 // A create still pending a minute after it was recorded was never sent: marking it sent (MarkWriteOperationSent,
 // conditional on 'pending') precedes the request, so a process that stopped in between sent nothing. Failing it frees
 // the content for a retry; should the original process resume, its mark finds no pending row and it sends nothing.
+// Run by a new create that collided with that pending create; the threshold is the literal '1 minute' below.
 func (q *Queries) FailStalePendingCreate(ctx context.Context, arg FailStalePendingCreateParams) (int64, error) {
 	result, err := q.db.Exec(ctx, failStalePendingCreate, arg.UserID, arg.RepositoryID, arg.ContentHash)
 	if err != nil {
@@ -33,19 +34,19 @@ func (q *Queries) FailStalePendingCreate(ctx context.Context, arg FailStalePendi
 	return result.RowsAffected(), nil
 }
 
-const findOpenCreate = `-- name: FindOpenCreate :one
+const findUnresolvedCreate = `-- name: FindUnresolvedCreate :one
 SELECT id FROM write_operations WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND state IN ('pending', 'unknown') AND content_hash = $3 ORDER BY id LIMIT 1
 `
 
-type FindOpenCreateParams struct {
+type FindUnresolvedCreateParams struct {
 	UserID       int64
 	RepositoryID int64
 	ContentHash  []byte
 }
 
 // The unresolved create of the same content that blocks a new create under a fresh key.
-func (q *Queries) FindOpenCreate(ctx context.Context, arg FindOpenCreateParams) (int64, error) {
-	row := q.db.QueryRow(ctx, findOpenCreate, arg.UserID, arg.RepositoryID, arg.ContentHash)
+func (q *Queries) FindUnresolvedCreate(ctx context.Context, arg FindUnresolvedCreateParams) (int64, error) {
+	row := q.db.QueryRow(ctx, findUnresolvedCreate, arg.UserID, arg.RepositoryID, arg.ContentHash)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -64,7 +65,7 @@ type FinishWriteOperationParams struct {
 	IssueNumber pgtype.Int8
 }
 
-// Only an unresolved operation takes an outcome; issue_number stays when the new value is NULL. An outcome recorded
+// Only an 'unknown' operation takes an outcome; issue_number stays when the new value is NULL. An outcome recorded
 // after the draft was wiped (the actor lost access meanwhile) is stored redacted.
 func (q *Queries) FinishWriteOperation(ctx context.Context, arg FinishWriteOperationParams) (int64, error) {
 	result, err := q.db.Exec(ctx, finishWriteOperation,
@@ -79,8 +80,20 @@ func (q *Queries) FinishWriteOperation(ctx context.Context, arg FinishWriteOpera
 	return result.RowsAffected(), nil
 }
 
+const getRepositoryIsPrivate = `-- name: GetRepositoryIsPrivate :one
+SELECT is_private FROM repositories WHERE id = $1 AND NOT is_demo
+`
+
+// Whether a stored, non-demo repository is private; no row for one that is not stored or is demo.
+func (q *Queries) GetRepositoryIsPrivate(ctx context.Context, id int64) (bool, error) {
+	row := q.db.QueryRow(ctx, getRepositoryIsPrivate, id)
+	var is_private bool
+	err := row.Scan(&is_private)
+	return is_private, err
+}
+
 const getWriteOperation = `-- name: GetWriteOperation :one
-SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name
+SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name
 FROM write_operations o JOIN users u ON u.id = o.user_id JOIN repositories r ON r.id = o.repository_id WHERE o.id = $1 AND o.user_id = $2
 `
 
@@ -90,21 +103,21 @@ type GetWriteOperationParams struct {
 }
 
 type GetWriteOperationRow struct {
-	ID                int64
-	RepositoryID      int64
-	Kind              string
-	IssueNumber       pgtype.Int8
-	ContentHash       []byte
-	RequestedMetadata bool
-	Draft             []byte
-	State             string
-	Outcome           []byte
-	SentAt            pgtype.Timestamptz
-	CreatedAt         pgtype.Timestamptz
-	UpdatedAt         pgtype.Timestamptz
-	ActorLogin        string
-	ActorGithubID     int64
-	RepositoryName    string
+	ID                   int64
+	RepositoryID         int64
+	Kind                 string
+	IssueNumber          pgtype.Int8
+	ContentHash          []byte
+	HasRequestedMetadata bool
+	Draft                []byte
+	State                string
+	Outcome              []byte
+	SentAt               pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+	ActorLogin           string
+	ActorGithubID        int64
+	RepositoryName       string
 }
 
 // Scoped to the initiating user: another user's id reads as not found.
@@ -117,7 +130,7 @@ func (q *Queries) GetWriteOperation(ctx context.Context, arg GetWriteOperationPa
 		&i.Kind,
 		&i.IssueNumber,
 		&i.ContentHash,
-		&i.RequestedMetadata,
+		&i.HasRequestedMetadata,
 		&i.Draft,
 		&i.State,
 		&i.Outcome,
@@ -145,6 +158,7 @@ type GetWriteOperationByKeyRow struct {
 	RequestHash []byte
 }
 
+// The operation the user recorded under this idempotency key, with its request hash for comparison.
 func (q *Queries) GetWriteOperationByKey(ctx context.Context, arg GetWriteOperationByKeyParams) (GetWriteOperationByKeyRow, error) {
 	row := q.db.QueryRow(ctx, getWriteOperationByKey, arg.UserID, arg.IdempotencyKey)
 	var i GetWriteOperationByKeyRow
@@ -152,38 +166,27 @@ func (q *Queries) GetWriteOperationByKey(ctx context.Context, arg GetWriteOperat
 	return i, err
 }
 
-const getWriteRepository = `-- name: GetWriteRepository :one
-SELECT is_private FROM repositories WHERE id = $1 AND NOT is_demo
-`
-
-func (q *Queries) GetWriteRepository(ctx context.Context, id int64) (bool, error) {
-	row := q.db.QueryRow(ctx, getWriteRepository, id)
-	var is_private bool
-	err := row.Scan(&is_private)
-	return is_private, err
-}
-
 const insertWriteOperation = `-- name: InsertWriteOperation :one
-INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, issue_number, request_hash, content_hash, requested_metadata, draft, state)
+INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, issue_number, request_hash, content_hash, has_requested_metadata, draft, state)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
 ON CONFLICT (user_id, idempotency_key) DO NOTHING
 RETURNING id
 `
 
 type InsertWriteOperationParams struct {
-	UserID            int64
-	RepositoryID      int64
-	IdempotencyKey    string
-	Kind              string
-	IssueNumber       pgtype.Int8
-	RequestHash       []byte
-	ContentHash       []byte
-	RequestedMetadata bool
-	Draft             []byte
+	UserID               int64
+	RepositoryID         int64
+	IdempotencyKey       string
+	Kind                 string
+	IssueNumber          pgtype.Int8
+	RequestHash          []byte
+	ContentHash          []byte
+	HasRequestedMetadata bool
+	Draft                []byte
 }
 
 // Returns no row when the user already used the key; the caller then compares request hashes. A second unresolved
-// create of the same content fails on write_operations_open_create.
+// create of the same content fails on write_operations_unresolved_create. The row starts 'pending'.
 func (q *Queries) InsertWriteOperation(ctx context.Context, arg InsertWriteOperationParams) (int64, error) {
 	row := q.db.QueryRow(ctx, insertWriteOperation,
 		arg.UserID,
@@ -193,7 +196,7 @@ func (q *Queries) InsertWriteOperation(ctx context.Context, arg InsertWriteOpera
 		arg.IssueNumber,
 		arg.RequestHash,
 		arg.ContentHash,
-		arg.RequestedMetadata,
+		arg.HasRequestedMetadata,
 		arg.Draft,
 	)
 	var id int64
@@ -202,7 +205,7 @@ func (q *Queries) InsertWriteOperation(ctx context.Context, arg InsertWriteOpera
 }
 
 const listWriteOperations = `-- name: ListWriteOperations :many
-SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name
+SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name
 FROM write_operations o JOIN users u ON u.id = o.user_id JOIN repositories r ON r.id = o.repository_id WHERE o.user_id = $1 AND o.repository_id = $2 ORDER BY o.id DESC LIMIT 100
 `
 
@@ -212,23 +215,24 @@ type ListWriteOperationsParams struct {
 }
 
 type ListWriteOperationsRow struct {
-	ID                int64
-	RepositoryID      int64
-	Kind              string
-	IssueNumber       pgtype.Int8
-	ContentHash       []byte
-	RequestedMetadata bool
-	Draft             []byte
-	State             string
-	Outcome           []byte
-	SentAt            pgtype.Timestamptz
-	CreatedAt         pgtype.Timestamptz
-	UpdatedAt         pgtype.Timestamptz
-	ActorLogin        string
-	ActorGithubID     int64
-	RepositoryName    string
+	ID                   int64
+	RepositoryID         int64
+	Kind                 string
+	IssueNumber          pgtype.Int8
+	ContentHash          []byte
+	HasRequestedMetadata bool
+	Draft                []byte
+	State                string
+	Outcome              []byte
+	SentAt               pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+	ActorLogin           string
+	ActorGithubID        int64
+	RepositoryName       string
 }
 
+// The user's own operations on one repository, newest first, at most 100 (no paging).
 func (q *Queries) ListWriteOperations(ctx context.Context, arg ListWriteOperationsParams) ([]ListWriteOperationsRow, error) {
 	rows, err := q.db.Query(ctx, listWriteOperations, arg.UserID, arg.RepositoryID)
 	if err != nil {
@@ -244,7 +248,7 @@ func (q *Queries) ListWriteOperations(ctx context.Context, arg ListWriteOperatio
 			&i.Kind,
 			&i.IssueNumber,
 			&i.ContentHash,
-			&i.RequestedMetadata,
+			&i.HasRequestedMetadata,
 			&i.Draft,
 			&i.State,
 			&i.Outcome,
@@ -269,6 +273,8 @@ const markWriteOperationSent = `-- name: MarkWriteOperationSent :execrows
 UPDATE write_operations SET state = 'unknown', sent_at = now(), updated_at = now() WHERE id = $1 AND state = 'pending'
 `
 
+// Moves a pending operation to 'unknown' and stamps sent_at, just before its request is sent. 0 rows: it is no longer
+// pending (FailStalePendingCreate failed it), and nothing may be sent.
 func (q *Queries) MarkWriteOperationSent(ctx context.Context, id int64) (int64, error) {
 	result, err := q.db.Exec(ctx, markWriteOperationSent, id)
 	if err != nil {
@@ -286,6 +292,7 @@ type WipeActorDraftsParams struct {
 	RepositoryID int64
 }
 
+// Wipes the drafts and redacts the outcomes of every operation, in any state, of one user on one repository.
 func (q *Queries) WipeActorDrafts(ctx context.Context, arg WipeActorDraftsParams) error {
 	_, err := q.db.Exec(ctx, wipeActorDrafts, arg.UserID, arg.RepositoryID)
 	return err
