@@ -176,7 +176,7 @@ func (c *Client) activityPage(ctx context.Context, token, fullName, suffix, curs
 			return "", fmt.Errorf("github: invalid activity pagination")
 		}
 		target = requestURL.ResolveReference(target)
-		if target.Scheme != endpoint.Scheme || target.Host != endpoint.Host || target.Path != endpoint.Path || target.User != nil || target.Fragment != "" || !validQuery(target.RawQuery) || next != "" {
+		if target.Scheme != endpoint.Scheme || target.Host != endpoint.Host || !repositoryPagePath(target.Path, endpoint.Path, fullName, suffix) || target.User != nil || target.Fragment != "" || !validQuery(target.RawQuery) || next != "" {
 			return "", fmt.Errorf("github: unsafe activity pagination")
 		}
 		next = target.RawQuery

@@ -1,7 +1,9 @@
 package graph
 
 import (
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
@@ -9,6 +11,8 @@ import (
 // to the signed-in user's selections and then filtered by a live access check (Access); demo rows never appear.
 type Resolver struct {
 	Queries    *db.Queries
+	Clock      jobs.Clock
 	Demo       bool
 	RepoAccess *repositories.Service // nil in Demo mode
+	DemoPool   *pgxpool.Pool         // analytics reads in Demo mode only; real mode reads through RepoAccess.Pool
 }

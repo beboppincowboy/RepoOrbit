@@ -11,3 +11,38 @@ resolver:
   dir: graphql
   package: graph
   filename_template: '{name}.resolvers.go'
+models:
+  Int64:
+    model: github.com/99designs/gqlgen/graphql.Int64
+  RepositoryOverview:
+    model: github.com/repoorbit/repoorbit/backend/graphql/model.RepositoryOverview
+  MetricCoverage:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.Coverage
+  MetricCount:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.Count
+  MetricMedian:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.Median
+  MetricContributor:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.Contributor
+  MetricActor:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.Actor
+  MetricTimelineEntry:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.TimelineEntry
+  MetricTimelineCoverage:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.TimelineCoverage
+  MetricDailyPoint:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.DailyPoint
+  CrossRepositoryOverview:
+    model: github.com/repoorbit/repoorbit/backend/graphql/model.CrossRepositoryOverview
+  AttentionItem:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.AttentionItem
+    fields:
+      repositoryId:
+        resolver: true
+  AssignedIssue:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.AssignedIssue
+    fields:
+      repositoryId:
+        resolver: true
+  CrossDailyPoint:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.CrossDailyPoint

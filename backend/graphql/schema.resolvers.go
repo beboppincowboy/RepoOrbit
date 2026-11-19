@@ -12,11 +12,21 @@ import (
 
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
+	"github.com/repoorbit/repoorbit/backend/internal/analytics"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
-	"github.com/repoorbit/repoorbit/backend/internal/platform"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
+
+// RepositoryID is the resolver for the repositoryId field.
+func (r *assignedIssueResolver) RepositoryID(ctx context.Context, obj *analytics.AssignedIssue) (string, error) {
+	return strconv.FormatInt(obj.RepositoryID, 10), nil
+}
+
+// RepositoryID is the resolver for the repositoryId field.
+func (r *attentionItemResolver) RepositoryID(ctx context.Context, obj *analytics.AttentionItem) (string, error) {
+	return strconv.FormatInt(obj.RepositoryID, 10), nil
+}
 
 // Viewer is the resolver for the viewer field.
 func (r *queryResolver) Viewer(ctx context.Context) (*model.Viewer, error) {
@@ -37,7 +47,7 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	result := &model.RepositoryConnection{Nodes: []*model.Repository{}}
 	if r.Demo {
@@ -105,7 +115,7 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	if r.Demo {
 		rows, err := r.Queries.ListDemoRepositories(ctx, db.ListDemoRepositoriesParams{After: repoID - 1, PageSize: 1})
@@ -170,7 +180,7 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 		}
 		ids = append(ids, v)
 	}
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	result := &model.IssueConnection{Nodes: []*model.Issue{}}
 	var readFence accessfence.Snapshot
@@ -224,8 +234,8 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 }
 
 // PullRequestEvidence is the resolver for the pullRequestEvidence field.
-func (r *queryResolver) PullRequestEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.PullRequestEvidenceConnection, error) {
-	return r.pullRequests(ctx, repositoryIds, first, after)
+func (r *queryResolver) PullRequestEvidence(ctx context.Context, repositoryIds []string, first int, after *string, newestFirst bool) (*model.PullRequestEvidenceConnection, error) {
+	return r.pullRequests(ctx, repositoryIds, first, after, newestFirst)
 }
 
 // ReviewEvidence is the resolver for the reviewEvidence field.
@@ -248,7 +258,25 @@ func (r *queryResolver) IssueEventEvidence(ctx context.Context, repositoryIds []
 	return r.issueEvents(ctx, repositoryIds, first, after)
 }
 
+// RepositoryOverview is the resolver for the repositoryOverview field.
+func (r *queryResolver) RepositoryOverview(ctx context.Context, id string, days int) (*model.RepositoryOverview, error) {
+	return r.repositoryOverview(ctx, id, days)
+}
+
+// CrossRepositoryOverview is the resolver for the crossRepositoryOverview field.
+func (r *queryResolver) CrossRepositoryOverview(ctx context.Context, days int) (*model.CrossRepositoryOverview, error) {
+	return r.crossRepositoryOverview(ctx, days)
+}
+
+// AssignedIssue returns AssignedIssueResolver implementation.
+func (r *Resolver) AssignedIssue() AssignedIssueResolver { return &assignedIssueResolver{r} }
+
+// AttentionItem returns AttentionItemResolver implementation.
+func (r *Resolver) AttentionItem() AttentionItemResolver { return &attentionItemResolver{r} }
+
 // Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 
+type assignedIssueResolver struct{ *Resolver }
+type attentionItemResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }

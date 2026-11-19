@@ -6,4 +6,4 @@ Run `docker compose up --build`, then open http://127.0.0.1:3000. Compose starts
 
 `make check`, `make test`, `make test-integration`, `make test-e2e`, and `make test-race` provide local gates. Integration tests use the local Compose PostgreSQL database; Playwright tests require the Compose stack and `npx playwright install chromium` in `apps/web`. Go 1.24 and Node 22 are required. Generators are pinned in the Makefile and Go module. `.env.example` documents local development defaults; Compose provides its own container database URL.
 
-The stack reserves Recharts for the analytics phase; no chart dependency is installed before there is chart data. The U1 interface uses Tailwind and a local shadcn-style Button component.
+The frontend uses TanStack Start, TanStack Query, Tailwind CSS, and shadcn/ui. The web server proxies session, repository, and GraphQL requests to Go on the same origin.

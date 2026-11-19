@@ -61,7 +61,7 @@ func main() {
 		}
 		clock := jobs.SystemClock{}
 		worker := &jobs.Worker{Pool: pool, Clock: clock}
-		(&ingestion.Deps{Pool: pool, GitHub: gh, Tokens: authSvc, Access: repos, Clock: clock, Inventory: gh, AppKey: cfg.AppPrivateKey}).Register(worker)
+		(&ingestion.Deps{Pool: pool, GitHub: gh, Tokens: authSvc, Access: repos, Clock: clock, Inventory: gh, AppKey: cfg.AppPrivateKey, InstallationCredentials: githubapp.NewInstallationCredentials(gh, cfg.AppPrivateKey)}).Register(worker)
 		ingestion.StartScheduler(ctx, ingestion.SchedulerDeps{Pool: pool, Worker: worker, Stars: starRefresher{repos}, Clock: clock})
 		// Selections made before durable scheduling existed get work too; the queue coalesces repeats.
 		if n, err := ingestion.ReconcileSelections(ctx, pool); err != nil {

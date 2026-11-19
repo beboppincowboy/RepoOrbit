@@ -17,7 +17,7 @@ func TestFetchIssuesPage(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Error("missing authorization")
 		}
-		w.Header().Set("Link", "<"+server.URL+"/repos/example/project/issues?state=all&page=3>; rel=\"next\"")
+		w.Header().Set("Link", "<"+server.URL+"/repositories/1183888342/issues?state=all&page=3>; rel=\"next\"")
 		_, _ = w.Write([]byte(`[{"id":123,"number":42,"title":"Example","state":"open","html_url":"https://github.com/example/project/issues/42","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","user":{"id":7,"login":"robot","type":"Bot"},"labels":[{"id":8,"name":"bug"}],"assignees":[{"id":9,"login":"person","type":"User"}]},{"id":124,"number":43,"pull_request":{"url":"https://api.github.com/repos/example/project/pulls/43"}}]`))
 	}))
 	defer server.Close()

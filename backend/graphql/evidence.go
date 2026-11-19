@@ -9,7 +9,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
-	"github.com/repoorbit/repoorbit/backend/internal/platform"
+	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
 type evidencePage struct {
@@ -19,6 +19,8 @@ type evidencePage struct {
 	withheld int
 	retry    *string
 	fence    accessfence.Snapshot
+	userID   int64
+	checks   map[int64]repositories.Decision
 }
 
 func (r *queryResolver) evidenceAccess(ctx context.Context, raw []string, first int, after *string) (evidencePage, error) {
@@ -48,6 +50,7 @@ func (r *queryResolver) evidenceAccess(ctx context.Context, raw []string, first 
 	if err != nil {
 		return p, err
 	}
+	p.userID = user
 	p.fence, err = accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, user)
 	if err != nil {
 		return p, fmt.Errorf("database unavailable")
@@ -56,10 +59,10 @@ func (r *queryResolver) evidenceAccess(ctx context.Context, raw []string, first 
 	if err != nil {
 		return p, fmt.Errorf("database unavailable")
 	}
-	checks := r.RepoAccess.Check(ctx, user, p.ids, true)
+	p.checks = r.RepoAccess.Check(ctx, user, p.ids, true)
 	allowed := make([]int64, 0, len(p.ids))
 	for _, id := range p.ids {
-		d := checks[id]
+		d := p.checks[id]
 		if d.Allowed {
 			allowed = append(allowed, id)
 		}
@@ -83,18 +86,53 @@ func actor(id *int64, login, kind *string) *model.EvidenceActor {
 }
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
-func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first int, after *string) (*model.PullRequestEvidenceConnection, error) {
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first int, after *string, newestFirst bool) (*model.PullRequestEvidenceConnection, error) {
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	p, err := r.evidenceAccess(ctx, ids, first, after)
 	if err != nil {
 		return nil, err
 	}
+	pool := r.DemoPool
+	if r.Demo {
+		for _, id := range ids {
+			repo, err := r.Repository(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			if repo != nil {
+				repoID, _ := strconv.ParseInt(repo.ID, 10, 64)
+				p.ids = append(p.ids, repoID)
+			}
+		}
+	} else {
+		pool = r.RepoAccess.Pool
+	}
 	out := &model.PullRequestEvidenceConnection{Nodes: []*model.PullRequestEvidence{}, Withheld: p.withheld, RetryAt: p.retry}
 	if len(p.ids) == 0 {
 		return out, nil
 	}
-	rows, err := r.RepoAccess.Pool.Query(ctx, `SELECT source_id,repository_id,number,title,state,html_url,created_at,updated_at,closed_at,merged_at,author_id,author_login,author_type FROM activity_pull_requests WHERE repository_id=ANY($1) AND source_id>$2 ORDER BY source_id LIMIT $3`, p.ids, p.after, p.n+1)
+	// review_state (docs/metrics-definitions.md 5.7): qualifying reviews are the same as for the review backlog; each
+	// reviewer's latest APPROVED or CHANGES_REQUESTED decides; null while an open PR's review history has not converged.
+	paging := `p.source_id > $2 ORDER BY p.source_id`
+	if newestFirst {
+		paging = `($2 = 0 OR p.source_id < $2) ORDER BY p.source_id DESC`
+	}
+	rows, err := pool.Query(ctx, `SELECT p.source_id,p.repository_id,p.number,p.title,p.state,p.html_url,p.created_at,p.updated_at,p.closed_at,p.merged_at,p.author_id,p.author_login,p.author_type,
+	  CASE WHEN p.merged_at IS NOT NULL THEN 'merged' WHEN p.state <> 'open' THEN 'closed'
+	    WHEN NOT EXISTS (SELECT 1 FROM activity_children c WHERE c.repository_id=p.repository_id AND c.resource='reviews' AND c.parent_id=p.source_id AND c.watermark IS NOT NULL) THEN NULL
+	    WHEN 'CHANGES_REQUESTED' = ANY(d.latest) THEN 'changes_requested' WHEN 'APPROVED' = ANY(d.latest) THEN 'approved'
+	    WHEN d.reviewed THEN 'commented' ELSE 'awaiting_review' END
+	  FROM activity_pull_requests p
+	  CROSS JOIN LATERAL (
+	    SELECT EXISTS (SELECT 1 FROM activity_reviews r WHERE r.repository_id=p.repository_id AND r.pull_request_id=p.source_id AND r.submitted_at IS NOT NULL
+	        AND upper(r.state)<>'PENDING' AND r.author_id IS NOT NULL AND r.author_type<>'Bot' AND r.author_id IS DISTINCT FROM p.author_id) AS reviewed,
+	      ARRAY(SELECT DISTINCT ON (r.author_id) upper(r.state) FROM activity_reviews r
+	        WHERE r.repository_id=p.repository_id AND r.pull_request_id=p.source_id AND r.submitted_at IS NOT NULL AND upper(r.state) IN ('APPROVED','CHANGES_REQUESTED')
+	          AND r.author_id IS NOT NULL AND r.author_type<>'Bot' AND r.author_id IS DISTINCT FROM p.author_id
+	        ORDER BY r.author_id, r.submitted_at DESC, r.source_id DESC) AS latest
+	  ) d
+	  WHERE p.repository_id=ANY($1) AND `+paging+` LIMIT $3`, p.ids, p.after, p.n+1)
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
@@ -106,7 +144,8 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 		var title, state, url string
 		var created, updated time.Time
 		var closed, merged *time.Time
-		if err = rows.Scan(&id, &repo, &number, &title, &state, &url, &created, &updated, &closed, &merged, &aid, &login, &kind); err != nil {
+		var reviewState *string
+		if err = rows.Scan(&id, &repo, &number, &title, &state, &url, &created, &updated, &closed, &merged, &aid, &login, &kind, &reviewState); err != nil {
 			return nil, fmt.Errorf("database unavailable")
 		}
 		if len(out.Nodes) == p.n {
@@ -115,13 +154,13 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 		}
 		cursor := strconv.FormatInt(id, 10)
 		out.EndCursor = &cursor
-		out.Nodes = append(out.Nodes, &model.PullRequestEvidence{ID: cursor, RepositoryID: strconv.FormatInt(repo, 10), Number: int(number), Title: title, State: state, URL: url, CreatedAt: stamp(created), UpdatedAt: stamp(updated), ClosedAt: rfc3339(closed), MergedAt: rfc3339(merged), Author: actor(aid, login, kind)})
+		out.Nodes = append(out.Nodes, &model.PullRequestEvidence{ID: cursor, RepositoryID: strconv.FormatInt(repo, 10), Number: int(number), Title: title, State: state, URL: url, CreatedAt: stamp(created), UpdatedAt: stamp(updated), ClosedAt: rfc3339(closed), MergedAt: rfc3339(merged), Author: actor(aid, login, kind), ReviewState: reviewState})
 	}
 	if rows.Err() != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
 	rows.Close()
-	if !r.evidenceCurrent(ctx, p) {
+	if !r.Demo && !r.evidenceCurrent(ctx, p) {
 		out.Nodes = nil
 		out.Nodes = []*model.PullRequestEvidence{}
 		out.EndCursor = nil
@@ -131,7 +170,7 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 	return out, nil
 }
 func (r *queryResolver) reviews(ctx context.Context, ids []string, first int, after *string) (*model.ReviewEvidenceConnection, error) {
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	p, err := r.evidenceAccess(ctx, ids, first, after)
 	if err != nil {
@@ -176,7 +215,7 @@ func (r *queryResolver) reviews(ctx context.Context, ids []string, first int, af
 	return out, nil
 }
 func (r *queryResolver) comments(ctx context.Context, ids []string, first int, after *string) (*model.CommentEvidenceConnection, error) {
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	p, err := r.evidenceAccess(ctx, ids, first, after)
 	if err != nil {
@@ -222,7 +261,7 @@ func (r *queryResolver) comments(ctx context.Context, ids []string, first int, a
 }
 
 func (r *queryResolver) releases(ctx context.Context, ids []string, first int, after *string) (*model.ReleaseEvidenceConnection, error) {
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	p, err := r.evidenceAccess(ctx, ids, first, after)
 	if err != nil {
@@ -270,7 +309,7 @@ func (r *queryResolver) releases(ctx context.Context, ids []string, first int, a
 }
 
 func (r *queryResolver) issueEvents(ctx context.Context, ids []string, first int, after *string) (*model.IssueEventEvidenceConnection, error) {
-	ctx, cancel := platform.WithRequestDeadline(ctx)
+	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 	p, err := r.evidenceAccess(ctx, ids, first, after)
 	if err != nil {

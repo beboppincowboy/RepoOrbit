@@ -10,7 +10,7 @@ const (
 	maxPageSize        = 100  // largest allowed `first`
 	maxRepositoryIDs   = 100  // largest allowed `repositoryIds` list
 	maxQueryDepth      = 6    // nested selection levels
-	maxQueryComplexity = 1000 // gqlgen complexity budget
+	maxQueryComplexity = 1200 // gqlgen complexity budget; fits the workspace overview (25 contributors, 50 timeline entries, 90 days)
 )
 
 // pageLimit validates a `first` argument: 1..maxPageSize.

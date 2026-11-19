@@ -15,7 +15,7 @@ func TestActivityPages(t *testing.T) {
 		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
-			w.Header().Set("Link", `<?state=all&per_page=100&page=2>; rel="next"`)
+			w.Header().Set("Link", `</repositories/1183888342/pulls?state=all&per_page=100&page=2>; rel="next"`)
 			_, _ = w.Write([]byte(`[{"id":1,"number":2,"title":"PR","state":"closed","html_url":"url","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","merged_at":"2026-01-02T00:00:00Z","user":{"id":3,"login":"bot","type":"Bot"}}]`))
 		case strings.HasSuffix(r.URL.Path, "/reviews"):
 			_, _ = w.Write([]byte(`[{"id":4,"state":"PENDING","body":"private","html_url":"url","submitted_at":null,"user":{"id":3,"login":"bot","type":"Bot"}}]`))
