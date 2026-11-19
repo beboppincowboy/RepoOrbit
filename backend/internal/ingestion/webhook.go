@@ -31,9 +31,11 @@ type WebhookDeps struct {
 	Secret []byte
 	Clock  jobs.Clock // nil means wall time
 
-	// Test seams; nil means the real RequestMetadataRefresh and accessfence.InvalidateAccess.
+	// Test seams; nil means the real RequestMetadataRefresh, accessfence.InvalidateAccess and
+	// accessfence.InvalidateInstallationGrant.
 	refresh func(ctx context.Context, tx pgx.Tx, repoID int64) (bool, error)
 	bump    func(ctx context.Context, tx pgx.Tx, scope accessfence.Scope, subjectID int64) error
+	grant   func(ctx context.Context, tx pgx.Tx, installationID int64) error
 }
 
 // signalsActivity reports whether a delivery is a reconciliation signal for activity streams. Payload content is
@@ -67,6 +69,20 @@ type webhookPayload struct {
 	Sender struct {
 		ID int64 `json:"id"`
 	} `json:"sender"`
+	RepositoriesRemoved []json.RawMessage `json:"repositories_removed"` // installation_repositories only
+}
+
+// onlyGrantsAccess reports an installation or installation_repositories delivery that cannot end anyone's access:
+// installation created or unsuspended, or repositories added with none removed. Any other action, including unknown
+// ones, may revoke (fail closed).
+func onlyGrantsAccess(event string, p webhookPayload) bool {
+	switch event {
+	case "installation":
+		return p.Action == "created" || p.Action == "unsuspend"
+	case "installation_repositories":
+		return p.Action == "added" && len(p.RepositoriesRemoved) == 0
+	}
+	return false
 }
 
 // WebhookHandler serves POST /webhooks/github. Payloads are reconciliation signals only: the handler reads
@@ -74,7 +90,8 @@ type webhookPayload struct {
 //
 // Supported events: push, issues, pull_request, repository (edited, renamed, publicized, archived, unarchived)
 // schedule a metadata refresh for an already selected repository; repository (privatized, deleted, transferred),
-// installation and installation_repositories bump the access fence; github_app_authorization bumps that user's fence and also
+// installation and installation_repositories bump the access fence (an installation event that can only grant access
+// records no fallback draft-wipe targets, see onlyGrantsAccess); github_app_authorization bumps that user's fence and also
 // deletes their sessions and clears their stored tokens in the same transaction. Anything else that is validly signed is acknowledged without work.
 func WebhookHandler(d WebhookDeps) http.Handler {
 	if d.refresh == nil {
@@ -82,6 +99,9 @@ func WebhookHandler(d WebhookDeps) http.Handler {
 	}
 	if d.bump == nil {
 		d.bump = accessfence.InvalidateAccess
+	}
+	if d.grant == nil {
+		d.grant = accessfence.InvalidateInstallationGrant
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -227,7 +247,11 @@ func (d WebhookDeps) accept(ctx context.Context, id, event string, k whKind, p w
 			if p.Installation.ID <= 0 {
 				return errWebhookPayload{}
 			}
-			err = d.bump(ctx, tx, accessfence.ScopeInstallation, p.Installation.ID)
+			if onlyGrantsAccess(event, p) {
+				err = d.grant(ctx, tx, p.Installation.ID)
+			} else {
+				err = d.bump(ctx, tx, accessfence.ScopeInstallation, p.Installation.ID)
+			}
 		}
 		return err
 	})

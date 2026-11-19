@@ -22,7 +22,7 @@ FROM write_operations o JOIN users u ON u.id = o.user_id JOIN repositories r ON 
 
 -- name: MarkWriteOperationSent :execrows
 -- Moves a pending operation to 'unknown' and stamps sent_at, just before its request is sent. 0 rows: it is no longer
--- pending (FailStalePendingCreate failed it), and nothing may be sent.
+-- pending (FailStalePendingCreate failed it), and nothing may be sent; the caller answers with the row as it stands.
 UPDATE write_operations SET state = 'unknown', sent_at = now(), updated_at = now() WHERE id = $1 AND state = 'pending';
 
 -- name: FinishWriteOperation :execrows
@@ -36,11 +36,17 @@ WHERE id = $1 AND state = 'unknown';
 -- The unresolved create of the same content that blocks a new create under a fresh key.
 SELECT id FROM write_operations WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND state IN ('pending', 'unknown') AND content_hash = $3 ORDER BY id LIMIT 1;
 
+-- name: FindLatestCreate :one
+-- The user's most recent create of the same content in this repository, in any state: what a create that collided
+-- with a blocker which resolved before it could be found names instead.
+SELECT id FROM write_operations WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND content_hash = $3 ORDER BY id DESC LIMIT 1;
+
 -- name: FailStalePendingCreate :execrows
 -- A create still pending a minute after it was recorded was never sent: marking it sent (MarkWriteOperationSent,
 -- conditional on 'pending') precedes the request, so a process that stopped in between sent nothing. Failing it frees
 -- the content for a retry; should the original process resume, its mark finds no pending row and it sends nothing.
--- Run by a new create that collided with that pending create; the threshold is the literal '1 minute' below.
+-- Run by a new create that collided with that pending create; the threshold is the literal '1 minute' below. Only a
+-- non-zero count (this call failed a never-sent create) lets that new create retry its insert.
 UPDATE write_operations SET state = 'failed', outcome = '{"error":"abandoned before sending; nothing was sent to GitHub"}', updated_at = now()
 WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND state = 'pending' AND content_hash = $3 AND created_at < now() - interval '1 minute';
 

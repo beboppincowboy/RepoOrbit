@@ -282,3 +282,38 @@ func TestCleanupInvalidationSurvivesWorkerRestart(t *testing.T) {
 		})
 	}
 }
+
+// The fallback draft wipe is a cleanup effect like any other: a worker that lost its claim wipes nothing and leaves
+// wipe_users for the worker that reclaimed the job.
+func TestCleanupFallbackWipeNeedsTheClaim(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO repositories(id,name,description,is_private) VALUES(70,'a/b','',true);
+INSERT INTO users(id,github_id,login,access_token_enc) VALUES(5,5,'u','\x00');
+INSERT INTO installations(user_id,installation_id,account_login) VALUES(5,3,'o');
+INSERT INTO write_operations(user_id,repository_id,idempotency_key,kind,request_hash,draft,state) VALUES (5,70,'k','create','\x00','{"title":"t"}','failed')`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeInstallation, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	e.deps.Inventory = &inventories{err: errors.New("github app: invalid or suspended installation")}
+	e.deps.AppKey = &rsa.PrivateKey{}
+	if err := e.deps.CleanupPrivate(ctx, jobs.Job{Key: "repo:70"}, lostFence{}); !errors.Is(err, jobs.ErrLostClaim) {
+		t.Fatalf("lost claim: %v", err)
+	}
+	var drafts, targets int
+	if err := e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM write_operations WHERE draft IS NOT NULL), (SELECT cardinality(wipe_users) FROM activity_cleanup WHERE repository_id=70)`).Scan(&drafts, &targets); err != nil {
+		t.Fatal(err)
+	}
+	if drafts != 1 || targets != 1 {
+		t.Fatalf("after a lost claim: %d drafts, %d wipe targets", drafts, targets)
+	}
+}

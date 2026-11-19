@@ -105,8 +105,8 @@ type issueView struct {
 // outcome is what GitHub actually did. Unapplied lists requested changes the confirmed issue does not show, each as
 // "add label X", "remove label X", "add assignee X", "remove assignee X" or "state open|closed" (or one fixed
 // sentence when a wiped create's labels and assignees cannot be verified). AllStepsAnswered (updates only) means every
-// step that was sent got a definite answer (2xx or 4xx), so nothing of the update can still land and a recheck may
-// fail it. Once the draft is wiped the stored outcome is redacted instead, by SQL redacted_write_outcome, to
+// step got a definite answer (2xx, 4xx, or failed before it was sent), so nothing of the update can still land and a
+// recheck may fail it. Once the draft is wiped the stored outcome is redacted instead, by SQL redacted_write_outcome, to
 // {issue: {number, url, state}, unappliedCount, error, redacted: true}; clients must accept both shapes.
 type outcome struct {
 	Issue            *issueView `json:"issue,omitempty"`
@@ -346,19 +346,24 @@ func (s *Service) token(w http.ResponseWriter, ctx context.Context, userID int64
 
 // upstream answers a failed pre-flight GitHub read (nothing was written): 401 revokes the actor, anything else is 503.
 func (s *Service) upstream(w http.ResponseWriter, ctx context.Context, userID int64, err error) {
-	var api *githubapp.APIError
-	if errors.As(err, &api) && api.Unauthorized() {
-		s.revoke(ctx, userID)
+	if s.revokeIfUnauthorized(ctx, userID, err) {
 		http.Error(w, "sign in required", http.StatusUnauthorized)
 		return
 	}
 	http.Error(w, "GitHub could not be reached; nothing was sent", http.StatusServiceUnavailable)
 }
 
-func (s *Service) revoke(ctx context.Context, userID int64) {
+// revokeIfUnauthorized revokes the actor's GitHub authorization when err is GitHub's 401 and reports whether it was.
+// The revocation takes its own pool connection, so never call it inside a transaction.
+func (s *Service) revokeIfUnauthorized(ctx context.Context, userID int64, err error) bool {
+	var api *githubapp.APIError
+	if !errors.As(err, &api) || !api.Unauthorized() {
+		return false
+	}
 	if err := s.Access.TokenSource.Revoke(ctx, userID); err != nil {
 		log.Printf("issues: revoke failed: %v", err)
 	}
+	return true
 }
 
 func (s *Service) view(row db.GetWriteOperationRow) opView {
@@ -558,7 +563,8 @@ func (s *Service) replay(w http.ResponseWriter, ctx context.Context, userID int6
 var errAccessMoved = errors.New("access changed")
 
 // submit records and sends one command: validate access and permission, record the operation as pending, mark it
-// unknown, send it with the actor's token, then record what GitHub confirmed.
+// unknown, send it with the actor's token, then record what GitHub confirmed. An operation that is no longer pending
+// when it is marked (a stale-pending recovery failed it) is sent nowhere and answered as a replay.
 func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 	ctx := r.Context()
 	userID, ok := auth.SignedInUserID(ctx)
@@ -651,9 +657,10 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 			return err
 		})
 	}
-	// An unresolved create of the same content blocks the insert: a second one could duplicate the issue. A blocker
-	// that is a stale, never-sent pending create is failed, and one that resolved meanwhile no longer blocks; either way
-	// the insert is retried once.
+	// An unresolved create of the same content blocks the insert: a second one could duplicate the issue. Only a
+	// blocker this request itself fails as a stale, never-sent pending create frees the content for one retry. Any other
+	// blocker may have been sent, and may have succeeded even if it no longer blocks, so nothing is resent: the answer
+	// is 409 naming the unresolved create, else the latest create of the same content, else 503.
 	for attempt := 0; ; attempt++ {
 		err = insert()
 		var pgErr *pgconn.PgError
@@ -661,22 +668,31 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 			break
 		}
 		unresolved := db.FindUnresolvedCreateParams{UserID: userID, RepositoryID: repoID, ContentHash: c.contentHash}
-		if _, err := s.Queries.FailStalePendingCreate(ctx, db.FailStalePendingCreateParams(unresolved)); err != nil {
-			s.internal(w, err)
-			return
+		if attempt == 0 {
+			n, err := s.Queries.FailStalePendingCreate(ctx, db.FailStalePendingCreateParams(unresolved))
+			if err != nil {
+				s.internal(w, err)
+				return
+			}
+			if n > 0 {
+				continue
+			}
 		}
+		msg := "an earlier create of this issue is still unresolved; recheck it instead of resubmitting"
 		prior, err := s.Queries.FindUnresolvedCreate(ctx, unresolved)
+		if errors.Is(err, pgx.ErrNoRows) {
+			msg = "an earlier create of this issue was resolved while submitting; nothing was sent: check it before resubmitting"
+			prior, err = s.Queries.FindLatestCreate(ctx, db.FindLatestCreateParams(unresolved))
+		}
 		switch {
 		case err == nil:
-			writeJSON(w, http.StatusConflict, map[string]any{"error": "an earlier create of this issue is still unresolved; recheck it instead of resubmitting", "operationId": prior})
-			return
-		case !errors.Is(err, pgx.ErrNoRows):
-			s.internal(w, err)
-			return
-		case attempt == 1:
+			writeJSON(w, http.StatusConflict, map[string]any{"error": msg, "operationId": prior})
+		case errors.Is(err, pgx.ErrNoRows):
 			http.Error(w, "an earlier create of this issue changed while submitting; nothing was sent, retry", http.StatusServiceUnavailable)
-			return
+		default:
+			s.internal(w, err)
 		}
+		return
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows): // the same key was recorded concurrently
@@ -692,8 +708,11 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 		return
 	}
 	// From here the request may reach GitHub: the row says unknown first, so a crash can never read as "not sent".
-	if n, err := s.Queries.MarkWriteOperationSent(ctx, opID); err != nil || n != 1 {
-		s.internal(w, fmt.Errorf("mark sent: %v", err))
+	if n, err := s.Queries.MarkWriteOperationSent(ctx, opID); err != nil {
+		s.internal(w, fmt.Errorf("mark sent: %w", err))
+		return
+	} else if n == 0 { // no longer pending: a stale-pending recovery failed it first, so nothing is sent
+		s.respond(w, ctx, http.StatusOK, userID, opID, snap)
 		return
 	}
 	ctx = context.WithoutCancel(ctx) // a client disconnect must not abandon the call or its recorded outcome
@@ -705,10 +724,13 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 	} else {
 		u := c.draft.(*updateDraft)
 		sent := s.applyUpdate(ctx, userID, token, d.Repo.FullName, c.issueNumber, u)
+		var readErr error
 		err = s.finish(ctx, opID, repoID, snap, c.issueNumber, false, func() (string, outcome, *githubapp.Issue, error) {
-			state, out, confirmed := s.readBack(ctx, userID, token, d.Repo.FullName, c.issueNumber, u, sent)
+			state, out, confirmed, fetchErr := s.readBack(ctx, token, d.Repo.FullName, c.issueNumber, u, sent)
+			readErr = fetchErr
 			return state, out, confirmed, nil
 		})
+		s.revokeIfUnauthorized(ctx, userID, readErr) // only now: finish's transaction has released its connection
 	}
 	if err != nil {
 		s.internal(w, err)
@@ -717,13 +739,15 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 	s.respond(w, ctx, http.StatusCreated, userID, opID, snap)
 }
 
-// classify maps a failed write: a 4xx is a definite rejection (failed), anything else may have been applied (unknown).
-func (s *Service) classify(ctx context.Context, userID int64, err error) (string, string) {
+// classify maps a failed write to an operation state and summary: an error raised before sending
+// (githubapp.ErrNotSent) or a 4xx is definite (failed); anything else may have been applied (unknown). It has no side
+// effects; callers revoke a 401 themselves (revokeIfUnauthorized).
+func classify(err error) (string, string) {
+	if errors.Is(err, githubapp.ErrNotSent) {
+		return "failed", "the request could not be prepared; nothing was sent to GitHub"
+	}
 	var api *githubapp.APIError
 	if errors.As(err, &api) && api.Status >= 400 && api.Status < 500 {
-		if api.Unauthorized() {
-			s.revoke(ctx, userID)
-		}
 		return "failed", fmt.Sprintf("GitHub rejected the request (status %d)", api.Status)
 	}
 	if api != nil {
@@ -783,7 +807,8 @@ func resolved(out outcome) string {
 func (s *Service) sendCreate(ctx context.Context, userID int64, token, fullName string, d *createDraft) (string, outcome, *githubapp.Issue) {
 	issue, err := s.GitHub.CreateIssue(ctx, token, fullName, githubapp.NewIssue{Title: d.Title, Body: d.Body, Labels: d.Labels, Assignees: d.Assignees})
 	if err != nil {
-		state, msg := s.classify(ctx, userID, err)
+		s.revokeIfUnauthorized(ctx, userID, err)
+		state, msg := classify(err)
 		return state, outcome{Error: msg}, nil
 	}
 	out := outcome{Issue: viewIssue(issue)}
@@ -813,9 +838,10 @@ func (s *Service) applyUpdate(ctx context.Context, userID int64, token, fullName
 	out := outcome{AllStepsAnswered: true}
 	for _, step := range steps {
 		if err := step(); err != nil {
+			s.revokeIfUnauthorized(ctx, userID, err)
 			var state string
-			state, out.Error = s.classify(ctx, userID, err)
-			out.AllStepsAnswered = state == "failed" // a definite rejection; an ambiguous step may still land
+			state, out.Error = classify(err)
+			out.AllStepsAnswered = state == "failed" // rejected or never sent; an ambiguous step may still land
 			break
 		}
 	}
@@ -824,25 +850,26 @@ func (s *Service) applyUpdate(ctx context.Context, userID int64, token, fullName
 
 // readBack reads the issue after applyUpdate: the outcome is whatever the read shows. A step without a reliable answer
 // may still land after the read, so the operation then stays unknown unless the read already shows every change;
-// without a readable result it stays unknown too.
-func (s *Service) readBack(ctx context.Context, userID int64, token, fullName string, number int64, d *updateDraft, out outcome) (string, outcome, *githubapp.Issue) {
+// without a readable result it stays unknown too, and the read's error is returned for the caller to act on (a 401
+// revokes the actor) once outside finish's transaction. It touches no database.
+func (s *Service) readBack(ctx context.Context, token, fullName string, number int64, d *updateDraft, out outcome) (string, outcome, *githubapp.Issue, error) {
 	issue, err := s.GitHub.FetchIssue(ctx, token, fullName, number)
 	if err != nil {
-		_, msg := s.classify(ctx, userID, err)
+		_, msg := classify(err)
 		out.Error = strings.TrimSpace(out.Error + " Reading the result failed: " + msg)
-		return "unknown", out, nil
+		return "unknown", out, nil, err
 	}
 	out.Issue = viewIssue(issue)
 	out.Unapplied = unapplied(out.Issue, d.Labels, d.Assignees, d.State)
 	if len(out.Unapplied) > 0 && !out.AllStepsAnswered {
-		return "unknown", out, &issue
+		return "unknown", out, &issue, nil
 	}
-	return resolved(out), out, &issue
+	return resolved(out), out, &issue, nil
 }
 
 var errAlreadyLinked = errors.New("issue already linked to another operation")
 
-var errAnswered = errors.New("already answered") // a finish read that wrote the HTTP response itself
+var errMismatch = errors.New("not confirmed") // a recheck read that found nothing to confirm: answer 409, record nothing
 
 // finish records the outcome of an unknown operation, as read supplies it inside the transaction, and, when the access
 // fence still holds, projects the confirmed issue locally. link records a create's issue number. With lock (an issue
@@ -850,7 +877,10 @@ var errAnswered = errors.New("already answered") // a finish read that wrote the
 // projections happen one at a time: the later readback is projected last and may replace a stored copy with the same
 // updated_at (GitHub's timestamps have one-second resolution). Without the lock a tie never replaces. The fence rows
 // are locked before the operation row, the order accessfence.InvalidateAccess takes them in, so the two cannot
-// deadlock. An unknown outcome with a confirmed read is recorded without projecting it.
+// deadlock. An unknown outcome with a confirmed read is recorded without projecting it. read runs while the
+// transaction holds a pool connection: it may call GitHub and compute, but must not use the pool (no queries, no
+// revocation) or write the HTTP response; an error it returns aborts the transaction and is returned as is, and the
+// caller acts on it after finish returns.
 // ponytail: a locked finish holds one pool connection while GitHub answers its readback; lock waiters give up after
 // 10s (the operation stays unknown and a recheck resolves it), so a crowded issue cannot exhaust the pool for good.
 func (s *Service) finish(ctx context.Context, opID, repoID int64, snap accessfence.Snapshot, lock int64, link bool, read func() (string, outcome, *githubapp.Issue, error)) error {
@@ -944,17 +974,18 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, s.view(row))
 		}
 	}
-	// The read runs under the issue's lock (see finish); any answer it writes itself ends the recheck unrecorded.
+	// The read runs under the issue's lock (see finish); it only decides, and the answer is written after finish
+	// returned. errMismatch, or a failed GitHub read (fetchErr), ends the recheck unrecorded.
+	var fetchErr error
 	err := s.finish(context.WithoutCancel(ctx), row.ID, row.RepositoryID, snap, number, row.Kind == "create", func() (string, outcome, *githubapp.Issue, error) {
 		issue, err := s.GitHub.FetchIssue(ctx, token, d.Repo.FullName, number)
 		var api *githubapp.APIError
 		switch {
 		case errors.As(err, &api) && api.NotFound():
-			mismatch()
-			return "", outcome{}, nil, errAnswered
+			return "", outcome{}, nil, errMismatch
 		case err != nil:
-			s.upstream(w, ctx, userID, err)
-			return "", outcome{}, nil, errAnswered
+			fetchErr = err
+			return "", outcome{}, nil, err
 		}
 		var out outcome
 		out.Issue = viewIssue(issue)
@@ -963,8 +994,7 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 				!strings.EqualFold(issue.RepoURL, s.GitHub.APIURL+"/repos/"+d.Repo.FullName) ||
 				!bytes.Equal(contentHash(issue.Title, issue.Body), row.ContentHash) ||
 				!row.SentAt.Valid || issue.CreatedAt.Before(row.SentAt.Time.Add(-sendSkew)) {
-				mismatch()
-				return "", outcome{}, nil, errAnswered
+				return "", outcome{}, nil, errMismatch
 			}
 			var draft createDraft
 			switch {
@@ -980,22 +1010,21 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 			var draft updateDraft
 			var sent outcome
 			if row.Draft == nil || json.Unmarshal(row.Draft, &draft) != nil || json.Unmarshal(row.Outcome, &sent) != nil {
-				mismatch() // nothing left to verify against
-				return "", outcome{}, nil, errAnswered
+				return "", outcome{}, nil, errMismatch // nothing left to verify against
 			}
 			out.Unapplied = unapplied(out.Issue, draft.Labels, draft.Assignees, draft.State)
 			if len(out.Unapplied) > 0 && !sent.AllStepsAnswered {
-				mismatch() // not visible yet, and the original request may still land
-				return "", outcome{}, nil, errAnswered
+				return "", outcome{}, nil, errMismatch // not visible yet, and the original request may still land
 			}
 			out.Error, out.AllStepsAnswered = sent.Error, sent.AllStepsAnswered
 		}
 		return resolved(out), out, &issue, nil
 	})
 	switch {
-	case errors.Is(err, errAnswered):
+	case fetchErr != nil:
+		s.upstream(w, ctx, userID, fetchErr)
 		return
-	case errors.Is(err, errAlreadyLinked):
+	case errors.Is(err, errMismatch), errors.Is(err, errAlreadyLinked):
 		mismatch()
 		return
 	case err != nil:

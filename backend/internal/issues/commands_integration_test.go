@@ -1141,3 +1141,175 @@ func TestLaterReadbackWinsSameSecondProjection(t *testing.T) {
 		t.Fatalf("projected labels %v (%v): an older readback overwrote a newer one", got, err)
 	}
 }
+
+// A blocker that resolves between the conflicting insert and its lookup may have been sent and may have succeeded:
+// the new create is refused (409 naming it), never resent.
+func TestBlockerResolvingDuringConflictIsNotResent(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	ctx := context.Background()
+	sum := sha256.Sum256([]byte("Stuck\x00body"))
+	var blocker int64
+	if err := e.pool.QueryRow(ctx, `INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, content_hash, draft, state, created_at)
+		VALUES ($1, $2, 'blocker', 'create', '\x00', $3, '{"title":"Stuck","body":"body"}', 'pending', now() - interval '2 minutes') RETURNING id`, alice.id, repo, sum[:]).Scan(&blocker); err != nil {
+		t.Fatal(err)
+	}
+	// Row-lock the blocker: the new insert still conflicts at once, but its stale-pending recovery waits on the lock.
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM write_operations WHERE id = $1 FOR UPDATE`, blocker); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan *http.Response, 1)
+	go func() {
+		done <- alice.do("POST", create(repo), `{"title":"Stuck","body":"body"}`, map[string]string{"Origin": appURL, "X-CSRF-Token": alice.csrf, "Content-Type": "application/json", "Idempotency-Key": "late-1"})
+	}()
+	waited := false
+	for deadline := time.Now().Add(5 * time.Second); !waited && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		waited = e.count(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`) > 0
+	}
+	if !waited {
+		t.Fatal("the conflicting create never waited on the blocker")
+	}
+	// The blocker was sent after all, and succeeded.
+	issue := seedIssue(1, "alice", "Stuck")
+	issue.Body = "body"
+	e.gh.SetIssues(repo, issue)
+	if _, err := tx.Exec(ctx, `UPDATE write_operations SET state = 'succeeded', sent_at = now(), issue_number = 1 WHERE id = $1`, blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	resp := <-done
+	var conflict struct{ OperationID int64 }
+	if err := json.Unmarshal(alice.body(resp), &conflict); resp.StatusCode != http.StatusConflict || err != nil || conflict.OperationID != blocker {
+		t.Fatalf("create racing a resolving blocker: %d %+v %v", resp.StatusCode, conflict, err)
+	}
+	if n := len(e.gh.Issues(repo)); n != 1 {
+		t.Fatalf("issues on GitHub: %d", n)
+	}
+}
+
+// singleConnection rewires the API onto a pool of one connection, so any request that needs a second connection
+// while it holds one never completes.
+func (e *env) singleConnection() {
+	e.t.Helper()
+	cfg := e.pool.Config()
+	cfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.t.Cleanup(pool.Close)
+	q := db.New(pool)
+	authSvc := &auth.Service{Pool: pool, Queries: q, GitHub: e.client, Key: bytes.Repeat([]byte{1}, 32)}
+	repos := &repositories.Service{Queries: q, Pool: pool, GitHub: e.client, TokenSource: authSvc, TTL: time.Nanosecond, AppURL: appURL}
+	svc := &issues.Service{Pool: pool, Queries: q, GitHub: e.client, Access: repos, GitHubURL: e.issues.GitHubURL}
+	api := http.NewServeMux()
+	api.Handle("/api/", repos.Routes())
+	svc.Register(api)
+	e.srv.Config.Handler = (&auth.Handler{Service: authSvc, AppURL: appURL}).Protect(api)
+}
+
+func within(t *testing.T, d time.Duration, f func() *http.Response) *http.Response {
+	t.Helper()
+	done := make(chan *http.Response, 1)
+	go func() { done <- f() }()
+	select {
+	case resp := <-done:
+		return resp
+	case <-time.After(d):
+		t.Fatal("request hung: it waits for a second pool connection while holding one")
+		return nil
+	}
+}
+
+// A readback answered 401 revokes the actor only after the locked transaction released its connection.
+func TestReadbackUnauthorizedDoesNotStarvePool(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetIssues(repo, seedIssue(1, "alice", "Existing"))
+	e.singleConnection()
+	var reads atomic.Int32
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/1") && reads.Add(1) == 2 { // the readback
+			http.Error(w, "bad credentials", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+	resp := within(t, 10*time.Second, func() *http.Response {
+		r, _ := alice.send(changes(repo, 1), "ro-1", `{"labels":{"add":["a"]}}`)
+		return r
+	})
+	if resp.StatusCode != http.StatusServiceUnavailable { // the revocation moved the actor's fence: the operation is withheld
+		t.Fatalf("status %d %s", resp.StatusCode, alice.body(resp))
+	}
+	if n := e.count(`SELECT count(*) FROM sessions WHERE user_id = $1`, alice.id); n != 0 {
+		t.Fatalf("a 401 readback must revoke the actor: %d sessions left", n)
+	}
+	if n := e.count(`SELECT count(*) FROM write_operations WHERE state = 'unknown'`); n != 1 {
+		t.Fatalf("unreadable result must stay unknown: %d", n)
+	}
+}
+
+// A recheck that cannot confirm answers its 409 after the locked transaction released its connection.
+func TestRecheckMismatchDoesNotStarvePool(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.singleConnection()
+	e.gh.SetIssueWriteFault(fake.IssueWriteFault{Status: http.StatusBadGateway})
+	_, op := alice.send(create(repo), "mm-1", `{"title":"Ship it"}`)
+	e.gh.SetIssueWriteFault(fake.IssueWriteFault{})
+	if op.State != "unknown" {
+		t.Fatalf("setup: %+v", op)
+	}
+	resp := within(t, 10*time.Second, func() *http.Response {
+		r, _ := alice.send(opPath(op.ID)+"/recheck", "", `{"issueNumber":99}`)
+		return r
+	})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status %d %s", resp.StatusCode, alice.body(resp))
+	}
+}
+
+// A create that fails before anything is sent (here GitHub reports a full name the client cannot address) is failed,
+// not unknown: nothing can have been applied.
+func TestPreSendCreateErrorIsFailed(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "a/b", false)
+	resp, op := alice.send(create(repo), "pre-1", `{"title":"Ship it"}`)
+	if resp.StatusCode != http.StatusCreated || op.State != "failed" || op.Outcome.Error == "" {
+		t.Fatalf("status %d %+v %s", resp.StatusCode, op, alice.body(resp))
+	}
+	if n := len(e.gh.WriteTokens()); n != 0 {
+		t.Fatalf("writes sent: %d", n)
+	}
+}
+
+// An operation that stops being pending before it is marked sent (a concurrent stale-pending recovery failed it) is
+// answered as a replay, and nothing is sent.
+func TestLostSendClaimAnswersRecordedOperation(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	if _, err := e.pool.Exec(context.Background(), `CREATE FUNCTION test_fail_new_op() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.state := 'failed'; RETURN NEW; END $$;
+		CREATE TRIGGER test_fail_new_op BEFORE INSERT ON write_operations FOR EACH ROW EXECUTE FUNCTION test_fail_new_op()`); err != nil {
+		t.Fatal(err)
+	}
+	resp, op := alice.send(create(repo), "claim-1", `{"title":"Ship it"}`)
+	if resp.StatusCode != http.StatusOK || op.State != "failed" || op.ID == 0 {
+		t.Fatalf("status %d %+v %s", resp.StatusCode, op, alice.body(resp))
+	}
+	if n := len(e.gh.WriteTokens()); n != 0 {
+		t.Fatalf("writes sent: %d", n)
+	}
+}
