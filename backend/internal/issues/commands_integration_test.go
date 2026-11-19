@@ -1,0 +1,655 @@
+//go:build integration
+
+package issues_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
+	"github.com/repoorbit/repoorbit/backend/internal/auth"
+	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
+	"github.com/repoorbit/repoorbit/backend/internal/githubapp/fake"
+	"github.com/repoorbit/repoorbit/backend/internal/issues"
+	"github.com/repoorbit/repoorbit/backend/internal/repositories"
+	"github.com/repoorbit/repoorbit/backend/internal/testutil"
+)
+
+const appURL = "http://app.test"
+
+type env struct {
+	t      *testing.T
+	pool   *pgxpool.Pool
+	gh     *fake.Server
+	client *githubapp.Client
+	issues *issues.Service
+	srv    *httptest.Server
+}
+
+// setup wires the real auth middleware, repository API and issue commands to a migrated database and a fake GitHub,
+// the way cmd/api does.
+func setup(t *testing.T) *env {
+	t.Helper()
+	_, pool := testutil.Database(t)
+	gh := fake.New("cid", "secret")
+	ghSrv := httptest.NewServer(gh.Handler())
+	t.Cleanup(ghSrv.Close)
+	client := githubapp.New("cid", "secret", ghSrv.URL, ghSrv.URL, appURL+"/auth/github/callback")
+	q := db.New(pool)
+	authSvc := &auth.Service{Pool: pool, Queries: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
+	repos := &repositories.Service{Queries: q, Pool: pool, GitHub: client, TokenSource: authSvc, TTL: time.Nanosecond, AppURL: appURL}
+	svc := &issues.Service{Pool: pool, Queries: q, GitHub: client, Access: repos, GitHubURL: "https://github.test"}
+	h := &auth.Handler{Service: authSvc, AppURL: appURL}
+	api := http.NewServeMux()
+	api.Handle("/api/", repos.Routes())
+	svc.Register(api)
+	mux := http.NewServeMux()
+	mux.Handle("/auth/", h.Routes())
+	mux.Handle("/api/", h.Protect(api))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return &env{t: t, pool: pool, gh: gh, client: client, issues: svc, srv: srv}
+}
+
+// repo creates a repository on the fake GitHub and its local row (as a selection would).
+func (e *env) repo(owner, name string, private bool) int64 {
+	e.t.Helper()
+	id := e.gh.AddRepo(owner, name, private)
+	if _, err := e.pool.Exec(context.Background(), `INSERT INTO repositories (id, name, description, is_private) VALUES ($1, $2, '', $3)`, id, owner+"/"+name, private); err != nil {
+		e.t.Fatal(err)
+	}
+	return id
+}
+
+func (e *env) count(sql string, args ...any) int {
+	e.t.Helper()
+	var n int
+	if err := e.pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
+		e.t.Fatal(err)
+	}
+	return n
+}
+
+// noInstallationAuthority fails if any issue write carried something other than a user token.
+func (e *env) noInstallationAuthority() {
+	e.t.Helper()
+	for _, tok := range e.gh.WriteTokens() {
+		if !strings.HasPrefix(tok, "ghu_") {
+			e.t.Fatalf("issue write used non-user authority %q", tok)
+		}
+	}
+	for _, path := range []string{"/app/installations", "/installation/repositories"} {
+		if n := e.gh.Hits(path); n != 0 {
+			e.t.Fatalf("installation authority consulted: %s hit %d times", path, n)
+		}
+	}
+}
+
+type user struct {
+	e      *env
+	client *http.Client
+	csrf   string
+	id     int64
+	login  string
+}
+
+var noRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+func (e *env) signIn(login string) *user {
+	e.t.Helper()
+	jar, _ := cookiejar.New(nil)
+	u := &user{e: e, login: login, client: &http.Client{Jar: jar, CheckRedirect: noRedirect}}
+	resp := u.do("GET", "/auth/github/login", "", nil)
+	loc, _ := url.Parse(resp.Header.Get("Location"))
+	q := loc.Query()
+	q.Set("as", login)
+	loc.RawQuery = q.Encode()
+	gh, err := (&http.Client{CheckRedirect: noRedirect}).Get(loc.String())
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	gh.Body.Close()
+	cb, _ := url.Parse(gh.Header.Get("Location"))
+	if r := u.do("GET", cb.Path+"?"+cb.RawQuery, "", nil); r.StatusCode != 302 {
+		e.t.Fatalf("sign in as %s: %d", login, r.StatusCode)
+	}
+	var me struct{ CSRFToken string }
+	if err := json.Unmarshal(u.body(u.do("GET", "/auth/me", "", nil)), &me); err != nil {
+		e.t.Fatal(err)
+	}
+	u.csrf = me.CSRFToken
+	if err := e.pool.QueryRow(context.Background(), "SELECT id FROM users WHERE login = $1", login).Scan(&u.id); err != nil {
+		e.t.Fatal(err)
+	}
+	return u
+}
+
+func (u *user) do(method, path, body string, headers map[string]string) *http.Response {
+	u.e.t.Helper()
+	req, _ := http.NewRequest(method, u.e.srv.URL+path, strings.NewReader(body))
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := u.client.Do(req)
+	if err != nil {
+		u.e.t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(b))
+	return resp
+}
+
+func (u *user) githubID() int64 {
+	var id int64
+	if err := u.e.pool.QueryRow(context.Background(), "SELECT github_id FROM users WHERE id = $1", u.id).Scan(&id); err != nil {
+		u.e.t.Fatal(err)
+	}
+	return id
+}
+
+func (u *user) body(resp *http.Response) []byte { b, _ := io.ReadAll(resp.Body); return b }
+
+// send is a well-formed state-changing request: same origin, CSRF token, and (when key != "") an idempotency key.
+func (u *user) send(path, key, body string) (*http.Response, operation) {
+	u.e.t.Helper()
+	headers := map[string]string{"Origin": appURL, "X-CSRF-Token": u.csrf, "Content-Type": "application/json"}
+	if key != "" {
+		headers["Idempotency-Key"] = key
+	}
+	resp := u.do("POST", path, body, headers)
+	return resp, decodeOp(u.e.t, resp)
+}
+
+func (u *user) get(path string) (*http.Response, operation) {
+	u.e.t.Helper()
+	resp := u.do("GET", path, "", nil)
+	return resp, decodeOp(u.e.t, resp)
+}
+
+type issueView struct {
+	Number    int64    `json:"number"`
+	URL       string   `json:"url"`
+	Title     string   `json:"title"`
+	State     string   `json:"state"`
+	Labels    []string `json:"labels"`
+	Assignees []string `json:"assignees"`
+}
+
+type operation struct {
+	ID          int64           `json:"id"`
+	Kind        string          `json:"kind"`
+	State       string          `json:"state"`
+	IssueNumber *int64          `json:"issueNumber"`
+	Draft       json.RawMessage `json:"draft"`
+	Actor       string          `json:"actor"`
+	SearchURL   string          `json:"searchUrl"`
+	Outcome     struct {
+		Issue     *issueView `json:"issue"`
+		Unapplied []string   `json:"unapplied"`
+		Error     string     `json:"error"`
+	} `json:"outcome"`
+}
+
+func decodeOp(t *testing.T, resp *http.Response) operation {
+	t.Helper()
+	var op operation
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body = io.NopCloser(bytes.NewReader(b))
+	if strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+		if err := json.Unmarshal(b, &op); err != nil {
+			t.Fatalf("decode %s: %v", b, err)
+		}
+	}
+	return op
+}
+
+func create(repoID int64) string { return fmt.Sprintf("/api/repositories/%d/issues", repoID) }
+func changes(repoID, number int64) string {
+	return fmt.Sprintf("/api/repositories/%d/issues/%d/changes", repoID, number)
+}
+func opPath(id int64) string { return fmt.Sprintf("/api/write-operations/%d", id) }
+
+func names[T any](items []T, name func(T) string) []string {
+	out := []string{}
+	for _, it := range items {
+		out = append(out, name(it))
+	}
+	slices.Sort(out)
+	return out
+}
+
+func labelNames(issue fake.IssueFixture) []string {
+	return names(issue.Labels, func(l fake.IssueLabel) string { return l.Name })
+}
+func assigneeNames(issue fake.IssueFixture) []string {
+	return names(issue.Assignees, func(a fake.IssueActor) string { return a.Login })
+}
+
+func seedIssue(number int64, author string, title string) fake.IssueFixture {
+	now := time.Now().UTC().Add(-time.Hour)
+	return fake.IssueFixture{ID: 900000 + number, Number: number, Title: title, State: "open", HTMLURL: fmt.Sprintf("https://github.com/x/y/issues/%d", number),
+		CreatedAt: now, UpdatedAt: now, User: fake.IssueActor{ID: 5, Login: author, Type: "User"}}
+}
+
+// Covers AE4: an eligible teammate is on the returned GitHub issue and in the local projection.
+func TestCreateAssignsEligibleTeammate(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetPermission("bob", repo, "write")
+
+	resp, op := alice.send(create(repo), "create-1", `{"title":"Ship it","body":"details","labels":["task"],"assignees":["bob"]}`)
+	if resp.StatusCode != http.StatusCreated || op.State != "succeeded" || op.Kind != "create" || op.IssueNumber == nil || op.Actor != "alice" {
+		t.Fatalf("status=%d op=%+v body=%s", resp.StatusCode, op, alice.body(resp))
+	}
+	if op.Outcome.Issue == nil || !slices.Equal(op.Outcome.Issue.Assignees, []string{"bob"}) || !slices.Equal(op.Outcome.Issue.Labels, []string{"task"}) {
+		t.Fatalf("outcome lacks confirmed assignee: %+v", op.Outcome)
+	}
+	remote := e.gh.Issues(repo)
+	if len(remote) != 1 || remote[0].User.Login != "alice" || !slices.Equal(assigneeNames(remote[0]), []string{"bob"}) {
+		t.Fatalf("remote issues: %+v", remote)
+	}
+	if n := e.count(`SELECT count(*) FROM activity_issues i JOIN activity_issue_assignees a ON a.issue_id = i.source_id
+		WHERE i.repository_id = $1 AND i.number = $2 AND i.author_login = 'alice' AND a.login = 'bob'`, repo, *op.IssueNumber); n != 1 {
+		t.Fatalf("local projection lacks the created issue with its assignee: %d", n)
+	}
+	if n := e.count(`SELECT count(*) FROM activity_issue_labels l JOIN activity_issues i ON i.source_id = l.issue_id WHERE i.repository_id = $1 AND l.name = 'task'`, repo); n != 1 {
+		t.Fatalf("local projection lacks the label: %d", n)
+	}
+	e.noInstallationAuthority()
+}
+
+// Covers AE1: forged commands and a permission lost between render and submit fail, without broader authority.
+func TestForgedAndStaleCommandsAreDenied(t *testing.T) {
+	e := setup(t)
+	e.signIn("alice")
+	carol := e.signIn("carol")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetIssues(repo, seedIssue(1, "alice", "Existing"))
+	e.gh.SetPermission("carol", repo, "triage")
+	body := `{"labels":{"add":["triaged"]}}`
+
+	noCSRF := carol.do("POST", changes(repo, 1), body, map[string]string{"Origin": appURL, "Idempotency-Key": "forged-1", "Content-Type": "application/json"})
+	crossSite := carol.do("POST", changes(repo, 1), body, map[string]string{"Origin": "https://evil.test", "X-CSRF-Token": carol.csrf, "Idempotency-Key": "forged-2", "Content-Type": "application/json"})
+	if noCSRF.StatusCode != http.StatusForbidden || crossSite.StatusCode != http.StatusForbidden {
+		t.Fatalf("forged requests: no csrf=%d cross-site=%d", noCSRF.StatusCode, crossSite.StatusCode)
+	}
+
+	// Render: with triage carol may manage issues, but labels or assignees on a new issue need push.
+	var caps struct{ CreateIssue, CreateWithMetadata, ManageIssues bool }
+	if resp := carol.do("GET", fmt.Sprintf("/api/repositories/%d/issue-capabilities", repo), "", nil); resp.StatusCode != 200 || json.Unmarshal(carol.body(resp), &caps) != nil || !caps.ManageIssues || caps.CreateWithMetadata || !caps.CreateIssue {
+		t.Fatalf("capabilities at render: %d %+v", resp.StatusCode, caps)
+	}
+	if resp, _ := carol.send(create(repo), "triage-create", `{"title":"t","labels":["bug"]}`); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("create-time labels with triage only: %d", resp.StatusCode)
+	}
+	// Submit after GitHub lowered her to read.
+	e.gh.SetPermission("carol", repo, "read")
+	if resp, _ := carol.send(changes(repo, 1), "stale-1", body); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("stale permission submit: %d %s", resp.StatusCode, carol.body(resp))
+	}
+	if resp, _ := carol.send(create(repo), "stale-2", `{"title":"t","assignees":["alice"]}`); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("metadata create without push: %d", resp.StatusCode)
+	}
+	if resp := carol.do("GET", fmt.Sprintf("/api/repositories/%d/issue-capabilities", repo), "", nil); json.Unmarshal(carol.body(resp), &caps) != nil || caps.ManageIssues || caps.CreateWithMetadata || !caps.CreateIssue {
+		t.Fatalf("capabilities after downgrade: %+v", caps)
+	}
+	if n := e.count(`SELECT count(*) FROM write_operations`); n != 0 {
+		t.Fatalf("denied commands recorded %d operations", n)
+	}
+	if got := labelNames(e.gh.Issues(repo)[0]); len(got) != 0 {
+		t.Fatalf("denied change reached GitHub: %v", got)
+	}
+	// A reader may still open a plain issue: that is GitHub's own per-action rule.
+	if resp, op := carol.send(create(repo), "plain-1", `{"title":"Question","body":"?"}`); resp.StatusCode != http.StatusCreated || op.State != "succeeded" {
+		t.Fatalf("plain create by reader: %d %+v", resp.StatusCode, op)
+	}
+	e.noInstallationAuthority()
+}
+
+// GitHub answering 201 while dropping an assignee is never a successful assignment.
+func TestSilentAssigneeOmissionIsNotSuccess(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetPermission("bob", repo, "write")
+	e.gh.SetIssueWriteFault(fake.IssueWriteFault{DropAssignees: true})
+
+	resp, op := alice.send(create(repo), "drop-1", `{"title":"Ship it","assignees":["bob"]}`)
+	if resp.StatusCode != http.StatusCreated || op.State != "failed" || op.IssueNumber == nil || !slices.Contains(op.Outcome.Unapplied, "add assignee bob") {
+		t.Fatalf("status=%d op=%+v", resp.StatusCode, op)
+	}
+	if op.Outcome.Issue == nil || len(op.Outcome.Issue.Assignees) != 0 {
+		t.Fatalf("outcome must show the issue as GitHub returned it: %+v", op.Outcome.Issue)
+	}
+	// The issue exists: resubmitting the same draft returns this operation rather than a second issue.
+	if resp, again := alice.send(create(repo), "drop-1", `{"title":"Ship it","assignees":["bob"]}`); resp.StatusCode != 200 || again.ID != op.ID {
+		t.Fatalf("resubmit: %d %+v", resp.StatusCode, again)
+	}
+	if n := len(e.gh.Issues(repo)); n != 1 {
+		t.Fatalf("issues on GitHub: %d", n)
+	}
+}
+
+func TestIdempotencyKeys(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	first, op := alice.send(create(repo), "same-key", `{"title":"One"}`)
+	again, dup := alice.send(create(repo), "same-key", `{"title":"One"}`)
+	if first.StatusCode != http.StatusCreated || again.StatusCode != http.StatusOK || dup.ID != op.ID || dup.State != "succeeded" {
+		t.Fatalf("first=%d again=%d op=%+v dup=%+v", first.StatusCode, again.StatusCode, op, dup)
+	}
+	if resp, _ := alice.send(create(repo), "same-key", `{"title":"Two"}`); resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("changed payload with same key: %d", resp.StatusCode)
+	}
+	if resp, _ := alice.send(create(repo), "", `{"title":"No key"}`); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing key: %d", resp.StatusCode)
+	}
+	if n := len(e.gh.Issues(repo)); n != 1 {
+		t.Fatalf("issues on GitHub: %d", n)
+	}
+	// Keys belong to a user: another user's identical key is a separate operation.
+	bob := e.signIn("bob")
+	if resp, other := bob.send(create(repo), "same-key", `{"title":"One"}`); resp.StatusCode != http.StatusCreated || other.ID == op.ID {
+		t.Fatalf("other user's key: %d %+v", resp.StatusCode, other)
+	}
+}
+
+// A timeout after the remote create stays unknown, survives a restart, never resends, and resolves only by a verified recheck.
+func TestAmbiguousCreateStaysUnknown(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	// Each candidate fails exactly one check: content (#1), author (#2), age (#4); #99 does not exist.
+	wrongContent, wrongAuthor, tooOld := seedIssue(1, "alice", "Different title"), seedIssue(2, "mallory", "Ship it"), seedIssue(4, "alice", "Ship it")
+	wrongContent.Body, wrongAuthor.Body, tooOld.Body = "details", "details", "details"
+	wrongContent.User.ID = alice.githubID()
+	tooOld.User.ID = alice.githubID()
+	wrongContent.CreatedAt, wrongAuthor.CreatedAt = time.Now(), time.Now()
+	e.gh.SetIssues(repo, wrongContent, wrongAuthor, tooOld)
+	e.client.HTTP.Timeout = 300 * time.Millisecond
+	var stateAtSend string
+	e.gh.SetIssueWriteFault(fake.IssueWriteFault{Delay: time.Second, Before: func() {
+		_ = e.pool.QueryRow(context.Background(), `SELECT state FROM write_operations`).Scan(&stateAtSend)
+	}})
+
+	resp, op := alice.send(create(repo), "slow-1", `{"title":"Ship it","body":"details"}`)
+	if resp.StatusCode != http.StatusAccepted || op.State != "unknown" || op.IssueNumber != nil || string(op.Draft) == "null" || op.SearchURL == "" {
+		t.Fatalf("status=%d op=%+v", resp.StatusCode, op)
+	}
+	if stateAtSend != "unknown" {
+		t.Fatalf("a process death mid-send would leave %q, not unknown", stateAtSend)
+	}
+	time.Sleep(time.Second) // let the fake finish creating
+	e.gh.SetIssueWriteFault(fake.IssueWriteFault{})
+	e.client.HTTP.Timeout = 5 * time.Second
+	if n := len(e.gh.Issues(repo)); n != 4 {
+		t.Fatalf("issues on GitHub: %d", n)
+	}
+	if resp, again := alice.send(create(repo), "slow-1", `{"title":"Ship it","body":"details"}`); resp.StatusCode != 200 || again.ID != op.ID || again.State != "unknown" {
+		t.Fatalf("same key resubmit: %d %+v", resp.StatusCode, again)
+	}
+	if resp := alice.do("POST", create(repo), `{"title":"Ship it","body":"details"}`, map[string]string{"Origin": appURL, "X-CSRF-Token": alice.csrf, "Idempotency-Key": "slow-2"}); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("fresh key, same unresolved content: %d", resp.StatusCode)
+	}
+	if n := len(e.gh.Issues(repo)); n != 4 {
+		t.Fatalf("a resubmission created another issue: %d", n)
+	}
+
+	// Restart: a new service over the same database still reports unknown and sends nothing.
+	restarted := &issues.Service{Pool: e.pool, Queries: db.New(e.pool), GitHub: e.client, Access: e.issues.Access, GitHubURL: e.issues.GitHubURL}
+	api := http.NewServeMux()
+	restarted.Register(api)
+	e.srv.Config.Handler = (&auth.Handler{Service: e.issues.Access.TokenSource.(*auth.Service), AppURL: appURL}).Protect(api)
+	if resp, got := alice.get(opPath(op.ID)); resp.StatusCode != 200 || got.State != "unknown" {
+		t.Fatalf("after restart: %d %+v", resp.StatusCode, got)
+	}
+
+	recheck := func(number int64) (*http.Response, operation) {
+		return alice.send(opPath(op.ID)+"/recheck", "", fmt.Sprintf(`{"issueNumber":%d}`, number))
+	}
+	for _, wrong := range []int64{1, 2, 4, 99} {
+		resp, got := recheck(wrong)
+		if resp.StatusCode != http.StatusConflict || got.State != "unknown" || got.IssueNumber != nil {
+			t.Fatalf("recheck #%d: %d %+v", wrong, resp.StatusCode, got)
+		}
+	}
+	if n := e.count(`SELECT count(*) FROM write_operations WHERE state = 'unknown' AND draft IS NOT NULL AND issue_number IS NULL`); n != 1 {
+		t.Fatalf("mismatch must keep the draft and unknown state: %d", n)
+	}
+	resp, got := recheck(5)
+	if resp.StatusCode != 200 || got.State != "succeeded" || got.IssueNumber == nil || *got.IssueNumber != 5 {
+		t.Fatalf("recheck #5: %d %+v", resp.StatusCode, got)
+	}
+	if n := e.count(`SELECT count(*) FROM activity_issues WHERE repository_id = $1 AND number = 5`, repo); n != 1 {
+		t.Fatalf("linked issue not projected: %d", n)
+	}
+	if n := len(e.gh.Issues(repo)); n != 4 {
+		t.Fatalf("issues on GitHub: %d", n)
+	}
+}
+
+// Classification of definite and ambiguous upstream answers to a create.
+func TestCreateErrorClassification(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	for i, c := range []struct {
+		fault fake.IssueWriteFault
+		state string
+	}{
+		{fake.IssueWriteFault{Status: http.StatusUnprocessableEntity}, "failed"},
+		{fake.IssueWriteFault{Status: http.StatusForbidden}, "failed"},
+		{fake.IssueWriteFault{Status: http.StatusBadGateway}, "unknown"},
+		{fake.IssueWriteFault{Status: http.StatusBadGateway, Applied: true}, "unknown"},
+	} {
+		e.gh.SetIssueWriteFault(c.fault)
+		_, op := alice.send(create(repo), fmt.Sprintf("class-%d", i), fmt.Sprintf(`{"title":"Case %d"}`, i))
+		if op.State != c.state || op.Outcome.Error == "" {
+			t.Fatalf("fault %+v: %+v", c.fault, op)
+		}
+	}
+	if n := len(e.gh.Issues(repo)); n != 1 {
+		t.Fatalf("only the applied gateway failure created an issue: %d", n)
+	}
+}
+
+// Add/remove intent never replaces values someone else changed; the audit row names the actor and holds no secrets.
+func TestAddRemovePreservesConcurrentValues(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	for _, login := range []string{"bob", "carol", "erin"} {
+		e.gh.SetPermission(login, repo, "write")
+	}
+	seed := seedIssue(1, "alice", "Existing")
+	seed.Labels = []fake.IssueLabel{{ID: 1, Name: "bug"}, {ID: 2, Name: "external"}}
+	seed.Assignees = []fake.IssueActor{{ID: 11, Login: "bob", Type: "User"}}
+	e.gh.SetIssues(repo, seed)
+	// Someone else edits the issue after alice rendered it.
+	seed.Labels = append(seed.Labels, fake.IssueLabel{ID: 3, Name: "urgent"})
+	seed.Assignees = append(seed.Assignees, fake.IssueActor{ID: 12, Login: "erin", Type: "User"})
+	e.gh.SetIssues(repo, seed)
+
+	resp, op := alice.send(changes(repo, 1), "change-1", `{"labels":{"add":["triaged"],"remove":["bug"]},"assignees":{"add":["carol"],"remove":["bob"]}}`)
+	if resp.StatusCode != http.StatusCreated || op.State != "succeeded" || op.Kind != "update" {
+		t.Fatalf("status=%d op=%+v body=%s", resp.StatusCode, op, alice.body(resp))
+	}
+	remote := e.gh.Issues(repo)[0]
+	if got := labelNames(remote); !slices.Equal(got, []string{"external", "triaged", "urgent"}) {
+		t.Fatalf("labels: %v", got)
+	}
+	if got := assigneeNames(remote); !slices.Equal(got, []string{"carol", "erin"}) {
+		t.Fatalf("assignees: %v", got)
+	}
+	if resp, closed := alice.send(changes(repo, 1), "close-1", `{"state":"closed"}`); resp.StatusCode != http.StatusCreated || closed.State != "succeeded" || closed.Outcome.Issue.State != "closed" {
+		t.Fatalf("close: %d %+v", resp.StatusCode, closed)
+	}
+	if n := e.count(`SELECT count(*) FROM activity_issues WHERE repository_id = $1 AND number = 1 AND state = 'closed'`, repo); n != 1 {
+		t.Fatalf("projection not updated by the confirmed close: %d", n)
+	}
+	if n := e.count(`SELECT count(*) FROM write_operations WHERE user_id = $1 AND state = 'succeeded' AND outcome ? 'issue'`, alice.id); n != 2 {
+		t.Fatalf("audit rows for the actor: %d", n)
+	}
+	var rows string
+	if err := e.pool.QueryRow(context.Background(), `SELECT json_agg(o)::text FROM write_operations o`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"ghu_", "ghr_", "installation_"} {
+		if strings.Contains(rows, secret) || strings.Contains(logs.String(), secret) {
+			t.Fatalf("secret %q in audit rows or logs", secret)
+		}
+	}
+	e.noInstallationAuthority()
+}
+
+// Another viewer cannot see an actor's operations; losing private access wipes only the affected actor's drafts.
+func TestOperationsArePrivateToActor(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	bob := e.signIn("bob")
+	public := e.repo("alice", "app", false)
+	_, op := alice.send(create(public), "mine-1", `{"title":"Mine","body":"secret plan"}`)
+	if op.ID == 0 {
+		t.Fatal("no operation")
+	}
+	if resp, _ := bob.get(opPath(op.ID)); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("guessed id: %d", resp.StatusCode)
+	}
+	if resp, _ := bob.send(opPath(op.ID)+"/recheck", "", `{"issueNumber":1}`); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("guessed recheck: %d", resp.StatusCode)
+	}
+	resp := bob.do("GET", fmt.Sprintf("/api/repositories/%d/write-operations", public), "", nil)
+	if b := bob.body(resp); resp.StatusCode != 200 || strings.Contains(string(b), "secret plan") || strings.Contains(string(b), fmt.Sprintf(`"id":%d`, op.ID)) {
+		t.Fatalf("listing leaked another actor's operation: %d %s", resp.StatusCode, b)
+	}
+	if resp, own := alice.get(opPath(op.ID)); resp.StatusCode != 200 || own.ID != op.ID || !strings.Contains(string(own.Draft), "secret plan") {
+		t.Fatalf("own read: %d %+v", resp.StatusCode, own)
+	}
+
+	// Private repository: alice reaches it through her installation; bob's operation there is a fixture, since the fake
+	// models private reads as owner-only.
+	private := e.repo("alice", "vault", true)
+	e.gh.Install("alice", 7001, private)
+	resp, mine := alice.send(create(private), "vault-1", `{"title":"Private","body":"private draft"}`)
+	if resp.StatusCode != http.StatusCreated || mine.State != "succeeded" {
+		t.Fatalf("private create: %d %+v %s", resp.StatusCode, mine, alice.body(resp))
+	}
+	fixture := func(userID int64, key string) {
+		if _, err := e.pool.Exec(context.Background(), `INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, draft, state) VALUES ($1, $2, $3, 'create', '\x00', '{"title":"x","body":"kept"}', 'failed')`, userID, private, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixture(bob.id, "bob-1")
+	drafts := func(userID int64) int {
+		return e.count(`SELECT count(*) FROM write_operations WHERE user_id = $1 AND repository_id = $2 AND draft IS NOT NULL`, userID, private)
+	}
+	invalidate := func(scope accessfence.Scope, id int64) {
+		if err := db.InTx(context.Background(), e.pool, func(tx pgx.Tx) error { return accessfence.InvalidateAccess(context.Background(), tx, scope, id) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	invalidate(accessfence.ScopeInstallation, 7001)
+	if drafts(alice.id) != 0 || drafts(bob.id) != 1 {
+		t.Fatalf("installation revocation: alice=%d bob=%d", drafts(alice.id), drafts(bob.id))
+	}
+	fixture(alice.id, "alice-2")
+	invalidate(accessfence.ScopeUser, alice.id)
+	if drafts(alice.id) != 0 || drafts(bob.id) != 1 {
+		t.Fatalf("user revocation: alice=%d bob=%d", drafts(alice.id), drafts(bob.id))
+	}
+	// Access lost with no webhook: the next read denies and wipes the actor's draft.
+	fixture(alice.id, "alice-3")
+	e.gh.Uninstall(7001)
+	if resp, _ := alice.get(opPath(mine.ID)); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("read after access loss: %d", resp.StatusCode)
+	}
+	if drafts(alice.id) != 0 || drafts(bob.id) != 1 {
+		t.Fatalf("denied read: alice=%d bob=%d", drafts(alice.id), drafts(bob.id))
+	}
+}
+
+// Commands never trust the cached 30-second listing: access removed on GitHub after a cached read denies the write.
+func TestCommandsBypassCachedAccess(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "vault", true)
+	e.gh.Install("alice", 7001, repo)
+	e.issues.Access.TTL = time.Hour
+	if resp := alice.do("GET", fmt.Sprintf("/api/repositories/%d/issue-capabilities", repo), "", nil); resp.StatusCode != 200 {
+		t.Fatalf("render: %d", resp.StatusCode)
+	}
+	e.gh.Uninstall(7001) // nothing local learns of this, so the cached listing still holds
+	if resp, _ := alice.send(create(repo), "after-uninstall", `{"title":"Private"}`); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("create after access loss: %d", resp.StatusCode)
+	}
+	if n := e.count(`SELECT count(*) FROM write_operations`); n != 0 || len(e.gh.WriteTokens()) != 0 {
+		t.Fatalf("recorded %d operations, sent %d writes", n, len(e.gh.WriteTokens()))
+	}
+}
+
+func TestInvalidInputIsRejected(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetIssues(repo, seedIssue(1, "alice", "Existing"))
+	tooMany := `["a","b","c","d","e","f","g","h","i","j","k"]`
+	for _, c := range []struct{ path, body string }{
+		{create(repo), `{"title":"x","extra":1}`},
+		{create(repo), `{"title":""}`},
+		{create(repo), `{"title":"   "}`},
+		{create(repo), `{"title":"` + strings.Repeat("x", 257) + `"}`},
+		{create(repo), `{"title":"x","body":"` + strings.Repeat("x", 65537) + `"}`},
+		{create(repo), `{"title":"x","assignees":` + tooMany + `}`},
+		{create(repo), `{"title":"x","labels":` + tooMany + `}`},
+		{create(repo), `{"title":"x","assignees":["bad login!"]}`},
+		{create(repo), `{"title":"x","assignees":["bob","bob"]}`},
+		{create(repo), `{"title":"x"} {"title":"y"}`},
+		{create(repo), `not json`},
+		{changes(repo, 1), `{}`},
+		{changes(repo, 1), `{"labels":{"add":["a"],"remove":["a"]}}`},
+		{changes(repo, 1), `{"state":"merged"}`},
+		{changes(repo, 1), `{"labels":{"add":[""]}}`},
+		{changes(repo, 1), `{"assignees":{"add":["x"],"replace":["y"]}}`},
+	} {
+		if resp, _ := alice.send(c.path, "bad-input", c.body); resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s %.80s: %d", c.path, c.body, resp.StatusCode)
+		}
+	}
+	if resp, _ := alice.send(create(repo), "bad key with spaces", `{"title":"x"}`); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad key: %d", resp.StatusCode)
+	}
+	if resp, _ := alice.send(create(repo), "ineligible-1", `{"title":"x","assignees":["zed"]}`); resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("ineligible assignee: %d", resp.StatusCode)
+	}
+	if resp, _ := alice.send(create(999999), "unknown-repo", `{"title":"x"}`); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown repository: %d", resp.StatusCode)
+	}
+	if n := e.count(`SELECT count(*) FROM write_operations`); n != 0 {
+		t.Fatalf("rejected input recorded %d operations", n)
+	}
+	if n := len(e.gh.WriteTokens()); n != 0 {
+		t.Fatalf("rejected input reached GitHub writes: %d", n)
+	}
+}

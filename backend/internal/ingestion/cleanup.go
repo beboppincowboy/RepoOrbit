@@ -119,6 +119,9 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 			if _, err = tx.Exec(ctx, `DELETE FROM issues WHERE repository_id=$1`, repoID); err != nil {
 				return err
 			}
+			if _, err = tx.Exec(ctx, `UPDATE write_operations SET draft=NULL WHERE repository_id=$1`, repoID); err != nil {
+				return err
+			}
 			if _, err = tx.Exec(ctx, `UPDATE activity_resources SET phase='backfill', page=1, cursor='', generation=generation+1, watermark=NULL, scan_started_at=NULL, previous_scan=NULL, current_scan='{}', last_success_at=NULL, last_error_code=NULL WHERE repository_id=$1`, repoID); err != nil {
 				return err
 			}

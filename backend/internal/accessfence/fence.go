@@ -57,6 +57,15 @@ func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int
 	if err := BumpAccess(ctx, tx, scope, subjectID); err != nil {
 		return err
 	}
+	// Issue-write drafts of the actors who may have lost private access are wiped now, even where other users keep
+	// access; the audit outcome and hashes stay. Global bumps (reconciliation) name no actor and wipe nothing.
+	if _, err := tx.Exec(ctx, `UPDATE write_operations o SET draft = NULL FROM repositories r
+		WHERE r.id = o.repository_id AND o.draft IS NOT NULL AND (
+		 ($1::text = 'user' AND r.is_private AND o.user_id = $2) OR
+		 ($1::text = 'installation' AND r.is_private AND o.user_id IN (SELECT user_id FROM installations WHERE installation_id = $2)) OR
+		 ($1::text = 'repository' AND r.id = $2))`, string(scope), subjectID); err != nil {
+		return err
+	}
 	// A durable row is independent of a worker claim and records concurrent invalidations.
 	_, err := tx.Exec(ctx, `WITH targets AS (
 		INSERT INTO activity_cleanup (repository_id)

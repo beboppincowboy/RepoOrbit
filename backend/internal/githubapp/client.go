@@ -139,7 +139,16 @@ type Repo struct {
 	Description string `json:"description"` // GitHub sends null for none
 	Private     bool   `json:"private"`
 	Archived    bool   `json:"archived"`
-	Owner       struct {
+	HasIssues   bool   `json:"has_issues"`
+	// Permissions are the requesting user's, present when a user token fetched the repository.
+	Permissions struct {
+		Admin    bool `json:"admin"`
+		Maintain bool `json:"maintain"`
+		Push     bool `json:"push"`
+		Triage   bool `json:"triage"`
+		Pull     bool `json:"pull"`
+	} `json:"permissions"`
+	Owner struct {
 		ID    int64  `json:"id"`
 		Login string `json:"login"`
 		Type  string `json:"type"`
@@ -239,6 +248,8 @@ type Issue struct {
 	Title     string     `json:"title"`
 	State     string     `json:"state"`
 	HTMLURL   string     `json:"html_url"`
+	Body      string     `json:"body"`           // GitHub sends null for none
+	RepoURL   string     `json:"repository_url"` // API URL of the repository the issue belongs to
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	ClosedAt  *time.Time `json:"closed_at"`
