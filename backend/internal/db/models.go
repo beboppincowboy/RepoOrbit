@@ -33,6 +33,7 @@ type ActivityChild struct {
 type ActivityCleanup struct {
 	RepositoryID int64
 	Version      int64
+	WipeUsers    []int64
 }
 
 type ActivityComment struct {

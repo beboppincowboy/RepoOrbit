@@ -5,6 +5,7 @@ package ingestion
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -331,21 +332,25 @@ func TestCredentialThrottleKeepsTheLaterTimeAndIgnoresThePast(t *testing.T) {
 	}
 }
 
-// Issue-write operations are kept for the documented 30-day retention period, then deleted.
+// Terminal issue-write operations are deleted after the 30-day retention period. An unresolved create is kept past
+// it, redacted, so a retry of the same content still finds it and cannot create a second issue.
 func TestWriteOperationRetention(t *testing.T) {
 	f := newFixture(t)
 	f.user(1)
 	f.repo(10)
 	now := time.Now()
-	f.exec(`INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, state, created_at) VALUES
-	 (1, 10, 'old', 'create', '\x00', 'unknown', $1), (1, 10, 'recent', 'create', '\x00', 'failed', $2)`, now.Add(-31*24*time.Hour), now.Add(-29*24*time.Hour))
+	old, recent := now.Add(-31*24*time.Hour), now.Add(-29*24*time.Hour)
+	f.exec(`INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, content_hash, draft, state, outcome, created_at) VALUES
+	 (1, 10, 'old-unknown', 'create', '\x00', '\x01', '{"title":"secret"}', 'unknown', '{"issue":{"number":1,"title":"secret"}}', $1),
+	 (1, 10, 'old-failed', 'create', '\x00', '\x02', NULL, 'failed', '{}', $1),
+	 (1, 10, 'old-succeeded', 'update', '\x00', NULL, NULL, 'succeeded', '{}', $1),
+	 (1, 10, 'recent', 'create', '\x00', '\x03', '{"title":"recent"}', 'failed', '{}', $2)`, old, recent)
 	noErr(t, SchedulerDeps{Pool: f.pool}.expireWriteOperations(context.Background(), now))
-	var keys []string
-	rows, err := f.pool.Query(context.Background(), `SELECT idempotency_key FROM write_operations`)
+	rows, err := f.pool.Query(context.Background(), `SELECT idempotency_key || ':' || (draft IS NULL)::text || ':' || (outcome ? 'redacted')::text || ':' || (outcome::text LIKE '%secret%')::text || ':' || (content_hash IS NOT NULL)::text FROM write_operations ORDER BY idempotency_key`)
 	noErr(t, err)
-	keys, err = pgx.CollectRows(rows, pgx.RowTo[string])
+	got, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	noErr(t, err)
-	if len(keys) != 1 || keys[0] != "recent" {
-		t.Fatalf("kept %v", keys)
+	if want := []string{"old-unknown:true:true:false:true", "recent:false:false:false:true"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("kept %v, want %v", got, want)
 	}
 }

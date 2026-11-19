@@ -367,11 +367,22 @@ func (s *Service) view(row db.GetWriteOperationRow) opView {
 	return v
 }
 
-// respond reads the operation back and writes it.
-func (s *Service) respond(w http.ResponseWriter, ctx context.Context, status int, userID, opID int64) {
+// respond reads the operation back and writes it, unless access changed since snap (the snapshot the request's access
+// check was made under): then it is withheld with 503, as other fenced reads are. The operation exists and may have
+// been sent, so the client must retry under the same key, never a fresh one.
+func (s *Service) respond(w http.ResponseWriter, ctx context.Context, status int, userID, opID int64, snap accessfence.Snapshot) {
 	row, err := s.Queries.GetWriteOperation(ctx, db.GetWriteOperationParams{ID: opID, UserID: userID})
 	if err != nil {
 		s.internal(w, err)
+		return
+	}
+	current, err := snap.Current(ctx, s.Pool)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	if !current {
+		http.Error(w, "access changed; the operation was recorded and may have been sent: retry with the same Idempotency-Key", http.StatusServiceUnavailable)
 		return
 	}
 	if status == http.StatusCreated && row.State == "unknown" {
@@ -518,7 +529,7 @@ func (s *Service) update(w http.ResponseWriter, r *http.Request) {
 
 // replay answers a reused idempotency key: the existing operation for the same request, 422 for a different one.
 // It reports false when the key is unused.
-func (s *Service) replay(w http.ResponseWriter, ctx context.Context, userID int64, key string, hash []byte) bool {
+func (s *Service) replay(w http.ResponseWriter, ctx context.Context, userID int64, key string, hash []byte, snap accessfence.Snapshot) bool {
 	prior, err := s.Queries.GetWriteOperationByKey(ctx, db.GetWriteOperationByKeyParams{UserID: userID, IdempotencyKey: key})
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -528,7 +539,7 @@ func (s *Service) replay(w http.ResponseWriter, ctx context.Context, userID int6
 	case !bytes.Equal(prior.RequestHash, hash):
 		http.Error(w, "idempotency key reused with a different request", http.StatusUnprocessableEntity)
 	default:
-		s.respond(w, ctx, http.StatusOK, userID, prior.ID)
+		s.respond(w, ctx, http.StatusOK, userID, prior.ID, snap)
 	}
 	return true
 }
@@ -562,7 +573,7 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 	if !ok {
 		return
 	}
-	if s.replay(w, ctx, userID, key, hash) {
+	if s.replay(w, ctx, userID, key, hash, snap) {
 		return
 	}
 	denied := func() {
@@ -616,30 +627,49 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 	}
 
 	var opID int64
-	err = db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
-		if current, err := snap.StillCurrent(ctx, tx); err != nil {
+	insert := func() error {
+		return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
+			if current, err := snap.StillCurrent(ctx, tx); err != nil {
+				return err
+			} else if !current {
+				return errAccessMoved
+			}
+			var err error
+			opID, err = s.Queries.WithTx(tx).InsertWriteOperation(ctx, db.InsertWriteOperationParams{UserID: userID, RepositoryID: repoID, IdempotencyKey: key, Kind: c.kind,
+				IssueNumber: pgtype.Int8{Int64: c.issueNumber, Valid: c.kind == "update"}, RequestHash: hash, ContentHash: c.contentHash, RequestedMetadata: c.metadata, Draft: draft})
 			return err
-		} else if !current {
-			return errAccessMoved
+		})
+	}
+	// An unresolved create of the same content blocks the insert: a second one could duplicate the issue. A blocker
+	// that is a stale, never-sent pending create is failed, and one that resolved meanwhile no longer blocks; either way
+	// the insert is retried once.
+	for attempt := 0; ; attempt++ {
+		err = insert()
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.ConstraintName != "write_operations_open_create" {
+			break
 		}
-		var err error
-		opID, err = s.Queries.WithTx(tx).InsertWriteOperation(ctx, db.InsertWriteOperationParams{UserID: userID, RepositoryID: repoID, IdempotencyKey: key, Kind: c.kind,
-			IssueNumber: pgtype.Int8{Int64: c.issueNumber, Valid: c.kind == "update"}, RequestHash: hash, ContentHash: c.contentHash, RequestedMetadata: c.metadata, Draft: draft})
-		return err
-	})
-	var pgErr *pgconn.PgError
-	switch {
-	case errors.As(err, &pgErr) && pgErr.ConstraintName == "write_operations_open_create":
-		// An earlier create of the same content is unresolved: a second one could duplicate the issue.
-		prior, err := s.Queries.FindOpenCreate(ctx, db.FindOpenCreateParams{UserID: userID, RepositoryID: repoID, ContentHash: c.contentHash})
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		openCreate := db.FindOpenCreateParams{UserID: userID, RepositoryID: repoID, ContentHash: c.contentHash}
+		if _, err := s.Queries.FailStalePendingCreate(ctx, db.FailStalePendingCreateParams(openCreate)); err != nil {
 			s.internal(w, err)
 			return
 		}
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "an earlier create of this issue is still unresolved; recheck it instead of resubmitting", "operationId": prior})
-		return
+		prior, err := s.Queries.FindOpenCreate(ctx, openCreate)
+		switch {
+		case err == nil:
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "an earlier create of this issue is still unresolved; recheck it instead of resubmitting", "operationId": prior})
+			return
+		case !errors.Is(err, pgx.ErrNoRows):
+			s.internal(w, err)
+			return
+		case attempt == 1:
+			http.Error(w, "an earlier create of this issue changed while submitting; nothing was sent, retry", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	switch {
 	case errors.Is(err, pgx.ErrNoRows): // the same key was recorded concurrently
-		if !s.replay(w, ctx, userID, key, hash) {
+		if !s.replay(w, ctx, userID, key, hash, snap) {
 			s.internal(w, errors.New("idempotency key vanished"))
 		}
 		return
@@ -656,21 +686,24 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 		return
 	}
 	ctx = context.WithoutCancel(ctx) // a client disconnect must not abandon the call or its recorded outcome
-	var state string
-	var out outcome
-	var confirmed *githubapp.Issue
-	link := false
 	if c.kind == "create" {
-		state, out, confirmed = s.sendCreate(ctx, userID, token, d.Repo.FullName, c.draft.(*createDraft))
-		link = confirmed != nil
+		// A create's confirmed copy is GitHub's create response: nothing stored for the new issue is older, so it is
+		// projected without the per-issue lock and never replaces a same-second copy.
+		state, out, confirmed := s.sendCreate(ctx, userID, token, d.Repo.FullName, c.draft.(*createDraft))
+		err = s.finish(ctx, opID, repoID, snap, 0, confirmed != nil, func() (string, outcome, *githubapp.Issue, error) { return state, out, confirmed, nil })
 	} else {
-		state, out, confirmed = s.sendUpdate(ctx, userID, token, d.Repo.FullName, c.issueNumber, c.draft.(*updateDraft))
+		u := c.draft.(*updateDraft)
+		sent := s.applyUpdate(ctx, userID, token, d.Repo.FullName, c.issueNumber, u)
+		err = s.finish(ctx, opID, repoID, snap, c.issueNumber, false, func() (string, outcome, *githubapp.Issue, error) {
+			state, out, confirmed := s.readBack(ctx, userID, token, d.Repo.FullName, c.issueNumber, u, sent)
+			return state, out, confirmed, nil
+		})
 	}
-	if err := s.finish(ctx, opID, repoID, snap, state, out, confirmed, link); err != nil {
+	if err != nil {
 		s.internal(w, err)
 		return
 	}
-	s.respond(w, ctx, http.StatusCreated, userID, opID)
+	s.respond(w, ctx, http.StatusCreated, userID, opID, snap)
 }
 
 // classify maps a failed write: a 4xx is a definite rejection (failed), anything else may have been applied (unknown).
@@ -747,11 +780,9 @@ func (s *Service) sendCreate(ctx context.Context, userID int64, token, fullName 
 	return resolved(out), out, &issue
 }
 
-// sendUpdate applies add/remove steps (each idempotent), stopping at the first error, then reads the issue back:
-// the outcome is whatever the read shows. Assignees are removed before they are added, so a swap at GitHub's
-// 10-assignee limit fits. A step without a reliable answer may still land after the read, so the operation then stays
-// unknown unless the read already shows every change; without a readable result it stays unknown too.
-func (s *Service) sendUpdate(ctx context.Context, userID int64, token, fullName string, number int64, d *updateDraft) (string, outcome, *githubapp.Issue) {
+// applyUpdate applies add/remove steps (each idempotent), stopping at the first error; readBack then decides the
+// outcome. Assignees are removed before they are added, so a swap at GitHub's 10-assignee limit fits.
+func (s *Service) applyUpdate(ctx context.Context, userID int64, token, fullName string, number int64, d *updateDraft) outcome {
 	steps := []func() error{}
 	if len(d.Labels.Add) > 0 {
 		steps = append(steps, func() error { return s.GitHub.AddLabels(ctx, token, fullName, number, d.Labels.Add) })
@@ -777,6 +808,13 @@ func (s *Service) sendUpdate(ctx context.Context, userID int64, token, fullName 
 			break
 		}
 	}
+	return out
+}
+
+// readBack reads the issue after applyUpdate: the outcome is whatever the read shows. A step without a reliable answer
+// may still land after the read, so the operation then stays unknown unless the read already shows every change;
+// without a readable result it stays unknown too.
+func (s *Service) readBack(ctx context.Context, userID int64, token, fullName string, number int64, d *updateDraft, out outcome) (string, outcome, *githubapp.Issue) {
 	issue, err := s.GitHub.FetchIssue(ctx, token, fullName, number)
 	if err != nil {
 		_, msg := s.classify(ctx, userID, err)
@@ -793,16 +831,38 @@ func (s *Service) sendUpdate(ctx context.Context, userID int64, token, fullName 
 
 var errAlreadyLinked = errors.New("issue already linked to another operation")
 
-// finish records the outcome of an unknown operation and, when the access fence still holds, projects the confirmed
-// issue locally. link records a create's issue number. The fence rows are locked before the operation row, the order
-// accessfence.InvalidateAccess takes them in, so the two cannot deadlock. An unknown outcome with a confirmed read is
-// recorded without projecting it.
-func (s *Service) finish(ctx context.Context, opID, repoID int64, snap accessfence.Snapshot, state string, out outcome, confirmed *githubapp.Issue, link bool) error {
-	body, err := json.Marshal(out)
-	if err != nil {
-		return err
-	}
-	err = db.InTx(ctx, s.Pool, func(tx pgx.Tx) (err error) {
+var errAnswered = errors.New("already answered") // a finish read that wrote the HTTP response itself
+
+// finish records the outcome of an unknown operation, as read supplies it inside the transaction, and, when the access
+// fence still holds, projects the confirmed issue locally. link records a create's issue number. With lock (an issue
+// number, 0 for none) the transaction first takes a per-issue advisory lock, so the readbacks of one issue and their
+// projections happen one at a time: the later readback is projected last and may replace a stored copy with the same
+// updated_at (GitHub's timestamps have one-second resolution). Without the lock a tie never replaces. The fence rows
+// are locked before the operation row, the order accessfence.InvalidateAccess takes them in, so the two cannot
+// deadlock. An unknown outcome with a confirmed read is recorded without projecting it.
+// ponytail: a locked finish holds one pool connection while GitHub answers its readback; lock waiters give up after
+// 10s (the operation stays unknown and a recheck resolves it), so a crowded issue cannot exhaust the pool for good.
+func (s *Service) finish(ctx context.Context, opID, repoID int64, snap accessfence.Snapshot, lock int64, link bool, read func() (string, outcome, *githubapp.Issue, error)) error {
+	err := db.InTx(ctx, s.Pool, func(tx pgx.Tx) (err error) {
+		if lock != 0 {
+			if _, err = tx.Exec(ctx, `SET LOCAL lock_timeout = '10s'`); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('issue-write:%s:%s', $1::bigint, $2::bigint), 0))`, repoID, lock); err != nil {
+				return err
+			}
+			if _, err = tx.Exec(ctx, `SET LOCAL lock_timeout = 0`); err != nil {
+				return err
+			}
+		}
+		state, out, confirmed, err := read()
+		if err != nil {
+			return err
+		}
+		body, err := json.Marshal(out)
+		if err != nil {
+			return err
+		}
 		current := false
 		if confirmed != nil && state != "unknown" {
 			if current, err = snap.StillCurrent(ctx, tx); err != nil {
@@ -817,7 +877,10 @@ func (s *Service) finish(ctx context.Context, opID, repoID int64, snap accessfen
 		if err != nil || n == 0 || !current {
 			return err // access moved: keep the recorded outcome, let the next sync project the issue
 		}
-		return ingestion.ProjectConfirmedIssue(ctx, tx, repoID, *confirmed)
+		if lock != 0 {
+			return ingestion.ProjectConfirmedIssue(ctx, tx, repoID, *confirmed)
+		}
+		return ingestion.ProjectIssue(ctx, tx, repoID, *confirmed)
 	})
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -865,68 +928,68 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	issue, err := s.GitHub.FetchIssue(ctx, token, d.Repo.FullName, number)
-	var api *githubapp.APIError
 	mismatch := func() { // the draft is withheld when access changed during the GitHub read
 		if s.fenceHolds(w, ctx, snap) {
 			writeJSON(w, http.StatusConflict, s.view(row))
 		}
 	}
+	// The read runs under the issue's lock (see finish); any answer it writes itself ends the recheck unrecorded.
+	err := s.finish(context.WithoutCancel(ctx), row.ID, row.RepositoryID, snap, number, row.Kind == "create", func() (string, outcome, *githubapp.Issue, error) {
+		issue, err := s.GitHub.FetchIssue(ctx, token, d.Repo.FullName, number)
+		var api *githubapp.APIError
+		switch {
+		case errors.As(err, &api) && api.NotFound():
+			mismatch()
+			return "", outcome{}, nil, errAnswered
+		case err != nil:
+			s.upstream(w, ctx, userID, err)
+			return "", outcome{}, nil, errAnswered
+		}
+		var out outcome
+		out.Issue = viewIssue(issue)
+		if row.Kind == "create" {
+			if issue.PullRequest != nil || issue.User == nil || issue.User.ID != row.ActorGithubID ||
+				!strings.EqualFold(issue.RepoURL, s.GitHub.APIURL+"/repos/"+d.Repo.FullName) ||
+				!bytes.Equal(contentHash(issue.Title, issue.Body), row.ContentHash) ||
+				!row.SentAt.Valid || issue.CreatedAt.Before(row.SentAt.Time.Add(-sendSkew)) {
+				mismatch()
+				return "", outcome{}, nil, errAnswered
+			}
+			var draft createDraft
+			switch {
+			case row.Draft != nil:
+				if err := json.Unmarshal(row.Draft, &draft); err != nil {
+					return "", outcome{}, nil, err
+				}
+				out.Unapplied = unapplied(out.Issue, delta{Add: draft.Labels}, delta{Add: draft.Assignees}, "")
+			case row.RequestedMetadata: // the draft was wiped: the requested labels and assignees cannot be verified
+				out.Unapplied = []string{"requested labels or assignees (unverifiable: the draft was removed)"}
+			}
+		} else {
+			var draft updateDraft
+			var sent outcome
+			if row.Draft == nil || json.Unmarshal(row.Draft, &draft) != nil || json.Unmarshal(row.Outcome, &sent) != nil {
+				mismatch() // nothing left to verify against
+				return "", outcome{}, nil, errAnswered
+			}
+			out.Unapplied = unapplied(out.Issue, draft.Labels, draft.Assignees, draft.State)
+			if len(out.Unapplied) > 0 && !sent.Settled {
+				mismatch() // not visible yet, and the original request may still land
+				return "", outcome{}, nil, errAnswered
+			}
+			out.Error, out.Settled = sent.Error, sent.Settled
+		}
+		return resolved(out), out, &issue, nil
+	})
 	switch {
-	case errors.As(err, &api) && api.NotFound():
+	case errors.Is(err, errAnswered):
+		return
+	case errors.Is(err, errAlreadyLinked):
 		mismatch()
 		return
 	case err != nil:
-		s.upstream(w, ctx, userID, err)
-		return
-	}
-	var out outcome
-	out.Issue = viewIssue(issue)
-	link := false
-	if row.Kind == "create" {
-		if issue.PullRequest != nil || issue.User == nil || issue.User.ID != row.ActorGithubID ||
-			!strings.EqualFold(issue.RepoURL, s.GitHub.APIURL+"/repos/"+d.Repo.FullName) ||
-			!bytes.Equal(contentHash(issue.Title, issue.Body), row.ContentHash) ||
-			!row.SentAt.Valid || issue.CreatedAt.Before(row.SentAt.Time.Add(-sendSkew)) {
-			mismatch()
-			return
-		}
-		var draft createDraft
-		switch {
-		case row.Draft != nil:
-			if err := json.Unmarshal(row.Draft, &draft); err != nil {
-				s.internal(w, err)
-				return
-			}
-			out.Unapplied = unapplied(out.Issue, delta{Add: draft.Labels}, delta{Add: draft.Assignees}, "")
-		case row.RequestedMetadata: // the draft was wiped: the requested labels and assignees cannot be verified
-			out.Unapplied = []string{"requested labels or assignees (unverifiable: the draft was removed)"}
-		}
-		link = true
-	} else {
-		var draft updateDraft
-		var sent outcome
-		if row.Draft == nil || json.Unmarshal(row.Draft, &draft) != nil || json.Unmarshal(row.Outcome, &sent) != nil {
-			mismatch() // nothing left to verify against
-			return
-		}
-		out.Unapplied = unapplied(out.Issue, draft.Labels, draft.Assignees, draft.State)
-		if len(out.Unapplied) > 0 && !sent.Settled {
-			mismatch() // not visible yet, and the original request may still land
-			return
-		}
-		out.Error, out.Settled = sent.Error, sent.Settled
-	}
-	err = s.finish(context.WithoutCancel(ctx), row.ID, row.RepositoryID, snap, resolved(out), out, &issue, link)
-	if errors.Is(err, errAlreadyLinked) {
-		mismatch()
-		return
-	}
-	if err != nil {
 		s.internal(w, err)
 		return
 	}
-	if s.fenceHolds(w, ctx, snap) {
-		s.respond(w, ctx, http.StatusOK, userID, row.ID)
-	}
+	s.respond(w, ctx, http.StatusOK, userID, row.ID, snap)
 }
