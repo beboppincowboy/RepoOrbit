@@ -263,3 +263,19 @@ type WebhookDelivery struct {
 	Event      string
 	ReceivedAt pgtype.Timestamptz
 }
+
+type WriteOperation struct {
+	ID             int64
+	UserID         int64
+	RepositoryID   int64
+	IdempotencyKey string
+	Kind           string
+	IssueNumber    pgtype.Int8
+	RequestHash    []byte
+	ContentHash    []byte
+	Draft          []byte
+	State          string
+	Outcome        []byte
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}

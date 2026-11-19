@@ -136,6 +136,30 @@ INSERT INTO activity_cleanup(repository_id) VALUES(70)`); err != nil {
 	}
 }
 
+// A purge of a private repository no installation covers wipes every actor's issue-write drafts but keeps the audit row.
+func TestCleanupWipesWriteDrafts(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO repositories(id,name,description,is_private) VALUES(70,'a/b','',true);
+INSERT INTO users(id,github_id,login,access_token_enc) VALUES(5,5,'u','\x00');
+INSERT INTO write_operations(user_id,repository_id,idempotency_key,kind,request_hash,draft,state) VALUES(5,70,'k','create','\x00','{"title":"t"}','failed');
+INSERT INTO activity_cleanup(repository_id) VALUES(70)`); err != nil {
+		t.Fatal(err)
+	}
+	e.deps.Inventory = &inventories{results: []map[int64][]int64{{}, {}}}
+	e.deps.AppKey = &rsa.PrivateKey{}
+	if err := e.deps.CleanupPrivate(ctx, jobs.Job{Key: "repo:70"}, txFence{pool: e.pool}); err != nil {
+		t.Fatal(err)
+	}
+	var drafts, rows int
+	if err := e.pool.QueryRow(ctx, `SELECT count(draft), count(*) FROM write_operations`).Scan(&drafts, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if drafts != 0 || rows != 1 {
+		t.Fatalf("drafts=%d rows=%d", drafts, rows)
+	}
+}
+
 // A security event must leave a job that a new worker can process without a selector.
 func TestCleanupInvalidationSurvivesWorkerRestart(t *testing.T) {
 	for _, scope := range []accessfence.Scope{accessfence.ScopeUser, accessfence.ScopeInstallation} {

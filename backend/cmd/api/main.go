@@ -15,6 +15,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
+	"github.com/repoorbit/repoorbit/backend/internal/issues"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 	"github.com/repoorbit/repoorbit/backend/internal/platform"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
@@ -68,7 +69,10 @@ func main() {
 			repos.InstallURL = cfg.GitHubURL + "/apps/" + cfg.AppSlug + "/installations/new"
 		}
 		authHandler.Installed = http.HandlerFunc(repos.Installed)
-		resolver.RepoAccess, repoAPI = repos, authHandler.Protect(repos.Routes())
+		api := http.NewServeMux()
+		api.Handle("/api/", repos.Routes())
+		(&issues.Service{Pool: pool, Queries: queries, GitHub: gh, Access: repos, GitHubURL: cfg.GitHubURL}).Register(api)
+		resolver.RepoAccess, repoAPI = repos, authHandler.Protect(api)
 	}
 	router := chi.NewRouter()
 	router.Mount("/", platform.Health(pool))
