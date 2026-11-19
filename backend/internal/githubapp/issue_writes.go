@@ -74,7 +74,9 @@ func (c *Client) issueCall(ctx context.Context, token, method, fullName, rest st
 }
 
 // CreateIssue opens an issue (POST, not idempotent: never resend after an ambiguous error). GitHub may silently
-// drop labels and assignees, so callers must inspect the returned issue.
+// drop labels and assignees, so callers must inspect the returned issue. Errors, here and in every issue write below:
+// a *APIError with a 4xx Status is a definite rejection (nothing applied); a *APIError with any other status, a
+// transport error or an unreadable or invalid response is ambiguous (the write may have been applied).
 func (c *Client) CreateIssue(ctx context.Context, token, fullName string, in NewIssue) (Issue, error) {
 	var out Issue
 	if err := c.issueCall(ctx, token, http.MethodPost, fullName, "/issues", in, &out); err != nil {
@@ -86,7 +88,8 @@ func (c *Client) CreateIssue(ctx context.Context, token, fullName string, in New
 	return out, nil
 }
 
-// FetchIssue reads one issue (or pull request: check PullRequest) by number.
+// FetchIssue reads one issue (or pull request: check PullRequest) by number. A missing issue, or a repository the
+// token cannot read, is a *APIError whose NotFound() is true.
 func (c *Client) FetchIssue(ctx context.Context, token, fullName string, number int64) (Issue, error) {
 	var out Issue
 	if err := c.issueCall(ctx, token, http.MethodGet, fullName, fmt.Sprintf("/issues/%d", number), nil, &out); err != nil {
@@ -98,12 +101,13 @@ func (c *Client) FetchIssue(ctx context.Context, token, fullName string, number 
 	return out, nil
 }
 
-// AddLabels adds labels without touching the others on the issue.
+// AddLabels adds labels without touching the others on the issue; read the issue back to see which landed.
 func (c *Client) AddLabels(ctx context.Context, token, fullName string, number int64, labels []string) error {
 	return c.issueCall(ctx, token, http.MethodPost, fullName, fmt.Sprintf("/issues/%d/labels", number), map[string][]string{"labels": labels}, nil)
 }
 
-// RemoveLabel removes one label. A label that is not on the issue (404) is already removed.
+// RemoveLabel removes one label. Any 404 counts as success (nil): a label that is not on the issue, but also a missing
+// issue or an unreadable repository, so callers must read the issue back to confirm.
 func (c *Client) RemoveLabel(ctx context.Context, token, fullName string, number int64, label string) error {
 	err := c.issueCall(ctx, token, http.MethodDelete, fullName, fmt.Sprintf("/issues/%d/labels/%s", number, url.PathEscape(label)), nil, nil)
 	var api *APIError
@@ -118,12 +122,13 @@ func (c *Client) AddAssignees(ctx context.Context, token, fullName string, numbe
 	return c.issueCall(ctx, token, http.MethodPost, fullName, fmt.Sprintf("/issues/%d/assignees", number), map[string][]string{"assignees": logins}, nil)
 }
 
-// RemoveAssignees removes assignees without touching the others.
+// RemoveAssignees removes assignees without touching the others; a login that is not assigned is ignored.
 func (c *Client) RemoveAssignees(ctx context.Context, token, fullName string, number int64, logins []string) error {
 	return c.issueCall(ctx, token, http.MethodDelete, fullName, fmt.Sprintf("/issues/%d/assignees", number), map[string][]string{"assignees": logins}, nil)
 }
 
-// SetIssueState closes or reopens an issue; only the state field is sent.
+// SetIssueState closes or reopens an issue: state is "open" or "closed". Only the state field is sent (no
+// state_reason).
 func (c *Client) SetIssueState(ctx context.Context, token, fullName string, number int64, state string) error {
 	return c.issueCall(ctx, token, http.MethodPatch, fullName, fmt.Sprintf("/issues/%d", number), map[string]string{"state": state}, nil)
 }

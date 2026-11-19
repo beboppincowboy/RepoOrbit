@@ -4,19 +4,22 @@
 -- request may have reached GitHub, so a process death mid-send is never mistaken for "not sent". After a 30-day
 -- retention period (ingestion scheduler) succeeded and failed rows are deleted and unresolved ones redacted: an unknown
 -- create keeps its content hash so a retry can never duplicate the issue.
+-- Vocabulary: "unresolved" means state 'pending' or 'unknown'; "wiped" means draft set to NULL; "redacted" means outcome
+-- replaced by redacted_write_outcome(outcome). A wipe always redacts in the same statement. updated_at is set by the
+-- queries (no trigger).
 CREATE TABLE write_operations (
  id bigserial PRIMARY KEY,
- user_id bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
- repository_id bigint NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
- idempotency_key text NOT NULL,
+ user_id bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- the actor (local users.id, not their GitHub ID)
+ repository_id bigint NOT NULL REFERENCES repositories(id) ON DELETE CASCADE, -- the repository's GitHub ID
+ idempotency_key text NOT NULL, -- the client's Idempotency-Key header, unique per actor
  kind text NOT NULL CHECK (kind IN ('create', 'update')),
  issue_number bigint, -- the issue an update targets; for a create, the created issue once confirmed
- request_hash bytea NOT NULL,
- content_hash bytea, -- create only: title and body, kept after the draft is wiped so a recheck can still verify
- requested_metadata boolean NOT NULL DEFAULT false, -- create only: labels or assignees were requested (kept after a wipe)
- draft jsonb, -- the requested change; NULL once wiped after the actor lost access
+ request_hash bytea NOT NULL, -- sha256 of kind, repository_id, issue_number (0 for a create) and the validated draft JSON
+ content_hash bytea, -- create only: sha256 of the trimmed, LF-normalized title and body, kept after a wipe so a recheck can still verify
+ has_requested_metadata boolean NOT NULL DEFAULT false, -- create only: labels or assignees were requested (kept after a wipe)
+ draft jsonb, -- the reviewed request as validated (create or update draft); NULL once wiped after the actor lost access
  state text NOT NULL CHECK (state IN ('pending', 'succeeded', 'failed', 'unknown')),
- outcome jsonb NOT NULL DEFAULT '{}',
+ outcome jsonb NOT NULL DEFAULT '{}', -- {issue, unapplied, error, allStepsAnswered}, or the redacted shape of redacted_write_outcome
  sent_at timestamptz, -- when the row became 'unknown', just before the request was sent
  created_at timestamptz NOT NULL DEFAULT now(),
  updated_at timestamptz NOT NULL DEFAULT now(),
@@ -26,7 +29,7 @@ CREATE TABLE write_operations (
 CREATE UNIQUE INDEX write_operations_created_issue ON write_operations (repository_id, issue_number) WHERE kind = 'create' AND issue_number IS NOT NULL;
 -- At most one unresolved create of the same content per actor and repository, whatever its idempotency key: a second
 -- one could duplicate the issue.
-CREATE UNIQUE INDEX write_operations_open_create ON write_operations (user_id, repository_id, content_hash) WHERE kind = 'create' AND state IN ('pending', 'unknown');
+CREATE UNIQUE INDEX write_operations_unresolved_create ON write_operations (user_id, repository_id, content_hash) WHERE kind = 'create' AND state IN ('pending', 'unknown');
 CREATE INDEX write_operations_user_repository ON write_operations (user_id, repository_id, id);
 -- Actors whose private issue-write drafts a pending cleanup must wipe even if it cannot obtain a complete inventory:
 -- the holders of a revoked installation, recorded when it was revoked (fail closed).

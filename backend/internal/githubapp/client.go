@@ -140,7 +140,8 @@ type Repo struct {
 	Private     bool   `json:"private"`
 	Archived    bool   `json:"archived"`
 	HasIssues   bool   `json:"has_issues"`
-	// Permissions are the requesting user's, present when a user token fetched the repository.
+	// Permissions are the requesting user's when a user token fetched the repository. All false otherwise (an
+	// installation token, or a response without them), which reads the same as no access: use only with user tokens.
 	Permissions struct {
 		Admin    bool `json:"admin"`
 		Maintain bool `json:"maintain"`
@@ -241,7 +242,8 @@ type IssueUser struct {
 	Type  string `json:"type"`
 }
 
-// Issue is source evidence returned by GitHub's issues endpoint. PullRequest is non-nil for PR-shaped entries.
+// Issue is an issue as GitHub's issues endpoints return it. PullRequest is non-nil
+// when the entry is a pull request. User is nil when GitHub sends no author.
 type Issue struct {
 	ID        int64      `json:"id"`
 	Number    int64      `json:"number"`

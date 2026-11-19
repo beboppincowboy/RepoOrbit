@@ -266,19 +266,19 @@ type WebhookDelivery struct {
 }
 
 type WriteOperation struct {
-	ID                int64
-	UserID            int64
-	RepositoryID      int64
-	IdempotencyKey    string
-	Kind              string
-	IssueNumber       pgtype.Int8
-	RequestHash       []byte
-	ContentHash       []byte
-	RequestedMetadata bool
-	Draft             []byte
-	State             string
-	Outcome           []byte
-	SentAt            pgtype.Timestamptz
-	CreatedAt         pgtype.Timestamptz
-	UpdatedAt         pgtype.Timestamptz
+	ID                   int64
+	UserID               int64
+	RepositoryID         int64
+	IdempotencyKey       string
+	Kind                 string
+	IssueNumber          pgtype.Int8
+	RequestHash          []byte
+	ContentHash          []byte
+	HasRequestedMetadata bool
+	Draft                []byte
+	State                string
+	Outcome              []byte
+	SentAt               pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
 }
