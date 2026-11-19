@@ -61,7 +61,8 @@ func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int
 	// access, and their outcomes redacted; the hashes and redacted audit metadata stay. Global bumps (reconciliation)
 	// name no actor and wipe nothing. An installation bump does not say which repositories it covered (nothing local
 	// maps installations to repositories), so the private-repository cleanup queued below wipes, from the app
-	// inventory, the drafts of exactly the actors no installation covers any more.
+	// inventory, the drafts of exactly the actors no installation covers any more. It records the installation's
+	// holders too: a cleanup that cannot obtain a complete inventory wipes theirs instead (fail closed).
 	if _, err := tx.Exec(ctx, `UPDATE write_operations o SET draft = NULL, outcome = redacted_write_outcome(o.outcome) FROM repositories r
 		WHERE r.id = o.repository_id AND o.draft IS NOT NULL AND (
 		 ($1::text = 'user' AND r.is_private AND o.user_id = $2) OR
@@ -70,10 +71,11 @@ func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int
 	}
 	// A durable row is independent of a worker claim and records concurrent invalidations.
 	_, err := tx.Exec(ctx, `WITH targets AS (
-		INSERT INTO activity_cleanup (repository_id)
-		SELECT id FROM repositories WHERE NOT is_demo AND
+		INSERT INTO activity_cleanup (repository_id, wipe_users)
+		SELECT id, CASE WHEN $1 = 'installation' THEN ARRAY(SELECT user_id FROM installations WHERE installation_id = $2) ELSE '{}' END
+		FROM repositories WHERE NOT is_demo AND
         (($1 = 'repository' AND id = $2) OR ($1 <> 'repository' AND is_private))
-		ON CONFLICT (repository_id) DO UPDATE SET version = activity_cleanup.version + 1
+		ON CONFLICT (repository_id) DO UPDATE SET version = activity_cleanup.version + 1, wipe_users = activity_cleanup.wipe_users || EXCLUDED.wipe_users
 		RETURNING repository_id
 	)
 	INSERT INTO jobs (kind, key, state, run_at)

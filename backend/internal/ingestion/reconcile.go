@@ -308,8 +308,17 @@ func (d SchedulerDeps) pollActivity(ctx context.Context, now time.Time) error {
 // WriteOperationRetention is how long issue-write operations (redacted metadata once access is lost) are kept.
 const WriteOperationRetention = 30 * 24 * time.Hour
 
-// expireWriteOperations deletes issue-write operations older than WriteOperationRetention.
+// expireWriteOperations deletes succeeded and failed issue-write operations older than WriteOperationRetention, and
+// redacts the rest of that age. Those are unresolved (pending or unknown), and an unknown create must stay: its
+// content hash is what stops a retry of the same content from creating a second issue.
 func (d SchedulerDeps) expireWriteOperations(ctx context.Context, now time.Time) error {
-	_, err := d.Pool.Exec(ctx, `DELETE FROM write_operations WHERE created_at < $1`, now.Add(-WriteOperationRetention))
-	return err
+	cutoff := now.Add(-WriteOperationRetention)
+	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM write_operations WHERE created_at < $1 AND state IN ('succeeded', 'failed')`, cutoff); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE write_operations SET draft = NULL, outcome = redacted_write_outcome(outcome)
+			WHERE created_at < $1 AND (draft IS NOT NULL OR NOT outcome ? 'redacted')`, cutoff)
+		return err
+	})
 }

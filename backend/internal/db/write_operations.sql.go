@@ -11,6 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const failStalePendingCreate = `-- name: FailStalePendingCreate :execrows
+UPDATE write_operations SET state = 'failed', outcome = '{"error":"abandoned before sending; nothing was sent to GitHub"}', updated_at = now()
+WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND state = 'pending' AND content_hash = $3 AND created_at < now() - interval '1 minute'
+`
+
+type FailStalePendingCreateParams struct {
+	UserID       int64
+	RepositoryID int64
+	ContentHash  []byte
+}
+
+// A create still pending a minute after it was recorded was never sent: marking it sent (MarkWriteOperationSent,
+// conditional on 'pending') precedes the request, so a process that stopped in between sent nothing. Failing it frees
+// the content for a retry; should the original process resume, its mark finds no pending row and it sends nothing.
+func (q *Queries) FailStalePendingCreate(ctx context.Context, arg FailStalePendingCreateParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failStalePendingCreate, arg.UserID, arg.RepositoryID, arg.ContentHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const findOpenCreate = `-- name: FindOpenCreate :one
 SELECT id FROM write_operations WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND state IN ('pending', 'unknown') AND content_hash = $3 ORDER BY id LIMIT 1
 `

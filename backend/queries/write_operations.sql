@@ -32,6 +32,13 @@ WHERE id = $1 AND state = 'unknown';
 -- The unresolved create of the same content that blocks a new create under a fresh key.
 SELECT id FROM write_operations WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND state IN ('pending', 'unknown') AND content_hash = $3 ORDER BY id LIMIT 1;
 
+-- name: FailStalePendingCreate :execrows
+-- A create still pending a minute after it was recorded was never sent: marking it sent (MarkWriteOperationSent,
+-- conditional on 'pending') precedes the request, so a process that stopped in between sent nothing. Failing it frees
+-- the content for a retry; should the original process resume, its mark finds no pending row and it sends nothing.
+UPDATE write_operations SET state = 'failed', outcome = '{"error":"abandoned before sending; nothing was sent to GitHub"}', updated_at = now()
+WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND state = 'pending' AND content_hash = $3 AND created_at < now() - interval '1 minute';
+
 -- name: WipeActorDrafts :exec
 UPDATE write_operations SET draft = NULL, outcome = redacted_write_outcome(outcome) WHERE user_id = $1 AND repository_id = $2 AND draft IS NOT NULL;
 

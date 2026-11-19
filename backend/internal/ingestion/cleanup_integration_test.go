@@ -184,6 +184,53 @@ INSERT INTO activity_cleanup(repository_id) VALUES(70)`); err != nil {
 	}
 }
 
+// While no complete inventory can be had (here: an installation is suspended, which fails the whole inventory), an
+// installation revocation still removes its holders' drafts on the private repository, failing closed; other actors'
+// drafts and the shared projection wait for a complete inventory.
+func TestCleanupWipesRevokedInstallationDraftsWithoutInventory(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO repositories(id,name,description,is_private) VALUES(70,'a/b','',true);
+INSERT INTO activity_issues(source_id,repository_id,number,title,state,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES(77,70,1,'issue','open','',now(),now(),1,'u','User');
+INSERT INTO users(id,github_id,login,access_token_enc) VALUES(5,5,'u','\x00'),(6,6,'v','\x00');
+INSERT INTO installations(user_id,installation_id,account_login) VALUES(5,3,'o'),(6,4,'o');
+INSERT INTO write_operations(user_id,repository_id,idempotency_key,kind,request_hash,draft,state,outcome) VALUES
+ (5,70,'k','create','\x00','{"title":"t"}','failed','{"issue":{"number":1,"title":"secret"}}'),
+ (6,70,'k','create','\x00','{"title":"t"}','failed','{"issue":{"number":2,"title":"secret"}}')`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeInstallation, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	e.deps.Inventory = &inventories{err: errors.New("github app: invalid or suspended installation")}
+	e.deps.AppKey = &rsa.PrivateKey{}
+	if err := e.deps.CleanupPrivate(ctx, jobs.Job{Key: "repo:70"}, txFence{pool: e.pool}); err == nil {
+		t.Fatal("an unavailable inventory must defer the purge")
+	}
+	rows, err := e.pool.Query(ctx, `SELECT user_id FROM write_operations WHERE draft IS NOT NULL OR outcome::text LIKE '%secret%' ORDER BY user_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var issues, total int
+	if err := e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues WHERE repository_id=70), (SELECT count(*) FROM write_operations)`).Scan(&issues, &total); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(kept) != "[6]" || total != 2 || issues != 1 {
+		t.Fatalf("kept drafts of %v, %d operations, %d projected issues", kept, total, issues)
+	}
+}
+
 // A security event must leave a job that a new worker can process without a selector.
 func TestCleanupInvalidationSurvivesWorkerRestart(t *testing.T) {
 	for _, scope := range []accessfence.Scope{accessfence.ScopeUser, accessfence.ScopeInstallation} {

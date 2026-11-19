@@ -1,8 +1,9 @@
 -- +goose Up
 -- One row per user-initiated GitHub issue write: the audit record (actor, request hash, actual outcome) and the
 -- preserved draft. Never holds tokens. A row is 'pending' before transmission and 'unknown' from the moment the
--- request may have reached GitHub, so a process death mid-send is never mistaken for "not sent". Rows are deleted
--- after a 30-day retention period (ingestion scheduler).
+-- request may have reached GitHub, so a process death mid-send is never mistaken for "not sent". After a 30-day
+-- retention period (ingestion scheduler) succeeded and failed rows are deleted and unresolved ones redacted: an unknown
+-- create keeps its content hash so a retry can never duplicate the issue.
 CREATE TABLE write_operations (
  id bigserial PRIMARY KEY,
  user_id bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -27,6 +28,9 @@ CREATE UNIQUE INDEX write_operations_created_issue ON write_operations (reposito
 -- one could duplicate the issue.
 CREATE UNIQUE INDEX write_operations_open_create ON write_operations (user_id, repository_id, content_hash) WHERE kind = 'create' AND state IN ('pending', 'unknown');
 CREATE INDEX write_operations_user_repository ON write_operations (user_id, repository_id, id);
+-- Actors whose private issue-write drafts a pending cleanup must wipe even if it cannot obtain a complete inventory:
+-- the holders of a revoked installation, recorded when it was revoked (fail closed).
+ALTER TABLE activity_cleanup ADD COLUMN wipe_users bigint[] NOT NULL DEFAULT '{}';
 -- What an outcome keeps once the actor lost access: GitHub's issue number, link and state, the error summary (which
 -- never quotes content) and how many requested changes were unapplied. Titles, labels and logins go. Idempotent.
 -- +goose StatementBegin
@@ -39,5 +43,6 @@ CREATE FUNCTION redacted_write_outcome(o jsonb) RETURNS jsonb LANGUAGE sql IMMUT
 $$;
 -- +goose StatementEnd
 -- +goose Down
+ALTER TABLE activity_cleanup DROP COLUMN wipe_users;
 DROP TABLE write_operations;
 DROP FUNCTION redacted_write_outcome(jsonb);

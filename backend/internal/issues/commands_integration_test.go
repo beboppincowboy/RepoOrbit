@@ -5,6 +5,7 @@ package issues_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -773,18 +774,46 @@ func TestFinishAndRevocationDoNotDeadlock(t *testing.T) {
 			revoked <- err
 		}()
 	}})
-	resp, op := alice.send(create(repo), "deadlock-1", `{"title":"Private","body":"b"}`)
+	resp, _ := alice.send(create(repo), "deadlock-1", `{"title":"Private","body":"b"}`)
 	if err := <-revoked; err != nil {
 		t.Fatalf("revocation: %v", err)
 	}
-	if resp.StatusCode != http.StatusCreated || op.State != "succeeded" || op.IssueNumber == nil || string(op.Draft) != "null" {
-		t.Fatalf("status=%d op=%+v body=%s", resp.StatusCode, op, alice.body(resp))
+	// Access moved during the write: the recorded operation is withheld from the response.
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, alice.body(resp))
 	}
-	if op.Outcome.Issue == nil || op.Outcome.Issue.Title != "" {
-		t.Fatalf("an outcome recorded after the wipe must be redacted: %+v", op.Outcome.Issue)
+	if n := e.count(`SELECT count(*) FROM write_operations WHERE state = 'succeeded' AND issue_number IS NOT NULL AND draft IS NULL
+		AND outcome ? 'redacted' AND outcome::text NOT LIKE '%Private%'`); n != 1 {
+		t.Fatalf("an outcome recorded after the wipe must be kept, redacted: %d", n)
 	}
 	if n := e.count(`SELECT count(*) FROM activity_issues WHERE repository_id = $1`, repo); n != 0 {
 		t.Fatalf("projected under moved access: %d", n)
+	}
+}
+
+// An installation revocation committing mid-write wipes no draft by itself, so the response must not carry it: the
+// operation is withheld, on the submit and on a replay of its key.
+func TestSubmitWithholdsOperationWhenAccessMoved(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "vault", true)
+	e.gh.Install("alice", 7001, repo)
+	var once sync.Once
+	e.gh.SetIssueWriteFault(fake.IssueWriteFault{Before: func() {
+		once.Do(func() {
+			if err := db.InTx(context.Background(), e.pool, func(tx pgx.Tx) error {
+				return accessfence.InvalidateAccess(context.Background(), tx, accessfence.ScopeInstallation, 7001)
+			}); err != nil {
+				t.Error(err)
+			}
+		})
+	}})
+	resp, _ := alice.send(create(repo), "moved-1", `{"title":"Secret title","body":"b"}`)
+	if b := alice.body(resp); resp.StatusCode != http.StatusServiceUnavailable || strings.Contains(string(b), "Secret title") {
+		t.Fatalf("submit across an installation revocation: %d %s", resp.StatusCode, b)
+	}
+	if n := e.count(`SELECT count(*) FROM write_operations WHERE state = 'succeeded'`); n != 1 {
+		t.Fatalf("outcome not recorded: %d", n)
 	}
 }
 
@@ -984,5 +1013,131 @@ func TestAssigneeSwapAtLimit(t *testing.T) {
 	resp, op := alice.send(changes(repo, 1), "swap-1", `{"assignees":{"add":["carol"],"remove":["u0"]}}`)
 	if resp.StatusCode != http.StatusCreated || op.State != "succeeded" {
 		t.Fatalf("swap: %d %+v", resp.StatusCode, op)
+	}
+}
+
+// A create recorded but never marked sent (the process stopped first, so nothing reached GitHub) does not block the
+// same content forever: once stale it is failed and a fresh key proceeds. A recent pending create still blocks, with
+// its real operation id.
+func TestStalePendingCreateDoesNotBlockRetry(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	sum := sha256.Sum256([]byte("Stuck\x00body"))
+	pending := func(key string, age time.Duration) int64 {
+		var id int64
+		if err := e.pool.QueryRow(context.Background(), `INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, content_hash, draft, state, created_at)
+			VALUES ($1, $2, $3, 'create', '\x00', $4, '{"title":"Stuck","body":"body"}', 'pending', now() - $5 * interval '1 second') RETURNING id`, alice.id, repo, key, sum[:], int(age.Seconds())).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	recent := pending("recent", 0)
+	resp := alice.do("POST", create(repo), `{"title":"Stuck","body":"body"}`, map[string]string{"Origin": appURL, "X-CSRF-Token": alice.csrf, "Content-Type": "application/json", "Idempotency-Key": "retry-0"})
+	var conflict struct{ OperationID int64 }
+	if err := json.Unmarshal(alice.body(resp), &conflict); resp.StatusCode != http.StatusConflict || err != nil || conflict.OperationID != recent {
+		t.Fatalf("recent pending create: %d %+v %v", resp.StatusCode, conflict, err)
+	}
+	if _, err := e.pool.Exec(context.Background(), `DELETE FROM write_operations WHERE id = $1`, recent); err != nil {
+		t.Fatal(err)
+	}
+	stale := pending("stale", 2*time.Minute)
+	resp, op := alice.send(create(repo), "retry-1", `{"title":"Stuck","body":"body"}`)
+	if resp.StatusCode != http.StatusCreated || op.State != "succeeded" || op.ID == stale {
+		t.Fatalf("retry after a stale pending create: %d %+v %s", resp.StatusCode, op, alice.body(resp))
+	}
+	if n := e.count(`SELECT count(*) FROM write_operations WHERE id = $1 AND state = 'failed' AND sent_at IS NULL`, stale); n != 1 {
+		t.Fatal("the stale pending create must be failed, as never sent")
+	}
+	if n := len(e.gh.Issues(repo)); n != 1 {
+		t.Fatalf("issues on GitHub: %d", n)
+	}
+}
+
+// Two changes to one issue read back within the same GitHub second: the later readback is projected last, so an older
+// readback never overwrites a newer one even though their updated_at ties.
+func TestLaterReadbackWinsSameSecondProjection(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetIssues(repo, seedIssue(1, "alice", "Existing"))
+	second := time.Now().UTC().Truncate(time.Second)
+	var aPosted, captured atomic.Bool
+	readA, proceed := make(chan struct{}), make(chan struct{})
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/labels") {
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			if strings.Contains(string(body), `"a"`) {
+				aPosted.Store(true)
+			}
+		}
+		rec := httptest.NewRecorder()
+		next.ServeHTTP(rec, r)
+		b := rec.Body.Bytes()
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/1") {
+			var m map[string]any
+			if json.Unmarshal(b, &m) == nil {
+				m["updated_at"] = second.Format(time.RFC3339) // GitHub's one-second resolution
+				b, _ = json.Marshal(m)
+			}
+			if aPosted.Load() && captured.CompareAndSwap(false, true) { // A's readback: fetched now, delivered late
+				close(readA)
+				select {
+				case <-proceed:
+				case <-time.After(5 * time.Second):
+				}
+			}
+		}
+		for k, v := range rec.Header() {
+			if k != "Content-Length" {
+				w.Header()[k] = v
+			}
+		}
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(b)
+	})
+	doneA, doneB := make(chan int, 1), make(chan int, 1)
+	go func() {
+		resp, _ := alice.send(changes(repo, 1), "a-1", `{"labels":{"add":["a"]}}`)
+		doneA <- resp.StatusCode
+	}()
+	select {
+	case <-readA:
+	case <-time.After(5 * time.Second):
+		t.Fatal("A never read back")
+	}
+	go func() {
+		resp, _ := alice.send(changes(repo, 1), "b-1", `{"labels":{"add":["b"]}}`)
+		doneB <- resp.StatusCode
+	}()
+	// Unserialized, B finishes now; serialized, B waits for A's projection.
+	statusB := 0
+	for deadline := time.Now().Add(3 * time.Second); statusB == 0 && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		select {
+		case statusB = <-doneB:
+		default:
+			if e.count(`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event = 'advisory'`) > 0 {
+				deadline = time.Time{}
+			}
+		}
+	}
+	close(proceed)
+	if s := <-doneA; s != http.StatusCreated {
+		t.Fatalf("A: %d", s)
+	}
+	if statusB == 0 {
+		statusB = <-doneB
+	}
+	if statusB != http.StatusCreated {
+		t.Fatalf("B: %d", statusB)
+	}
+	rows, err := e.pool.Query(context.Background(), `SELECT name FROM activity_issue_labels l JOIN activity_issues i ON i.source_id = l.issue_id WHERE i.repository_id = $1 ORDER BY name`, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || !slices.Equal(got, []string{"a", "b"}) {
+		t.Fatalf("projected labels %v (%v): an older readback overwrote a newer one", got, err)
 	}
 }
