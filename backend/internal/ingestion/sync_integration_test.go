@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
+	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp/fake"
 	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
@@ -309,5 +310,40 @@ func TestIssueFetchFencedByDeselectionAndRevocation(t *testing.T) {
 				t.Fatalf("page or checkpoint committed: count=%d page=%d phase=%s cursor=%q err=%v", count, page, phase, cursor, err)
 			}
 		})
+	}
+}
+
+// GitHub's updated_at has one-second resolution. A confirmed write read back within the same second as the stored
+// copy still lands; a sync fetch with the same timestamp never replaces what is stored.
+func TestConfirmedProjectionAcceptsSameSecondUpdate(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO repositories(id,name,description,is_private) VALUES(70,'a/b','',false)`); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Truncate(time.Second)
+	issue := githubapp.Issue{ID: 77, Number: 1, Title: "t", State: "open", CreatedAt: at, UpdatedAt: at, User: &githubapp.IssueUser{ID: 1, Login: "u", Type: "User"}}
+	state := func() string {
+		var s string
+		if err := e.pool.QueryRow(ctx, `SELECT state FROM activity_issues WHERE source_id = 77`).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	project := func(f func(context.Context, pgx.Tx, int64, githubapp.Issue) error, i githubapp.Issue) {
+		if err := db.InTx(ctx, e.pool, func(tx pgx.Tx) error { return f(ctx, tx, 70, i) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project(ingestion.ProjectIssue, issue)
+	closed := issue
+	closed.State = "closed"
+	project(ingestion.ProjectConfirmedIssue, closed)
+	if got := state(); got != "closed" {
+		t.Fatalf("confirmed same-second update lost: %s", got)
+	}
+	project(ingestion.ProjectIssue, issue) // an older sync fetch with the same timestamp
+	if got := state(); got != "closed" {
+		t.Fatalf("same-second sync fetch overwrote the confirmed copy: %s", got)
 	}
 }

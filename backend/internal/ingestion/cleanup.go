@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -65,14 +66,13 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 	if !reflect.DeepEqual(first, second) {
 		return retry(time.Time{})
 	}
-	present := false
-	for _, ids := range second {
-		for _, id := range ids {
-			if id == repoID {
-				present = true
-			}
+	covering := []int64{} // installations whose inventory includes the repository
+	for inst, ids := range second {
+		if slices.Contains(ids, repoID) {
+			covering = append(covering, inst)
 		}
 	}
+	present := len(covering) > 0
 	err = fence.Commit(ctx, func(tx pgx.Tx) error {
 		current, err := snap.StillCurrent(ctx, tx)
 		if err != nil {
@@ -92,6 +92,14 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 		}
 		if liveVersion != version || livePrivate != private {
 			return errRace
+		}
+		// Private access comes only through installations: an actor who holds none of the covering installations
+		// lost it, so their issue-write drafts go and their outcomes are redacted (everyone's when none covers).
+		if private {
+			if _, err = tx.Exec(ctx, `UPDATE write_operations SET draft=NULL, outcome=redacted_write_outcome(outcome) WHERE repository_id=$1 AND draft IS NOT NULL
+				AND user_id NOT IN (SELECT user_id FROM installations WHERE installation_id = ANY($2))`, repoID, covering); err != nil {
+				return err
+			}
 		}
 		if private && !present {
 			if _, err = tx.Exec(ctx, `DELETE FROM activity_children WHERE repository_id=$1`, repoID); err != nil {
@@ -117,9 +125,6 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 				return err
 			}
 			if _, err = tx.Exec(ctx, `DELETE FROM issues WHERE repository_id=$1`, repoID); err != nil {
-				return err
-			}
-			if _, err = tx.Exec(ctx, `UPDATE write_operations SET draft=NULL WHERE repository_id=$1`, repoID); err != nil {
 				return err
 			}
 			if _, err = tx.Exec(ctx, `UPDATE activity_resources SET phase='backfill', page=1, cursor='', generation=generation+1, watermark=NULL, scan_started_at=NULL, previous_scan=NULL, current_scan='{}', last_success_at=NULL, last_error_code=NULL WHERE repository_id=$1`, repoID); err != nil {

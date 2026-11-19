@@ -330,3 +330,22 @@ func TestCredentialThrottleKeepsTheLaterTimeAndIgnoresThePast(t *testing.T) {
 		t.Fatalf("a past retry-after throttles: %v", until)
 	}
 }
+
+// Issue-write operations are kept for the documented 30-day retention period, then deleted.
+func TestWriteOperationRetention(t *testing.T) {
+	f := newFixture(t)
+	f.user(1)
+	f.repo(10)
+	now := time.Now()
+	f.exec(`INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, state, created_at) VALUES
+	 (1, 10, 'old', 'create', '\x00', 'unknown', $1), (1, 10, 'recent', 'create', '\x00', 'failed', $2)`, now.Add(-31*24*time.Hour), now.Add(-29*24*time.Hour))
+	noErr(t, SchedulerDeps{Pool: f.pool}.expireWriteOperations(context.Background(), now))
+	var keys []string
+	rows, err := f.pool.Query(context.Background(), `SELECT idempotency_key FROM write_operations`)
+	noErr(t, err)
+	keys, err = pgx.CollectRows(rows, pgx.RowTo[string])
+	noErr(t, err)
+	if len(keys) != 1 || keys[0] != "recent" {
+		t.Fatalf("kept %v", keys)
+	}
+}

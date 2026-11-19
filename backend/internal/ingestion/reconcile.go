@@ -203,7 +203,8 @@ func runDuties(ctx context.Context, clock jobs.Clock, sleep func(context.Context
 
 // StartScheduler registers the star reconcile handler on the worker and starts the periodic reconciliation loop:
 // at startup and then every 15 minutes it schedules refreshes of every followed repository and resumes paused ones;
-// hourly it schedules star reconciliation for users who follow starred repositories. Due times are spread by jitter.
+// hourly it schedules star reconciliation for users who follow starred repositories and deletes issue-write operations
+// past WriteOperationRetention. Due times are spread by jitter.
 // It only writes job rows (Enqueue never revives dead work); the jobs worker executes them, two at a time. The
 // returned channel closes when the loop has stopped (ctx done).
 func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
@@ -230,6 +231,7 @@ func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
 			{name: "metadata poll", every: MetadataPollInterval, run: d.pollMetadata},
 			{name: "activity poll", every: MetadataPollInterval, run: d.pollActivity},
 			{name: "star", every: StarReconcileInterval, run: d.scheduleStars},
+			{name: "write operation retention", every: StarReconcileInterval, run: d.expireWriteOperations},
 		})
 	}()
 	return done
@@ -301,4 +303,13 @@ func (d SchedulerDeps) pollActivity(ctx context.Context, now time.Time) error {
 		}
 		return nil
 	})
+}
+
+// WriteOperationRetention is how long issue-write operations (redacted metadata once access is lost) are kept.
+const WriteOperationRetention = 30 * 24 * time.Hour
+
+// expireWriteOperations deletes issue-write operations older than WriteOperationRetention.
+func (d SchedulerDeps) expireWriteOperations(ctx context.Context, now time.Time) error {
+	_, err := d.Pool.Exec(ctx, `DELETE FROM write_operations WHERE created_at < $1`, now.Add(-WriteOperationRetention))
+	return err
 }

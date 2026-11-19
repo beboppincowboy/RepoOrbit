@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 )
@@ -136,27 +137,50 @@ INSERT INTO activity_cleanup(repository_id) VALUES(70)`); err != nil {
 	}
 }
 
-// A purge of a private repository no installation covers wipes every actor's issue-write drafts but keeps the audit row.
+// Cleanup wipes and redacts issue-write drafts of exactly the actors whose installations no longer cover the private
+// repository: everyone when no installation does, only the uncovered when one still does. The audit row stays.
 func TestCleanupWipesWriteDrafts(t *testing.T) {
-	e := setup(t)
-	ctx := context.Background()
-	if _, err := e.pool.Exec(ctx, `INSERT INTO repositories(id,name,description,is_private) VALUES(70,'a/b','',true);
-INSERT INTO users(id,github_id,login,access_token_enc) VALUES(5,5,'u','\x00');
-INSERT INTO write_operations(user_id,repository_id,idempotency_key,kind,request_hash,draft,state) VALUES(5,70,'k','create','\x00','{"title":"t"}','failed');
+	for _, tc := range []struct {
+		name string
+		inv  map[int64][]int64
+		kept []int64 // users whose drafts survive
+	}{
+		{name: "no installation covers", inv: map[int64][]int64{}, kept: nil},
+		{name: "one installation still covers", inv: map[int64][]int64{3: {70}, 4: {}}, kept: []int64{5}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := setup(t)
+			ctx := context.Background()
+			if _, err := e.pool.Exec(ctx, `INSERT INTO repositories(id,name,description,is_private) VALUES(70,'a/b','',true);
+INSERT INTO users(id,github_id,login,access_token_enc) VALUES(5,5,'u','\x00'),(6,6,'v','\x00');
+INSERT INTO installations(user_id,installation_id,account_login) VALUES(5,3,'o'),(6,4,'o');
+INSERT INTO write_operations(user_id,repository_id,idempotency_key,kind,request_hash,draft,state,outcome) VALUES
+ (5,70,'k','create','\x00','{"title":"t"}','failed','{"issue":{"number":1,"title":"secret","labels":["x"]}}'),
+ (6,70,'k','create','\x00','{"title":"t"}','failed','{"issue":{"number":2,"title":"secret","labels":["x"]}}');
 INSERT INTO activity_cleanup(repository_id) VALUES(70)`); err != nil {
-		t.Fatal(err)
-	}
-	e.deps.Inventory = &inventories{results: []map[int64][]int64{{}, {}}}
-	e.deps.AppKey = &rsa.PrivateKey{}
-	if err := e.deps.CleanupPrivate(ctx, jobs.Job{Key: "repo:70"}, txFence{pool: e.pool}); err != nil {
-		t.Fatal(err)
-	}
-	var drafts, rows int
-	if err := e.pool.QueryRow(ctx, `SELECT count(draft), count(*) FROM write_operations`).Scan(&drafts, &rows); err != nil {
-		t.Fatal(err)
-	}
-	if drafts != 0 || rows != 1 {
-		t.Fatalf("drafts=%d rows=%d", drafts, rows)
+				t.Fatal(err)
+			}
+			e.deps.Inventory = &inventories{results: []map[int64][]int64{tc.inv, tc.inv}}
+			e.deps.AppKey = &rsa.PrivateKey{}
+			if err := e.deps.CleanupPrivate(ctx, jobs.Job{Key: "repo:70"}, txFence{pool: e.pool}); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := e.pool.Query(ctx, `SELECT user_id FROM write_operations WHERE draft IS NOT NULL AND outcome::text LIKE '%secret%' ORDER BY user_id`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kept, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var total, redacted int
+			if err := e.pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE draft IS NULL AND outcome::text NOT LIKE '%secret%' AND outcome->'issue'->>'number' IS NOT NULL) FROM write_operations`).Scan(&total, &redacted); err != nil {
+				t.Fatal(err)
+			}
+			if fmt.Sprint(kept) != fmt.Sprint(tc.kept) || total != 2 || redacted != 2-len(tc.kept) {
+				t.Fatalf("kept=%v total=%d redacted=%d", kept, total, redacted)
+			}
+		})
 	}
 }
 
