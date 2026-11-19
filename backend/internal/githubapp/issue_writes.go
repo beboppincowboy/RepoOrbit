@@ -20,28 +20,33 @@ type NewIssue struct {
 	Assignees []string `json:"assignees,omitempty"`
 }
 
+// ErrNotSent wraps an issue-call error raised before the request left (an invalid repository name, a body that does not
+// encode, a request that cannot be built): GitHub received nothing, so the call is definitely not applied.
+var ErrNotSent = errors.New("github: request not sent")
+
 // repoPath is /repos/{owner}/{name} for a full name, with both parts escaped.
 func repoPath(fullName string) (string, error) {
 	owner, name, ok := strings.Cut(fullName, "/")
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
-		return "", fmt.Errorf("github: invalid repository")
+		return "", fmt.Errorf("%w: invalid repository", ErrNotSent)
 	}
 	return "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name), nil
 }
 
 // send makes one API request with a JSON body (nil for none) and decodes a 2xx response into out (nil to discard).
+// Errors before the request is handed to the transport wrap ErrNotSent.
 func (c *Client) send(ctx context.Context, token, method, path string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: %v", ErrNotSent, err)
 		}
 		reader = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.APIURL+path, reader)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrNotSent, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -75,8 +80,9 @@ func (c *Client) issueCall(ctx context.Context, token, method, fullName, rest st
 
 // CreateIssue opens an issue (POST, not idempotent: never resend after an ambiguous error). GitHub may silently
 // drop labels and assignees, so callers must inspect the returned issue. Errors, here and in every issue write below:
-// a *APIError with a 4xx Status is a definite rejection (nothing applied); a *APIError with any other status, a
-// transport error or an unreadable or invalid response is ambiguous (the write may have been applied).
+// an error wrapping ErrNotSent was raised before anything was sent (nothing applied); a *APIError with a 4xx Status is
+// a definite rejection (nothing applied); a *APIError with any other status, a transport error or an unreadable or
+// invalid response is ambiguous (the write may have been applied).
 func (c *Client) CreateIssue(ctx context.Context, token, fullName string, in NewIssue) (Issue, error) {
 	var out Issue
 	if err := c.issueCall(ctx, token, http.MethodPost, fullName, "/issues", in, &out); err != nil {

@@ -25,13 +25,33 @@ type FailStalePendingCreateParams struct {
 // A create still pending a minute after it was recorded was never sent: marking it sent (MarkWriteOperationSent,
 // conditional on 'pending') precedes the request, so a process that stopped in between sent nothing. Failing it frees
 // the content for a retry; should the original process resume, its mark finds no pending row and it sends nothing.
-// Run by a new create that collided with that pending create; the threshold is the literal '1 minute' below.
+// Run by a new create that collided with that pending create; the threshold is the literal '1 minute' below. Only a
+// non-zero count (this call failed a never-sent create) lets that new create retry its insert.
 func (q *Queries) FailStalePendingCreate(ctx context.Context, arg FailStalePendingCreateParams) (int64, error) {
 	result, err := q.db.Exec(ctx, failStalePendingCreate, arg.UserID, arg.RepositoryID, arg.ContentHash)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const findLatestCreate = `-- name: FindLatestCreate :one
+SELECT id FROM write_operations WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND content_hash = $3 ORDER BY id DESC LIMIT 1
+`
+
+type FindLatestCreateParams struct {
+	UserID       int64
+	RepositoryID int64
+	ContentHash  []byte
+}
+
+// The user's most recent create of the same content in this repository, in any state: what a create that collided
+// with a blocker which resolved before it could be found names instead.
+func (q *Queries) FindLatestCreate(ctx context.Context, arg FindLatestCreateParams) (int64, error) {
+	row := q.db.QueryRow(ctx, findLatestCreate, arg.UserID, arg.RepositoryID, arg.ContentHash)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const findUnresolvedCreate = `-- name: FindUnresolvedCreate :one
@@ -274,7 +294,7 @@ UPDATE write_operations SET state = 'unknown', sent_at = now(), updated_at = now
 `
 
 // Moves a pending operation to 'unknown' and stamps sent_at, just before its request is sent. 0 rows: it is no longer
-// pending (FailStalePendingCreate failed it), and nothing may be sent.
+// pending (FailStalePendingCreate failed it), and nothing may be sent; the caller answers with the row as it stands.
 func (q *Queries) MarkWriteOperationSent(ctx context.Context, id int64) (int64, error) {
 	result, err := q.db.Exec(ctx, markWriteOperationSent, id)
 	if err != nil {

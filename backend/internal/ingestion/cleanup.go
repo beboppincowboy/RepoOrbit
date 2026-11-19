@@ -11,7 +11,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
-	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 )
@@ -30,9 +29,10 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 	// Every deferral first wipes the drafts this cleanup was told to (a revoked installation's holders), so they never
 	// wait on a complete inventory: one suspended installation anywhere fails every inventory. The shared projection
 	// still waits. A covered holder loses drafts too; that is the fail-closed side. wipe_users is cleared only if no
-	// invalidation arrived meanwhile (version unchanged).
+	// invalidation arrived meanwhile (version unchanged). The wipe commits through the claim fence like every other
+	// cleanup effect: a worker that lost its claim wipes nothing and returns ErrLostClaim.
 	retry := func(at time.Time) error {
-		if err := db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
+		if err := fence.Commit(ctx, func(tx pgx.Tx) error {
 			var version int64
 			err := tx.QueryRow(ctx, `WITH c AS (SELECT c.version, c.wipe_users FROM activity_cleanup c JOIN repositories r ON r.id = c.repository_id
 				WHERE c.repository_id = $1 AND r.is_private AND c.wipe_users <> '{}'), w AS (
@@ -47,7 +47,9 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 			}
 			_, err = tx.Exec(ctx, `UPDATE activity_cleanup SET wipe_users = '{}' WHERE repository_id = $1 AND version = $2`, repoID, version)
 			return err
-		}); err != nil {
+		}); errors.Is(err, jobs.ErrLostClaim) {
+			return err
+		} else if err != nil {
 			log.Printf("ingestion: cleanup draft wipe for repository %d: %v", repoID, err)
 		}
 		if at.IsZero() {

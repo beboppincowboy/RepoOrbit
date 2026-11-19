@@ -21,7 +21,7 @@ type Scope string
 
 const (
 	ScopeUser         Scope = "user"         // GitHub authorization revoked / signed out of GitHub
-	ScopeInstallation Scope = "installation" // installation deleted/suspended, repos removed
+	ScopeInstallation Scope = "installation" // any installation change: deleted/suspended, repos removed or added, created
 	ScopeRepository   Scope = "repository"   // repository deleted/privatized/transferred
 	// ScopeGlobal is one monotonic permissions version (subject 0) bumped by every InvalidateAccess and tracked by every
 	// TakeSnapshot. It is the one row a bump and a private commit always contend on, so they serialize even when the
@@ -59,9 +59,22 @@ func BumpAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) er
 // private repositories) and ScopeRepository (everyone's, on that repository), and queues an activity_cleanup row plus
 // job for that repository (ScopeRepository) or every non-demo private repository (other scopes). ScopeInstallation
 // also records the installation's current holders in activity_cleanup.wipe_users, so their private drafts are wiped
-// even if the cleanup cannot get a complete inventory. ScopeInstallation and ScopeGlobal wipe nothing themselves; the
+// even if the cleanup cannot get a complete inventory (use InvalidateInstallationGrant for a change that can only add
+// access). ScopeInstallation and ScopeGlobal wipe nothing themselves; the
 // queued cleanups wipe the drafts of actors no installation covers any more. Never grants access.
 func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) error {
+	return invalidate(ctx, tx, scope, subjectID, scope == ScopeInstallation)
+}
+
+// InvalidateInstallationGrant is InvalidateAccess(ScopeInstallation) for an installation change that can only add
+// access (installation created or unsuspended, repositories added): the same fence bumps and queued cleanups, but the
+// installation's holders are not recorded in wipe_users, since nobody's access ended.
+func InvalidateInstallationGrant(ctx context.Context, tx pgx.Tx, installationID int64) error {
+	return invalidate(ctx, tx, ScopeInstallation, installationID, false)
+}
+
+// invalidate is InvalidateAccess; recordHolders adds the installation's holders (ScopeInstallation only) to wipe_users.
+func invalidate(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64, recordHolders bool) error {
 	if err := BumpAccess(ctx, tx, scope, subjectID); err != nil {
 		return err
 	}
@@ -80,7 +93,7 @@ func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int
 	// A durable row is independent of a worker claim and records concurrent invalidations.
 	_, err := tx.Exec(ctx, `WITH targets AS (
 		INSERT INTO activity_cleanup (repository_id, wipe_users)
-		SELECT id, CASE WHEN $1 = 'installation' THEN ARRAY(SELECT user_id FROM installations WHERE installation_id = $2) ELSE '{}' END
+		SELECT id, CASE WHEN $3::bool THEN ARRAY(SELECT user_id FROM installations WHERE installation_id = $2) ELSE '{}' END
 		FROM repositories WHERE NOT is_demo AND
         (($1 = 'repository' AND id = $2) OR ($1 <> 'repository' AND is_private))
 		ON CONFLICT (repository_id) DO UPDATE SET version = activity_cleanup.version + 1, wipe_users = activity_cleanup.wipe_users || EXCLUDED.wipe_users
@@ -90,7 +103,7 @@ func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int
 	SELECT 'activity_cleanup', 'repo:' || repository_id, 'queued', now() FROM targets
 	ON CONFLICT (kind, key) DO UPDATE SET
 	 run_at = CASE WHEN jobs.state = 'queued' THEN LEAST(jobs.run_at, EXCLUDED.run_at) ELSE jobs.run_at END,
-	 pending = CASE WHEN jobs.state = 'queued' THEN jobs.pending ELSE true END, updated_at = now()`, string(scope), subjectID)
+	 pending = CASE WHEN jobs.state = 'queued' THEN jobs.pending ELSE true END, updated_at = now()`, string(scope), subjectID, recordHolders)
 	return err
 }
 

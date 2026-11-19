@@ -44,3 +44,18 @@ func TestIssueWriteCalls(t *testing.T) {
 		t.Fatal("accepted a malformed repository name")
 	}
 }
+
+// An error raised before the request leaves is ErrNotSent, so callers can treat it as definite.
+func TestPreSendErrorsAreNotSent(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++ }))
+	defer server.Close()
+	c := New("", "", "", server.URL, "")
+	if _, err := c.CreateIssue(context.Background(), "t", "o/r/x", NewIssue{Title: "x"}); !errors.Is(err, ErrNotSent) || hits != 0 {
+		t.Fatalf("err=%v hits=%d", err, hits)
+	}
+	bad := New("", "", "", "http://bad host", "")
+	if _, err := bad.CreateIssue(context.Background(), "t", "o/r", NewIssue{Title: "x"}); !errors.Is(err, ErrNotSent) {
+		t.Fatalf("request construction: %v", err)
+	}
+}
