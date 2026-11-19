@@ -58,11 +58,13 @@ func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int
 		return err
 	}
 	// Issue-write drafts of the actors who may have lost private access are wiped now, even where other users keep
-	// access; the audit outcome and hashes stay. Global bumps (reconciliation) name no actor and wipe nothing.
-	if _, err := tx.Exec(ctx, `UPDATE write_operations o SET draft = NULL FROM repositories r
+	// access, and their outcomes redacted; the hashes and redacted audit metadata stay. Global bumps (reconciliation)
+	// name no actor and wipe nothing. An installation bump does not say which repositories it covered (nothing local
+	// maps installations to repositories), so the private-repository cleanup queued below wipes, from the app
+	// inventory, the drafts of exactly the actors no installation covers any more.
+	if _, err := tx.Exec(ctx, `UPDATE write_operations o SET draft = NULL, outcome = redacted_write_outcome(o.outcome) FROM repositories r
 		WHERE r.id = o.repository_id AND o.draft IS NOT NULL AND (
 		 ($1::text = 'user' AND r.is_private AND o.user_id = $2) OR
-		 ($1::text = 'installation' AND r.is_private AND o.user_id IN (SELECT user_id FROM installations WHERE installation_id = $2)) OR
 		 ($1::text = 'repository' AND r.id = $2))`, string(scope), subjectID); err != nil {
 		return err
 	}

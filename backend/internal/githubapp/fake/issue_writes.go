@@ -21,6 +21,9 @@ type IssueWriteFault struct {
 	Before        func()        // runs when the create request arrives, before anything is stored
 }
 
+// maxAssignees is GitHub's per-issue cap; assignees beyond it are silently ignored.
+const maxAssignees = 10
+
 var levels = []string{"read", "triage", "write", "maintain", "admin"}
 
 func atLeast(level, min string) bool {
@@ -194,7 +197,7 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request, login strin
 			issue.Labels = append(issue.Labels, labelFor(name))
 		}
 		for _, a := range in.Assignees {
-			if !fault.DropAssignees && s.assignableTo(x, a) {
+			if !fault.DropAssignees && s.assignableTo(x, a) && len(issue.Assignees) < maxAssignees {
 				issue.Assignees = append(issue.Assignees, actor(a))
 			}
 		}
@@ -293,7 +296,8 @@ func (s *Server) issueLabels(w http.ResponseWriter, r *http.Request, login strin
 	writeJSON(w, issue.Labels)
 }
 
-// issueAssignees serves POST (add) and DELETE (remove) of assignees. Unassignable logins are silently ignored.
+// issueAssignees serves POST (add) and DELETE (remove) of assignees. Unassignable logins, and additions beyond
+// maxAssignees, are silently ignored.
 func (s *Server) issueAssignees(w http.ResponseWriter, r *http.Request, login string) {
 	var in struct {
 		Assignees []string `json:"assignees"`
@@ -319,7 +323,7 @@ func (s *Server) issueAssignees(w http.ResponseWriter, r *http.Request, login st
 	for _, a := range in.Assignees {
 		i := slices.IndexFunc(issue.Assignees, func(u IssueActor) bool { return u.Login == a })
 		switch {
-		case r.Method == http.MethodPost && i < 0 && s.assignableTo(x, a):
+		case r.Method == http.MethodPost && i < 0 && s.assignableTo(x, a) && len(issue.Assignees) < maxAssignees:
 			issue.Assignees = append(issue.Assignees, actor(a))
 		case r.Method == http.MethodDelete && i >= 0:
 			issue.Assignees = slices.Delete(issue.Assignees, i, i+1)

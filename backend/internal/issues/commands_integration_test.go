@@ -16,6 +16,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,6 +42,13 @@ type env struct {
 	client *githubapp.Client
 	issues *issues.Service
 	srv    *httptest.Server
+	around atomic.Pointer[func(http.ResponseWriter, *http.Request, http.Handler)] // see intercept
+}
+
+// intercept routes every fake GitHub request through f, which serves it by calling next. It lets a test interleave
+// steps with a request deterministically.
+func (e *env) intercept(f func(w http.ResponseWriter, r *http.Request, next http.Handler)) {
+	e.around.Store(&f)
 }
 
 // setup wires the real auth middleware, repository API and issue commands to a migrated database and a fake GitHub,
@@ -48,7 +57,15 @@ func setup(t *testing.T) *env {
 	t.Helper()
 	_, pool := testutil.Database(t)
 	gh := fake.New("cid", "secret")
-	ghSrv := httptest.NewServer(gh.Handler())
+	e := &env{t: t, pool: pool, gh: gh}
+	ghHandler := gh.Handler()
+	ghSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f := e.around.Load(); f != nil {
+			(*f)(w, r, ghHandler)
+			return
+		}
+		ghHandler.ServeHTTP(w, r)
+	}))
 	t.Cleanup(ghSrv.Close)
 	client := githubapp.New("cid", "secret", ghSrv.URL, ghSrv.URL, appURL+"/auth/github/callback")
 	q := db.New(pool)
@@ -64,7 +81,8 @@ func setup(t *testing.T) *env {
 	mux.Handle("/api/", h.Protect(api))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &env{t: t, pool: pool, gh: gh, client: client, issues: svc, srv: srv}
+	e.client, e.issues, e.srv = client, svc, srv
+	return e
 }
 
 // repo creates a repository on the fake GitHub and its local row (as a selection would).
@@ -378,13 +396,14 @@ func TestAmbiguousCreateStaysUnknown(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
 	repo := e.repo("alice", "app", false)
-	// Each candidate fails exactly one check: content (#1), author (#2), age (#4); #99 does not exist.
-	wrongContent, wrongAuthor, tooOld := seedIssue(1, "alice", "Different title"), seedIssue(2, "mallory", "Ship it"), seedIssue(4, "alice", "Ship it")
-	wrongContent.Body, wrongAuthor.Body, tooOld.Body = "details", "details", "details"
-	wrongContent.User.ID = alice.githubID()
-	tooOld.User.ID = alice.githubID()
+	// Each candidate fails exactly one check: content (#1), author (#2), age (#4, and #3, an identical issue opened
+	// 30 seconds before the send); #99 does not exist.
+	wrongContent, wrongAuthor, beforeSend, tooOld := seedIssue(1, "alice", "Different title"), seedIssue(2, "mallory", "Ship it"), seedIssue(3, "alice", "Ship it"), seedIssue(4, "alice", "Ship it")
+	wrongContent.Body, wrongAuthor.Body, beforeSend.Body, tooOld.Body = "details", "details", "details", "details"
+	wrongContent.User.ID, beforeSend.User.ID, tooOld.User.ID = alice.githubID(), alice.githubID(), alice.githubID()
 	wrongContent.CreatedAt, wrongAuthor.CreatedAt = time.Now(), time.Now()
-	e.gh.SetIssues(repo, wrongContent, wrongAuthor, tooOld)
+	beforeSend.CreatedAt = time.Now().Add(-30 * time.Second)
+	e.gh.SetIssues(repo, wrongContent, wrongAuthor, beforeSend, tooOld)
 	e.client.HTTP.Timeout = 300 * time.Millisecond
 	var stateAtSend string
 	e.gh.SetIssueWriteFault(fake.IssueWriteFault{Delay: time.Second, Before: func() {
@@ -401,7 +420,7 @@ func TestAmbiguousCreateStaysUnknown(t *testing.T) {
 	time.Sleep(time.Second) // let the fake finish creating
 	e.gh.SetIssueWriteFault(fake.IssueWriteFault{})
 	e.client.HTTP.Timeout = 5 * time.Second
-	if n := len(e.gh.Issues(repo)); n != 4 {
+	if n := len(e.gh.Issues(repo)); n != 5 {
 		t.Fatalf("issues on GitHub: %d", n)
 	}
 	if resp, again := alice.send(create(repo), "slow-1", `{"title":"Ship it","body":"details"}`); resp.StatusCode != 200 || again.ID != op.ID || again.State != "unknown" {
@@ -410,7 +429,7 @@ func TestAmbiguousCreateStaysUnknown(t *testing.T) {
 	if resp := alice.do("POST", create(repo), `{"title":"Ship it","body":"details"}`, map[string]string{"Origin": appURL, "X-CSRF-Token": alice.csrf, "Idempotency-Key": "slow-2"}); resp.StatusCode != http.StatusConflict {
 		t.Fatalf("fresh key, same unresolved content: %d", resp.StatusCode)
 	}
-	if n := len(e.gh.Issues(repo)); n != 4 {
+	if n := len(e.gh.Issues(repo)); n != 5 {
 		t.Fatalf("a resubmission created another issue: %d", n)
 	}
 
@@ -426,7 +445,7 @@ func TestAmbiguousCreateStaysUnknown(t *testing.T) {
 	recheck := func(number int64) (*http.Response, operation) {
 		return alice.send(opPath(op.ID)+"/recheck", "", fmt.Sprintf(`{"issueNumber":%d}`, number))
 	}
-	for _, wrong := range []int64{1, 2, 4, 99} {
+	for _, wrong := range []int64{1, 2, 3, 4, 99} {
 		resp, got := recheck(wrong)
 		if resp.StatusCode != http.StatusConflict || got.State != "unknown" || got.IssueNumber != nil {
 			t.Fatalf("recheck #%d: %d %+v", wrong, resp.StatusCode, got)
@@ -442,7 +461,7 @@ func TestAmbiguousCreateStaysUnknown(t *testing.T) {
 	if n := e.count(`SELECT count(*) FROM activity_issues WHERE repository_id = $1 AND number = 5`, repo); n != 1 {
 		t.Fatalf("linked issue not projected: %d", n)
 	}
-	if n := len(e.gh.Issues(repo)); n != 4 {
+	if n := len(e.gh.Issues(repo)); n != 5 {
 		t.Fatalf("issues on GitHub: %d", n)
 	}
 }
@@ -552,7 +571,7 @@ func TestOperationsArePrivateToActor(t *testing.T) {
 	// models private reads as owner-only.
 	private := e.repo("alice", "vault", true)
 	e.gh.Install("alice", 7001, private)
-	resp, mine := alice.send(create(private), "vault-1", `{"title":"Private","body":"private draft"}`)
+	resp, mine := alice.send(create(private), "vault-1", `{"title":"Quarterly secret","body":"private draft","labels":["confidential"]}`)
 	if resp.StatusCode != http.StatusCreated || mine.State != "succeeded" {
 		t.Fatalf("private create: %d %+v %s", resp.StatusCode, mine, alice.body(resp))
 	}
@@ -570,8 +589,15 @@ func TestOperationsArePrivateToActor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// An installation event names no repositories: the private-repository cleanup job, which knows from the app
+	// inventory which installations still cover the repository, wipes drafts (see the ingestion cleanup tests). Here
+	// alice reaches the repository through a second installation too, so nothing may be wiped yet.
+	e.gh.Install("alice", 7002, private)
+	if _, err := e.pool.Exec(context.Background(), `INSERT INTO installations (user_id, installation_id, account_login) VALUES ($1, 7002, 'alice')`, alice.id); err != nil {
+		t.Fatal(err)
+	}
 	invalidate(accessfence.ScopeInstallation, 7001)
-	if drafts(alice.id) != 0 || drafts(bob.id) != 1 {
+	if drafts(alice.id) != 1 || drafts(bob.id) != 1 {
 		t.Fatalf("installation revocation: alice=%d bob=%d", drafts(alice.id), drafts(bob.id))
 	}
 	fixture(alice.id, "alice-2")
@@ -579,6 +605,15 @@ func TestOperationsArePrivateToActor(t *testing.T) {
 	if drafts(alice.id) != 0 || drafts(bob.id) != 1 {
 		t.Fatalf("user revocation: alice=%d bob=%d", drafts(alice.id), drafts(bob.id))
 	}
+	// The wipe also redacts the outcome: GitHub's issue number, link and state stay; its text and names go.
+	var outcome string
+	if err := e.pool.QueryRow(context.Background(), `SELECT outcome::text FROM write_operations WHERE id = $1`, mine.ID).Scan(&outcome); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(outcome, "Quarterly") || strings.Contains(outcome, "confidential") || !strings.Contains(outcome, `"number": 1`) {
+		t.Fatalf("outcome not redacted: %s", outcome)
+	}
+	e.gh.Uninstall(7002)
 	// Access lost with no webhook: the next read denies and wipes the actor's draft.
 	fixture(alice.id, "alice-3")
 	e.gh.Uninstall(7001)
@@ -651,5 +686,303 @@ func TestInvalidInputIsRejected(t *testing.T) {
 	}
 	if n := len(e.gh.WriteTokens()); n != 0 {
 		t.Fatalf("rejected input reached GitHub writes: %d", n)
+	}
+}
+
+// Two overlapping creates of the same content under different keys reach GitHub once: the other answers 409.
+func TestOverlappingFreshKeyCreatesSendOnce(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetPermission("bob", repo, "write")
+	arrived, release, sent := make(chan struct{}, 2), make(chan struct{}), make(chan struct{})
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		wait := func(ch chan struct{}, d time.Duration) {
+			select {
+			case <-ch:
+			case <-time.After(d):
+			}
+		}
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/assignees/bob"): // the last pre-flight read before the operation is recorded
+			arrived <- struct{}{}
+			wait(release, 5*time.Second)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues"): // keep the first create unresolved
+			wait(sent, 2*time.Second)
+		}
+		next.ServeHTTP(w, r)
+	})
+	statuses := make(chan int, 2)
+	for _, key := range []string{"race-1", "race-2"} {
+		go func() {
+			resp, _ := alice.send(create(repo), key, `{"title":"Ship it","body":"details","assignees":["bob"]}`)
+			statuses <- resp.StatusCode
+		}()
+	}
+	for range 2 {
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatal("both submissions must pass their pre-flight checks before either records")
+		}
+	}
+	close(release)
+	first := <-statuses // the refused one, while the other is still being sent (or, unfixed, both after the hold)
+	close(sent)
+	got := []int{first, <-statuses}
+	slices.Sort(got)
+	if !slices.Equal(got, []int{http.StatusCreated, http.StatusConflict}) {
+		t.Fatalf("statuses: %v", got)
+	}
+	if n := len(e.gh.Issues(repo)); n != 1 {
+		t.Fatalf("issues on GitHub: %d", n)
+	}
+}
+
+// A revocation committing while a confirmed outcome is being recorded neither deadlocks nor loses the outcome.
+func TestFinishAndRevocationDoNotDeadlock(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "vault", true)
+	e.gh.Install("alice", 7001, repo)
+	ctx := context.Background()
+	revoked := make(chan error, 1)
+	e.gh.SetIssueWriteFault(fake.IssueWriteFault{Before: func() {
+		// Hold the fence rows the way InvalidateAccess does, let the server record its outcome, then wipe drafts.
+		tx, err := e.pool.Begin(ctx)
+		if err == nil {
+			err = accessfence.BumpAccess(ctx, tx, accessfence.ScopeUser, alice.id)
+		}
+		if err != nil {
+			revoked <- err
+			return
+		}
+		go func() {
+			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+				var waiting int
+				_ = e.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting)
+				if waiting > 0 {
+					break
+				}
+			}
+			err := accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeUser, alice.id)
+			if err == nil {
+				err = tx.Commit(ctx)
+			}
+			_ = tx.Rollback(ctx)
+			revoked <- err
+		}()
+	}})
+	resp, op := alice.send(create(repo), "deadlock-1", `{"title":"Private","body":"b"}`)
+	if err := <-revoked; err != nil {
+		t.Fatalf("revocation: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated || op.State != "succeeded" || op.IssueNumber == nil || string(op.Draft) != "null" {
+		t.Fatalf("status=%d op=%+v body=%s", resp.StatusCode, op, alice.body(resp))
+	}
+	if op.Outcome.Issue == nil || op.Outcome.Issue.Title != "" {
+		t.Fatalf("an outcome recorded after the wipe must be redacted: %+v", op.Outcome.Issue)
+	}
+	if n := e.count(`SELECT count(*) FROM activity_issues WHERE repository_id = $1`, repo); n != 0 {
+		t.Fatalf("projected under moved access: %d", n)
+	}
+}
+
+// A revocation that commits while access is being checked is never absorbed into the command's fence snapshot.
+func TestRevocationDuringAccessCheckIsNotAbsorbed(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("bob", "lib", false) // public and not alice's: the check ends by asking GitHub for the repository
+	var once sync.Once
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		rec := httptest.NewRecorder()
+		next.ServeHTTP(rec, r)
+		if r.URL.Path == fmt.Sprintf("/repositories/%d", repo) {
+			once.Do(func() { // GitHub answered "public"; the repository is privatized before the answer arrives
+				e.gh.SetPrivate(repo, true)
+				if err := db.InTx(context.Background(), e.pool, func(tx pgx.Tx) error {
+					return accessfence.InvalidateAccess(context.Background(), tx, accessfence.ScopeRepository, repo)
+				}); err != nil {
+					t.Error(err)
+				}
+			})
+		}
+		for k, v := range rec.Header() {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(rec.Body.Bytes())
+	})
+	if resp, _ := alice.send(create(repo), "privatized-1", `{"title":"t"}`); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("create across a revocation: %d %s", resp.StatusCode, alice.body(resp))
+	}
+	if n := e.count(`SELECT count(*) FROM write_operations`); n != 0 || len(e.gh.WriteTokens()) != 0 {
+		t.Fatalf("recorded %d operations, sent %d writes", n, len(e.gh.WriteTokens()))
+	}
+}
+
+// Operation reads check access fresh: a cached listing never serves a draft after access ended.
+func TestOperationReadsBypassCachedAccess(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "vault", true)
+	e.gh.Install("alice", 7001, repo)
+	e.issues.Access.TTL = time.Hour
+	_, op := alice.send(create(repo), "cached-1", `{"title":"Private","body":"draft"}`)
+	if op.State != "succeeded" {
+		t.Fatalf("create: %+v", op)
+	}
+	e.gh.Uninstall(7001) // nothing local learns of this, so the cached listing still holds
+	if resp, _ := alice.get(opPath(op.ID)); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("read after access loss: %d", resp.StatusCode)
+	}
+	if resp := alice.do("GET", fmt.Sprintf("/api/repositories/%d/write-operations", repo), "", nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("list after access loss: %d", resp.StatusCode)
+	}
+}
+
+// GitHub lets an issue's author close and reopen it without triage; labels and assignees still need triage.
+func TestAuthorClosesOwnIssueWithoutTriage(t *testing.T) {
+	e := setup(t)
+	e.signIn("alice")
+	carol := e.signIn("carol")
+	repo := e.repo("alice", "app", false) // carol can only read
+	mine, theirs := seedIssue(1, "carol", "Mine"), seedIssue(2, "alice", "Theirs")
+	mine.User.ID = carol.githubID()
+	e.gh.SetIssues(repo, mine, theirs)
+	if resp, op := carol.send(changes(repo, 1), "close-own", `{"state":"closed"}`); resp.StatusCode != http.StatusCreated || op.State != "succeeded" {
+		t.Fatalf("author close: %d %+v %s", resp.StatusCode, op, carol.body(resp))
+	}
+	if resp, op := carol.send(changes(repo, 1), "reopen-own", `{"state":"open"}`); resp.StatusCode != http.StatusCreated || op.State != "succeeded" {
+		t.Fatalf("author reopen: %d %+v", resp.StatusCode, op)
+	}
+	for key, c := range map[string]struct {
+		number int64
+		body   string
+	}{"label-own": {1, `{"labels":{"add":["bug"]},"state":"closed"}`}, "close-theirs": {2, `{"state":"closed"}`}} {
+		if resp, _ := carol.send(changes(repo, c.number), key, c.body); resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s: %d", key, resp.StatusCode)
+		}
+	}
+}
+
+// holdLabelWrites delays every label add until release closes, then applies it: a write still in flight.
+func holdLabelWrites(e *env) (release func()) {
+	ch := make(chan struct{})
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/labels") {
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			select {
+			case <-ch:
+			case <-time.After(5 * time.Second):
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+	return func() { close(ch) }
+}
+
+func (e *env) waitForLabel(repo int64, label string) {
+	e.t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if slices.Contains(labelNames(e.gh.Issues(repo)[0]), label) {
+			return
+		}
+	}
+	e.t.Fatalf("label %q never applied", label)
+}
+
+// An ambiguous change whose effect is not visible yet stays unknown; a recheck confirms it once it shows, and never
+// fails it while the original request may still land.
+func TestAmbiguousUpdateResolvesOnlyWhenConfirmed(t *testing.T) {
+	t.Run("timed out", func(t *testing.T) {
+		e := setup(t)
+		alice := e.signIn("alice")
+		repo := e.repo("alice", "app", false)
+		e.gh.SetIssues(repo, seedIssue(1, "alice", "Existing"))
+		release := holdLabelWrites(e)
+		e.client.HTTP.Timeout = 300 * time.Millisecond
+		resp, op := alice.send(changes(repo, 1), "slow-change", `{"labels":{"add":["triaged"]}}`)
+		if resp.StatusCode != http.StatusAccepted || op.State != "unknown" {
+			t.Fatalf("ambiguous change: %d %+v", resp.StatusCode, op)
+		}
+		e.client.HTTP.Timeout = 5 * time.Second
+		if resp, got := alice.send(opPath(op.ID)+"/recheck", "", `{}`); resp.StatusCode != http.StatusConflict || got.State != "unknown" {
+			t.Fatalf("recheck before the write lands: %d %+v", resp.StatusCode, got)
+		}
+		release()
+		e.waitForLabel(repo, "triaged")
+		if resp, got := alice.send(opPath(op.ID)+"/recheck", "", `{}`); resp.StatusCode != 200 || got.State != "succeeded" {
+			t.Fatalf("recheck after the write landed: %d %+v", resp.StatusCode, got)
+		}
+	})
+	t.Run("recheck during send", func(t *testing.T) {
+		e := setup(t)
+		alice := e.signIn("alice")
+		repo := e.repo("alice", "app", false)
+		e.gh.SetIssues(repo, seedIssue(1, "alice", "Existing"))
+		release := holdLabelWrites(e)
+		done := make(chan operation, 1)
+		go func() {
+			_, op := alice.send(changes(repo, 1), "in-flight", `{"labels":{"add":["triaged"]}}`)
+			done <- op
+		}()
+		var id int64
+		for deadline := time.Now().Add(5 * time.Second); id == 0 && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			_ = e.pool.QueryRow(context.Background(), `SELECT id FROM write_operations WHERE state = 'unknown'`).Scan(&id)
+		}
+		if resp, got := alice.send(opPath(id)+"/recheck", "", `{}`); resp.StatusCode != http.StatusConflict || got.State != "unknown" {
+			t.Fatalf("recheck while the send is in flight: %d %+v", resp.StatusCode, got)
+		}
+		release()
+		if op := <-done; op.State != "succeeded" {
+			t.Fatalf("the original send's confirmed outcome was lost: %+v", op)
+		}
+	})
+}
+
+// A create rechecked after its draft was wiped links the issue but cannot claim the requested assignment.
+func TestRecheckAfterWipeDoesNotClaimAssignment(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetPermission("bob", repo, "write")
+	e.client.HTTP.Timeout = 300 * time.Millisecond
+	e.gh.SetIssueWriteFault(fake.IssueWriteFault{Delay: time.Second})
+	_, op := alice.send(create(repo), "wiped-1", `{"title":"Assigned","body":"x","assignees":["bob"]}`)
+	if op.State != "unknown" {
+		t.Fatalf("create: %+v", op)
+	}
+	time.Sleep(time.Second)
+	e.gh.SetIssueWriteFault(fake.IssueWriteFault{})
+	e.client.HTTP.Timeout = 5 * time.Second
+	if _, err := e.pool.Exec(context.Background(), `UPDATE write_operations SET draft = NULL`); err != nil { // access lost and regained
+		t.Fatal(err)
+	}
+	resp, got := alice.send(opPath(op.ID)+"/recheck", "", fmt.Sprintf(`{"issueNumber":%d}`, e.gh.Issues(repo)[0].Number))
+	if resp.StatusCode != 200 || got.State != "failed" || got.IssueNumber == nil {
+		t.Fatalf("recheck: %d %+v", resp.StatusCode, got)
+	}
+	// Recorded after the wipe, the outcome is stored redacted: the unverified request survives only as a count.
+	if n := e.count(`SELECT count(*) FROM write_operations WHERE (outcome->>'unappliedCount')::int = 1`); n != 1 {
+		t.Fatalf("unverified assignment not recorded: %d", n)
+	}
+}
+
+// At GitHub's 10-assignee limit, a swap removes before it adds.
+func TestAssigneeSwapAtLimit(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	seed := seedIssue(1, "alice", "Full")
+	for i := range 10 {
+		seed.Assignees = append(seed.Assignees, fake.IssueActor{ID: int64(100 + i), Login: fmt.Sprintf("u%d", i), Type: "User"})
+	}
+	e.gh.SetIssues(repo, seed)
+	e.gh.SetPermission("carol", repo, "write")
+	resp, op := alice.send(changes(repo, 1), "swap-1", `{"assignees":{"add":["carol"],"remove":["u0"]}}`)
+	if resp.StatusCode != http.StatusCreated || op.State != "succeeded" {
+		t.Fatalf("swap: %d %+v", resp.StatusCode, op)
 	}
 }

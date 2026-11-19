@@ -237,15 +237,27 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 	return &jobs.Pause{Reason: CodeNoCredential}
 }
 
-// ProjectIssue upserts one GitHub issue with its labels and assignees into the activity projection, inside the caller's
-// fenced transaction. A stored copy that is as new or newer, or a tombstoned issue, is left alone.
+// ProjectIssue upserts one GitHub issue fetched by a sync with its labels and assignees into the activity projection,
+// inside the caller's fenced transaction. A stored copy that is as new or newer, or a tombstoned issue, is left alone:
+// a sync page may have been fetched before the stored copy.
 func ProjectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue) error {
+	return projectIssue(ctx, tx, repoID, issue, false)
+}
+
+// ProjectConfirmedIssue is ProjectIssue for an issue read back right after a confirmed write. It also replaces a
+// stored copy with the same updated_at: GitHub's timestamps have one-second resolution, so an edit in the same second
+// as the stored copy would otherwise be lost.
+func ProjectConfirmedIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue) error {
+	return projectIssue(ctx, tx, repoID, issue, true)
+}
+
+func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue, sameSecond bool) error {
 	actorID, actorLogin, actorType, err := evidenceActor(issue.User)
 	if err != nil {
 		return err
 	}
 	var inserted int64
-	err = tx.QueryRow(ctx, `INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, closed_at, author_id, author_login, author_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (source_id) DO UPDATE SET title=EXCLUDED.title,state=EXCLUDED.state,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,closed_at=EXCLUDED.closed_at,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_issues.repository_id=EXCLUDED.repository_id AND activity_issues.updated_at < EXCLUDED.updated_at RETURNING source_id`, issue.ID, repoID, issue.Number, issue.Title, issue.State, issue.HTMLURL, issue.CreatedAt, issue.UpdatedAt, issue.ClosedAt, actorID, actorLogin, actorType).Scan(&inserted)
+	err = tx.QueryRow(ctx, `INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, closed_at, author_id, author_login, author_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (source_id) DO UPDATE SET title=EXCLUDED.title,state=EXCLUDED.state,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,closed_at=EXCLUDED.closed_at,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_issues.repository_id=EXCLUDED.repository_id AND (activity_issues.updated_at < EXCLUDED.updated_at OR ($13 AND activity_issues.updated_at = EXCLUDED.updated_at)) RETURNING source_id`, issue.ID, repoID, issue.Number, issue.Title, issue.State, issue.HTMLURL, issue.CreatedAt, issue.UpdatedAt, issue.ClosedAt, actorID, actorLogin, actorType, sameSecond).Scan(&inserted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // the stored copy is as new or newer, or the issue is tombstoned
 	}
