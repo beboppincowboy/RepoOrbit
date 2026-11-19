@@ -14,7 +14,7 @@ func TestReleasesAndIssueEventsPages(t *testing.T) {
 			t.Error("missing token")
 		}
 		if strings.HasSuffix(r.URL.Path, "/releases") {
-			w.Header().Set("Link", `<?per_page=100&page=2>; rel="next"`)
+			w.Header().Set("Link", `</repositories/1183888342/releases?per_page=100&page=2>; rel="next"`)
 			_, _ = w.Write([]byte(`[{"id":1,"author":null,"name":null,"body":null,"tag_name":"v1","html_url":"url","created_at":"2026-01-01T00:00:00Z","published_at":"2026-01-02T00:00:00Z","draft":false,"prerelease":true}]`))
 		} else {
 			_, _ = w.Write([]byte(`[{"id":2,"actor":null,"event":"labeled","created_at":"2026-01-01T00:00:00Z","url":"url","issue":{"id":3,"number":4},"label":{"name":"bug"}}]`))

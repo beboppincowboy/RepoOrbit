@@ -326,7 +326,7 @@ func (c *Client) FetchIssuesCursor(ctx context.Context, token, fullName, cursor 
 			return nil, "", fmt.Errorf("github: invalid issue pagination")
 		}
 		target = requestURL.ResolveReference(target)
-		if target.Scheme != endpoint.Scheme || target.Host != endpoint.Host || target.Path != endpoint.Path || target.User != nil || target.Fragment != "" || target.RawQuery == "" || next != "" {
+		if target.Scheme != endpoint.Scheme || target.Host != endpoint.Host || !repositoryPagePath(target.Path, endpoint.Path, fullName, "/issues") || target.User != nil || target.Fragment != "" || target.RawQuery == "" || next != "" {
 			return nil, "", fmt.Errorf("github: unsafe issue pagination")
 		}
 		params, err := url.ParseQuery(target.RawQuery)
@@ -336,4 +336,20 @@ func (c *Client) FetchIssuesCursor(ctx context.Context, token, fullName, cursor 
 		next = target.RawQuery
 	}
 	return items, next, nil
+}
+
+// repositoryPagePath accepts GitHub's numeric alias for the same resource type.
+// Callers retain only the query and always send it to their original endpoint.
+func repositoryPagePath(target, endpoint, fullName, suffix string) bool {
+	if target == endpoint {
+		return true
+	}
+	base := strings.TrimSuffix(endpoint, "/repos/"+fullName+suffix)
+	numeric, ok := strings.CutPrefix(target, base+"/repositories/")
+	if !ok {
+		return false
+	}
+	id, resource, ok := strings.Cut(numeric, "/")
+	repoID, err := strconv.ParseInt(id, 10, 64)
+	return ok && err == nil && repoID > 0 && strconv.FormatInt(repoID, 10) == id && "/"+resource == suffix
 }

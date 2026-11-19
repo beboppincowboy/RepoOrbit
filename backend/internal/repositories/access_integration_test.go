@@ -519,7 +519,7 @@ func TestRepositoryUpsertNeverTouchesDemoRows(t *testing.T) {
 	}
 }
 
-// Activity reads recheck access live, including concurrent aliased queries.
+// Each activity request rechecks access live and shares the result across aliases.
 func TestActivityReadsRefreshAccess(t *testing.T) {
 	e := setup(t, time.Minute)
 	repo := e.gh.AddRepo("alice", "secret", true)
@@ -541,8 +541,8 @@ func TestActivityReadsRefreshAccess(t *testing.T) {
 		go func() { defer wg.Done(); alice.gql("{ " + strings.Join(aliases, " ") + " }") }()
 	}
 	wg.Wait()
-	if got := e.gh.Hits("/user/installations") - baseline; got != 60 {
-		t.Fatalf("installation listings across 60 checks: %d, want 60", got)
+	if got := e.gh.Hits("/user/installations") - baseline; got != 3 {
+		t.Fatalf("installation listings across three requests: %d, want 3", got)
 	}
 }
 

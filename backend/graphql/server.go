@@ -3,20 +3,22 @@ package graph
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/handler/extension"
 	"github.com/99designs/gqlgen/graphql/handler/transport"
+	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 	"github.com/vektah/gqlparser/v2/ast"
 	"github.com/vektah/gqlparser/v2/gqlerror"
 )
 
-type depthLimit struct{}
+type operationLimits struct{}
 
-func (depthLimit) ExtensionName() string                   { return "DepthLimit" }
-func (depthLimit) Validate(graphql.ExecutableSchema) error { return nil }
-func (depthLimit) MutateOperationContext(_ context.Context, op *graphql.OperationContext) *gqlerror.Error {
+func (operationLimits) ExtensionName() string                   { return "OperationLimits" }
+func (operationLimits) Validate(graphql.ExecutableSchema) error { return nil }
+func (operationLimits) MutateOperationContext(_ context.Context, op *graphql.OperationContext) *gqlerror.Error {
 	var depth func(ast.SelectionSet, int) bool
 	depth = func(set ast.SelectionSet, level int) bool {
 		if level > maxQueryDepth {
@@ -43,6 +45,16 @@ func (depthLimit) MutateOperationContext(_ context.Context, op *graphql.Operatio
 	if !depth(op.Operation.SelectionSet, 1) {
 		return gqlerror.Errorf("query depth exceeds limit")
 	}
+	overview := false
+	for _, field := range graphql.CollectFields(op, op.Operation.SelectionSet, []string{"Query"}) {
+		if field.Name != "repositoryOverview" && field.Name != "crossRepositoryOverview" {
+			continue
+		}
+		if overview {
+			return gqlerror.Errorf("request at most one repository overview")
+		}
+		overview = true
+	}
 	return nil
 }
 
@@ -63,13 +75,28 @@ func Server(resolver *Resolver) http.Handler {
 		}
 		return weight(child, first)
 	}
+	cfg.Complexity.Query.RepositoryOverview = func(child int, _ string, _ int) int {
+		return 100 + child
+	}
+	cfg.Complexity.RepositoryOverview.Contributors = func(child int) int { return 25 * child }
+	cfg.Complexity.Query.CrossRepositoryOverview = func(child int, _ int) int { return 100 + child }
+	cfg.Complexity.CrossRepositoryOverview.NeedsAttention = func(child int) int { return 25 * child }
+	cfg.Complexity.CrossRepositoryOverview.AssignedToMe = func(child int) int { return 25 * child }
+	cfg.Complexity.CrossRepositoryOverview.Daily = func(child int) int { return 90 * child }
+	cfg.Complexity.RepositoryOverview.Timeline = func(child int) int { return 50 * child }
+	cfg.Complexity.RepositoryOverview.Daily = func(child int) int { return 90 * child }
 	srv := handler.New(NewExecutableSchema(cfg))
 	srv.AddTransport(transport.POST{})
-	srv.Use(depthLimit{})
+	srv.Use(operationLimits{})
 	srv.Use(extension.FixedComplexityLimit(maxQueryComplexity))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-		srv.ServeHTTP(w, r)
+		srv.ServeHTTP(w, r.WithContext(repositories.WithRequestVisibility(r.Context())))
 	})
+}
+
+// Access-checked GraphQL reads can require several sequential GitHub requests.
+func withReadDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, 12*time.Second)
 }

@@ -116,7 +116,18 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
 		}
 		scanTime := d.Clock.Now()
-		items, next, err := fetcher.FetchIssuesCursor(ctx, token, before.Repo.FullName, cursor)
+		fetchToken := token
+		installation := before.InstallationID
+		if d.InstallationCredentials != nil && installation != 0 {
+			fetchToken, err = d.InstallationCredentials.AccessToken(ctx, installation)
+			if err != nil {
+				return d.installationFetchError(installation, fetchToken, err)
+			}
+		}
+		items, next, err := fetcher.FetchIssuesCursor(ctx, fetchToken, before.Repo.FullName, cursor)
+		if err != nil && fetchToken != token {
+			return d.installationFetchError(installation, fetchToken, err)
+		}
 		if err != nil {
 			var api *githubapp.APIError
 			if errors.As(err, &api) && api.RateLimited() {
