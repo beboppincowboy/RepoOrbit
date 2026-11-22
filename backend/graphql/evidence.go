@@ -116,7 +116,7 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 	// reviewer's latest APPROVED or CHANGES_REQUESTED decides; null while an open PR's review history has not converged.
 	paging := `p.source_id > $2 ORDER BY p.source_id`
 	if newestFirst {
-		paging = `($2 = 0 OR p.source_id < $2) ORDER BY p.source_id DESC`
+		paging = `($2::bigint = 0 OR p.source_id < $2) ORDER BY p.source_id DESC`
 	}
 	rows, err := pool.Query(ctx, `SELECT p.source_id,p.repository_id,p.number,p.title,p.state,p.html_url,p.created_at,p.updated_at,p.closed_at,p.merged_at,p.author_id,p.author_login,p.author_type,
 	  CASE WHEN p.merged_at IS NOT NULL THEN 'merged' WHEN p.state <> 'open' THEN 'closed'
