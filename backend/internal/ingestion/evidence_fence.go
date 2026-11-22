@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
@@ -14,7 +15,7 @@ import (
 )
 
 // withEvidencePage performs remote I/O outside the fenced transaction and rechecks access before committing.
-func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.ClaimFence, repoID int64, fetch func(string, string) (any, error), commit func(pgx.Tx, any) error) error {
+func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.ClaimFence, repoID int64, fetch func(string, githubapp.Repo) (any, error), commit func(pgx.Tx, any) error) error {
 	q := db.New(d.Pool)
 	repo, err := q.GetSyncRepository(ctx, repoID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && repo.IsDemo) {
@@ -31,9 +32,11 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 		return &jobs.Pause{Reason: CodeNoCredential}
 	}
 	transient := false
+	var rateRetry time.Time
 	for _, uid := range users {
 		if until := d.throttledUntil(ctx, uid); until.After(d.Clock.Now()) {
-			return &jobs.Defer{RetryAt: until, Reason: CodeRateLimited}
+			rateRetry = earlierRetry(rateRetry, until)
+			continue
 		}
 		token, err := d.Tokens.AccessToken(ctx, uid)
 		if errors.Is(err, auth.ErrUnauthenticated) {
@@ -53,15 +56,16 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 			}
 			return tightenToPrivate(ctx, fence, repoID)
 		}
-		before := d.Access.CheckOne(ctx, uid, repoID, true)
+		before := d.checkActivityAccess(ctx, uid, repoID, token)
 		if before.Unverified {
 			if err := tighten(); err != nil && !errors.Is(err, errRace) {
 				return err
 			}
-			transient = true
 			if !before.RetryAt.IsZero() {
 				d.throttle(ctx, uid, before.RetryAt)
-				return &jobs.Defer{RetryAt: before.RetryAt, Reason: CodeRateLimited}
+				rateRetry = earlierRetry(rateRetry, before.RetryAt)
+			} else {
+				transient = true
 			}
 			continue
 		}
@@ -79,18 +83,31 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 		if d.InstallationCredentials != nil && installation != 0 {
 			fetchToken, err = d.InstallationCredentials.AccessToken(ctx, installation)
 			if err != nil {
-				return d.installationFetchError(installation, fetchToken, err)
+				fetchErr := d.installationFetchError(installation, fetchToken, err)
+				var deferred *jobs.Defer
+				if errors.As(fetchErr, &deferred) {
+					rateRetry = earlierRetry(rateRetry, deferred.RetryAt)
+					continue
+				}
+				return fetchErr
 			}
 		}
-		data, err := fetch(fetchToken, before.Repo.FullName)
+		data, err := fetch(fetchToken, before.Repo)
 		if err != nil && fetchToken != token {
-			return d.installationFetchError(installation, fetchToken, err)
+			fetchErr := d.installationFetchError(installation, fetchToken, err)
+			var deferred *jobs.Defer
+			if errors.As(fetchErr, &deferred) {
+				rateRetry = earlierRetry(rateRetry, deferred.RetryAt)
+				continue
+			}
+			return fetchErr
 		}
 		if err != nil {
 			var api *githubapp.APIError
 			if errors.As(err, &api) && api.RateLimited() {
 				d.throttle(ctx, uid, api.RetryAt)
-				return &jobs.Defer{RetryAt: api.RetryAt, Reason: CodeRateLimited}
+				rateRetry = earlierRetry(rateRetry, api.RetryAt)
+				continue
 			}
 			if errors.As(err, &api) && api.Unauthorized() {
 				_ = d.Tokens.Revoke(ctx, uid)
@@ -98,23 +115,27 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 			}
 			return errors.New("activity fetch failed")
 		}
-		after := d.Access.CheckOne(ctx, uid, repoID, true)
+		after := d.checkActivityAccess(ctx, uid, repoID, token)
 		if after.Unverified {
 			if err := tighten(); err != nil && !errors.Is(err, errRace) {
 				return err
 			}
 			if !after.RetryAt.IsZero() {
 				d.throttle(ctx, uid, after.RetryAt)
-				return &jobs.Defer{RetryAt: after.RetryAt, Reason: CodeRateLimited}
+				rateRetry = earlierRetry(rateRetry, after.RetryAt)
+				continue
 			}
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeUnverified}
 		}
-		if !after.Allowed || after.Repo.Private != before.Repo.Private || after.Repo.FullName != before.Repo.FullName {
+		if !after.Allowed || after.InstallationID != before.InstallationID || after.Repo.Private != before.Repo.Private || after.Repo.FullName != before.Repo.FullName {
 			if !after.Allowed || after.Repo.Private {
 				if err := tighten(); err != nil && !errors.Is(err, errRace) {
 					return err
 				}
 			}
+			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
+		}
+		if job.Kind == "activity_pull_requests" && pullRequestsDisabled(before.Repo) != pullRequestsDisabled(after.Repo) {
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
 		}
 		err = fence.Commit(ctx, func(tx pgx.Tx) error {
@@ -137,6 +158,9 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
 		}
 		return err
+	}
+	if !rateRetry.IsZero() {
+		return &jobs.Defer{RetryAt: rateRetry, Reason: CodeRateLimited}
 	}
 	if transient {
 		return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeUnverified}

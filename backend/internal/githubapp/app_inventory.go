@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -187,4 +188,32 @@ func (c *Client) inventoryRequest(ctx context.Context, method, token, path strin
 		next = true
 	}
 	return next, nil
+}
+
+// RepositoryInstallation resolves the app grant for one repository.
+func (c *Client) RepositoryInstallation(ctx context.Context, key *rsa.PrivateKey, fullName string) (int64, error) {
+	owner, name, ok := strings.Cut(fullName, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || owner == "." || owner == ".." || name == "." || name == ".." {
+		return 0, fmt.Errorf("github app: invalid repository name")
+	}
+	jwt, err := c.appJWT(key)
+	if err != nil {
+		return 0, err
+	}
+	var installation struct {
+		ID        int64           `json:"id"`
+		Suspended json.RawMessage `json:"suspended_at"`
+	}
+	_, err = c.inventoryRequest(ctx, http.MethodGet, jwt, "/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name)+"/installation", &installation)
+	if err != nil {
+		var api *APIError
+		if errors.As(err, &api) && api.NotFound() {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if installation.ID <= 0 || string(installation.Suspended) != "null" {
+		return 0, fmt.Errorf("github app: invalid or suspended repository installation")
+	}
+	return installation.ID, nil
 }

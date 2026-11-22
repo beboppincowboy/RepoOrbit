@@ -19,9 +19,11 @@ type evidenceFixture struct {
 	reviews     []githubapp.Review
 	comments    []githubapp.IssueComment
 	failReviews bool
+	pullCalls   int
 }
 
 func (f *evidenceFixture) FetchPullRequestsCursor(context.Context, string, string, string) ([]githubapp.PullRequest, string, error) {
+	f.pullCalls++
 	return f.pulls, "", nil
 }
 func (f *evidenceFixture) FetchReviewsCursor(context.Context, string, string, int64, string) ([]githubapp.Review, string, error) {
@@ -90,13 +92,10 @@ func TestEvidenceBackfillAndChildIsolation(t *testing.T) {
 		t.Fatal("review failure expected")
 	}
 	f.failReviews = false
-	for i := 0; i < 2; i++ {
-		for _, call := range []func() error{func() error { return e.deps.SyncComments(ctx, comment, fence) }, func() error { return e.deps.SyncReviews(ctx, review, fence) }} {
-			if err = call(); err != nil {
-				if _, ok := err.(*jobs.Defer); !ok {
-					t.Fatal(err)
-				}
-			}
+	// One run each: a history that fits in one page completes without a confirming second scan.
+	for _, call := range []func() error{func() error { return e.deps.SyncComments(ctx, comment, fence) }, func() error { return e.deps.SyncReviews(ctx, review, fence) }} {
+		if err = call(); err != nil {
+			t.Fatalf("single-page child did not complete in one run: %v", err)
 		}
 	}
 	var prs, reviews, comments, complete int
@@ -257,5 +256,29 @@ func TestNullActorsPersistWithoutIdentity(t *testing.T) {
 	err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_issues WHERE source_id=100 AND author_id IS NULL AND author_login IS NULL AND author_type IS NULL)+(SELECT count(*) FROM activity_pull_requests WHERE source_id=101 AND author_id IS NULL AND author_login IS NULL AND author_type IS NULL)+(SELECT count(*) FROM activity_reviews WHERE source_id=201 AND author_id IS NULL AND author_login IS NULL AND author_type IS NULL)+(SELECT count(*) FROM activity_comments WHERE source_id=301 AND author_id IS NULL AND author_login IS NULL AND author_type IS NULL)`).Scan(&count)
 	if err != nil || count != 4 {
 		t.Fatalf("null actors=%d err=%v", count, err)
+	}
+}
+
+func TestDisabledPullRequestsSkipFetch(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.store(e.signIn("alice"), 70, false)
+	if _, err := e.pool.Exec(ctx, `INSERT INTO activity_resources(repository_id, resource, boundary) VALUES(70, 'pull_requests', now())`); err != nil {
+		t.Fatal(err)
+	}
+	enabled := false
+	f := &evidenceFixture{issueFixture: issueFixture{hasPullRequests: &enabled}}
+	e.deps.GitHub, e.deps.Access = f, f
+	job := jobs.Job{Kind: "activity_pull_requests", Key: "repo:70"}
+	if err := e.deps.SyncPullRequests(ctx, job, txFence{pool: e.pool}); err != nil {
+		t.Fatal(err)
+	}
+	var phase, code string
+	var hasWatermark bool
+	if err := e.pool.QueryRow(ctx, `SELECT phase,last_error_code,watermark IS NOT NULL FROM activity_resources WHERE repository_id=70 AND resource='pull_requests'`).Scan(&phase, &code, &hasWatermark); err != nil {
+		t.Fatal(err)
+	}
+	if f.pullCalls != 0 || phase != "current" || code != ingestion.CodePullRequestsDisabled || hasWatermark {
+		t.Fatalf("calls=%d, phase=%s, code=%s, hasWatermark=%v", f.pullCalls, phase, code, hasWatermark)
 	}
 }

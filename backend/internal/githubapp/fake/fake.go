@@ -114,6 +114,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/login/oauth/access_token", s.token)
 	mux.HandleFunc("/app/installations", s.appAPI(s.appInstallations))
 	mux.HandleFunc("/app/installations/{id}/access_tokens", s.appAPI(s.appInstallationToken))
+	mux.HandleFunc("/repos/{owner}/{repo}/installation", s.appAPI(s.repositoryInstallation))
 	mux.HandleFunc("/installation/repositories", s.appAPI(s.appRepositories))
 	mux.HandleFunc("/user", s.api(s.user))
 	mux.HandleFunc("/user/repos", s.api(s.userRepos))
@@ -238,6 +239,18 @@ func (s *Server) api(h func(http.ResponseWriter, *http.Request, string)) http.Ha
 		login, ok := "", false
 		if len(auth) > len(prefix) {
 			login, ok = s.access[auth[len(prefix):]]
+			if raw, installation := strings.CutPrefix(auth, "Bearer installation_"); installation {
+				id, _ := strconv.ParseInt(raw, 10, 64)
+				if in := s.installs[id]; in != nil {
+					for repoID := range in.repos {
+						repo := s.repos[repoID]
+						if repo != nil && repo.owner == r.PathValue("owner") && repo.name == r.PathValue("repo") {
+							login, ok = in.owner, true
+							break
+						}
+					}
+				}
+			}
 		}
 		limited, failing := s.limitedUntil, s.failing
 		s.mu.Unlock()
@@ -604,7 +617,7 @@ func (s *Server) appInstallationToken(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, map[string]any{"token": fmt.Sprintf("installation_%d", id)})
+	writeJSON(w, map[string]any{"token": fmt.Sprintf("installation_%d", id), "expires_at": time.Now().Add(time.Hour)})
 }
 func (s *Server) appRepositories(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer installation_")
@@ -639,4 +652,23 @@ func (s *Server) appAPI(h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r)
 	}
+}
+
+func (s *Server) repositoryInstallation(w http.ResponseWriter, r *http.Request) {
+	if !s.appAuthorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, in := range s.installs {
+		for repoID := range in.repos {
+			repo := s.repos[repoID]
+			if repo != nil && repo.owner == r.PathValue("owner") && repo.name == r.PathValue("repo") {
+				writeJSON(w, map[string]any{"id": id, "suspended_at": nil})
+				return
+			}
+		}
+	}
+	http.NotFound(w, r)
 }

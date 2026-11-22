@@ -134,12 +134,13 @@ func apiError(resp *http.Response) *APIError {
 }
 
 type Repo struct {
-	ID          int64  `json:"id"`
-	FullName    string `json:"full_name"`
-	Description string `json:"description"` // GitHub sends null for none
-	Private     bool   `json:"private"`
-	Archived    bool   `json:"archived"`
-	HasIssues   bool   `json:"has_issues"`
+	ID              int64  `json:"id"`
+	FullName        string `json:"full_name"`
+	Description     string `json:"description"` // GitHub sends null for none
+	Private         bool   `json:"private"`
+	Archived        bool   `json:"archived"`
+	HasPullRequests *bool  `json:"has_pull_requests"`
+	HasIssues       bool   `json:"has_issues"`
 	// Permissions are the requesting user's when a user token fetched the repository. All false otherwise (an
 	// installation token, or a response without them), which reads the same as no access: use only with user tokens.
 	Permissions struct {

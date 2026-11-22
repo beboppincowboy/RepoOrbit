@@ -72,9 +72,11 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 		return nil
 	}
 	transient := false
+	var rateRetry time.Time
 	for _, uid := range users {
 		if until := d.throttledUntil(ctx, uid); until.After(d.Clock.Now()) {
-			return &jobs.Defer{RetryAt: until, Reason: CodeRateLimited}
+			rateRetry = earlierRetry(rateRetry, until)
+			continue
 		}
 		token, err := d.Tokens.AccessToken(ctx, uid)
 		if errors.Is(err, auth.ErrUnauthenticated) {
@@ -94,15 +96,16 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 			}
 			return tightenToPrivate(ctx, fence, repoID)
 		}
-		before := d.Access.CheckOne(ctx, uid, repoID, true)
+		before := d.checkActivityAccess(ctx, uid, repoID, token)
 		if before.Unverified {
 			if err := tighten(); err != nil && !errors.Is(err, errRace) {
 				return err
 			}
-			transient = true
 			if !before.RetryAt.IsZero() {
 				d.throttle(ctx, uid, before.RetryAt)
-				return &jobs.Defer{RetryAt: before.RetryAt, Reason: CodeRateLimited}
+				rateRetry = earlierRetry(rateRetry, before.RetryAt)
+			} else {
+				transient = true
 			}
 			continue
 		}
@@ -121,18 +124,31 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 		if d.InstallationCredentials != nil && installation != 0 {
 			fetchToken, err = d.InstallationCredentials.AccessToken(ctx, installation)
 			if err != nil {
-				return d.installationFetchError(installation, fetchToken, err)
+				fetchErr := d.installationFetchError(installation, fetchToken, err)
+				var deferred *jobs.Defer
+				if errors.As(fetchErr, &deferred) {
+					rateRetry = earlierRetry(rateRetry, deferred.RetryAt)
+					continue
+				}
+				return fetchErr
 			}
 		}
 		items, next, err := fetcher.FetchIssuesCursor(ctx, fetchToken, before.Repo.FullName, cursor)
 		if err != nil && fetchToken != token {
-			return d.installationFetchError(installation, fetchToken, err)
+			fetchErr := d.installationFetchError(installation, fetchToken, err)
+			var deferred *jobs.Defer
+			if errors.As(fetchErr, &deferred) {
+				rateRetry = earlierRetry(rateRetry, deferred.RetryAt)
+				continue
+			}
+			return fetchErr
 		}
 		if err != nil {
 			var api *githubapp.APIError
 			if errors.As(err, &api) && api.RateLimited() {
 				d.throttle(ctx, uid, api.RetryAt)
-				return &jobs.Defer{RetryAt: api.RetryAt, Reason: CodeRateLimited}
+				rateRetry = earlierRetry(rateRetry, api.RetryAt)
+				continue
 			}
 			if errors.As(err, &api) && api.Unauthorized() {
 				_ = d.Tokens.Revoke(ctx, uid)
@@ -140,18 +156,19 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 			}
 			return errors.New("issue fetch failed")
 		}
-		after := d.Access.CheckOne(ctx, uid, repoID, true)
+		after := d.checkActivityAccess(ctx, uid, repoID, token)
 		if after.Unverified {
 			if err := tighten(); err != nil && !errors.Is(err, errRace) {
 				return err
 			}
 			if !after.RetryAt.IsZero() {
 				d.throttle(ctx, uid, after.RetryAt)
-				return &jobs.Defer{RetryAt: after.RetryAt, Reason: CodeRateLimited}
+				rateRetry = earlierRetry(rateRetry, after.RetryAt)
+				continue
 			}
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeUnverified}
 		}
-		if !after.Allowed || after.Repo.Private != before.Repo.Private || after.Repo.FullName != before.Repo.FullName {
+		if !after.Allowed || after.InstallationID != before.InstallationID || after.Repo.Private != before.Repo.Private || after.Repo.FullName != before.Repo.FullName {
 			if !after.Allowed || after.Repo.Private {
 				if err := tighten(); err != nil && !errors.Is(err, errRace) {
 					return err
@@ -176,7 +193,8 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 			var storedPhase string
 			var storedCursor string
 			var storedGeneration int64
-			if err := tx.QueryRow(ctx, `SELECT page, phase, generation, cursor FROM activity_resources WHERE repository_id=$1 AND resource='issues' FOR UPDATE`, repoID).Scan(&storedPage, &storedPhase, &storedGeneration, &storedCursor); err != nil {
+			var firstPass bool
+			if err := tx.QueryRow(ctx, `SELECT page, phase, generation, cursor, previous_scan IS NULL FROM activity_resources WHERE repository_id=$1 AND resource='issues' FOR UPDATE`, repoID).Scan(&storedPage, &storedPhase, &storedGeneration, &storedCursor, &firstPass); err != nil {
 				return err
 			}
 			if storedPage != page || storedPhase != phase || storedGeneration != generation || storedCursor != cursor {
@@ -201,7 +219,7 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 				if tombstoned {
 					continue
 				}
-				if err := registerChild(ctx, tx, repoID, "comments", issue.Number, issue.Number, now); err != nil {
+				if err := registerChild(ctx, tx, repoID, "comments", issue.Number, issue.Number, firstPass, now); err != nil {
 					return err
 				}
 				if err := ProjectIssue(ctx, tx, repoID, issue); err != nil {
@@ -230,6 +248,9 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 			return err
 		}
 		return &jobs.Defer{RetryAt: now, Reason: "continue"}
+	}
+	if !rateRetry.IsZero() {
+		return &jobs.Defer{RetryAt: rateRetry, Reason: CodeRateLimited}
 	}
 	if transient {
 		return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeUnverified}

@@ -49,7 +49,8 @@ func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFenc
 		return err
 	}
 	started := d.Clock.Now()
-	err = d.withEvidencePage(ctx, job, fence, repoID, func(token, name string) (any, error) {
+	err = d.withEvidencePage(ctx, job, fence, repoID, func(token string, repo githubapp.Repo) (any, error) {
+		name := repo.FullName
 		if resource == "reviews" {
 			f, ok := d.GitHub.(reviewFetcher)
 			if !ok {
@@ -119,7 +120,9 @@ func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFenc
 			_, err = tx.Exec(ctx, `UPDATE activity_children SET cursor=$4 WHERE repository_id=$1 AND resource=$2 AND parent_id=$3`, repoID, resource, parentID, page.next)
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE activity_children SET complete=COALESCE(previous_scan=current_scan,false),watermark=CASE WHEN previous_scan=current_scan THEN scan_started_at ELSE watermark END,last_success_at=CASE WHEN previous_scan=current_scan THEN $4 ELSE last_success_at END,previous_scan=current_scan,current_scan='{}',scan_started_at=NULL,cursor='' WHERE repository_id=$1 AND resource=$2 AND parent_id=$3`, repoID, resource, parentID, d.Clock.Now())
+		// A scan is stable when it repeats the previous one, or when it fit in one response ($5): the two-scan rule
+		// guards against items shifting between pages, which a single page cannot suffer.
+		_, err = tx.Exec(ctx, `UPDATE activity_children SET complete=($5 OR COALESCE(previous_scan=current_scan,false)),watermark=CASE WHEN $5 OR previous_scan=current_scan THEN scan_started_at ELSE watermark END,last_success_at=CASE WHEN $5 OR previous_scan=current_scan THEN $4 ELSE last_success_at END,previous_scan=current_scan,current_scan='{}',scan_started_at=NULL,cursor='' WHERE repository_id=$1 AND resource=$2 AND parent_id=$3`, repoID, resource, parentID, d.Clock.Now(), cursor == "")
 		return err
 	})
 	if err != nil {
