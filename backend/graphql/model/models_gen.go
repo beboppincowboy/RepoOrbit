@@ -59,10 +59,16 @@ type EvidenceActor struct {
 }
 
 type Issue struct {
-	ID           string `json:"id"`
-	RepositoryID string `json:"repositoryId"`
-	Title        string `json:"title"`
-	State        string `json:"state"`
+	ID           string   `json:"id"`
+	RepositoryID string   `json:"repositoryId"`
+	Number       int      `json:"number"`
+	Title        string   `json:"title"`
+	State        string   `json:"state"`
+	URL          string   `json:"url"`
+	AuthorLogin  *string  `json:"authorLogin,omitempty"`
+	UpdatedAt    string   `json:"updatedAt"`
+	Labels       []string `json:"labels"`
+	Assignees    []string `json:"assignees"`
 }
 
 type IssueConnection struct {

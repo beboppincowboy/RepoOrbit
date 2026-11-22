@@ -51,6 +51,10 @@ const workspacePullRequestsQuery = `query WorkspacePullRequests($id: ID!) {
     pullRequestEvidence(repositoryIds: [$id], first: 20) { nodes { id number title state url createdAt mergedAt reviewState author { login type } } withheld hasNextPage }
   }`
 
+const workspaceIssuesQuery = `query WorkspaceIssues($id: ID!, $after: ID) {
+    issues(repositoryIds: [$id], first: 20, after: $after) { nodes { id repositoryId number title state url authorLogin updatedAt labels assignees } withheld retryAt hasNextPage endCursor }
+  }`
+
 const crossOverviewQuery = `query CrossRepositoryOverview($days: Int! = 30) {
     crossRepositoryOverview(days: $days) {
       days windowStart now repositoriesCounted repositoriesSyncing withheld retryAt
@@ -63,7 +67,7 @@ const crossOverviewQuery = `query CrossRepositoryOverview($days: Int! = 30) {
   }`
 
 func TestFrontendOperationsFitLimits(t *testing.T) {
-	for name, query := range map[string]string{"overview": repositoryOverviewQuery, "pulls": workspacePullRequestsQuery, "cross": crossOverviewQuery} {
+	for name, query := range map[string]string{"overview": repositoryOverviewQuery, "pulls": workspacePullRequestsQuery, "issues": workspaceIssuesQuery, "cross": crossOverviewQuery} {
 		body, _ := json.Marshal(map[string]any{"query": query, "variables": map[string]any{"id": "1", "days": 90}})
 		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")

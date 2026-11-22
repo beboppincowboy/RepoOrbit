@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const listDemoRepositories = `-- name: ListDemoRepositories :many
@@ -45,7 +47,10 @@ func (q *Queries) ListDemoRepositories(ctx context.Context, arg ListDemoReposito
 }
 
 const listIssues = `-- name: ListIssues :many
-SELECT i.source_id AS id, i.repository_id, i.title, i.state FROM activity_issues i JOIN repositories r ON r.id = i.repository_id
+SELECT i.source_id AS id, i.repository_id, i.number, i.title, i.state, i.html_url, i.author_login, i.updated_at,
+  COALESCE(ARRAY(SELECT l.name FROM activity_issue_labels l WHERE l.issue_id = i.source_id ORDER BY l.name), '{}'::text[])::text[] AS labels,
+  COALESCE(ARRAY(SELECT a.login FROM activity_issue_assignees a WHERE a.issue_id = i.source_id ORDER BY a.login), '{}'::text[])::text[] AS assignees
+FROM activity_issues i JOIN repositories r ON r.id = i.repository_id
 WHERE r.is_demo = $1::boolean AND i.repository_id = ANY($2::bigint[]) AND i.source_id > $3::bigint
 ORDER BY i.source_id LIMIT $4::int
 `
@@ -60,8 +65,14 @@ type ListIssuesParams struct {
 type ListIssuesRow struct {
 	ID           int64
 	RepositoryID int64
+	Number       int64
 	Title        string
 	State        string
+	HtmlUrl      string
+	AuthorLogin  pgtype.Text
+	UpdatedAt    pgtype.Timestamptz
+	Labels       []string
+	Assignees    []string
 }
 
 // Demo and real mode both list the synced evidence the analytics count; each mode sees only its own repositories.
@@ -82,8 +93,14 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]ListI
 		if err := rows.Scan(
 			&i.ID,
 			&i.RepositoryID,
+			&i.Number,
 			&i.Title,
 			&i.State,
+			&i.HtmlUrl,
+			&i.AuthorLogin,
+			&i.UpdatedAt,
+			&i.Labels,
+			&i.Assignees,
 		); err != nil {
 			return nil, err
 		}
