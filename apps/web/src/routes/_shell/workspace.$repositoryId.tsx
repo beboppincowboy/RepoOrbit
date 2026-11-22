@@ -111,6 +111,7 @@ function RepositoryWorkspace() {
       if (display !== "partial") return false;
       const streams = [activity.issues, activity.pullRequests, activity.releases, activity.issueEvents?.traversal];
       const children = [activity.reviews, activity.comments];
+      if (streams.some(stream => stream?.jobState === "running" && stream.phase !== "current")) return 3000;
       const queued = streams.some(stream => stream?.jobState === "queued" && stream.phase !== "current")
         || children.some(child => child && !child.complete && child.nextAttemptAt);
       return queued ? 10000 : false;
