@@ -480,6 +480,10 @@ func (s *Service) operation(w http.ResponseWriter, r *http.Request) (int64, db.G
 	if !ok {
 		return 0, row, d, snap, false
 	}
+	if err := s.Queries.FailStalePendingOperation(r.Context(), row.ID); err != nil {
+		s.internal(w, err)
+		return 0, row, d, snap, false
+	}
 	if row, ok = load(); !ok || !s.fenceHolds(w, r.Context(), snap) {
 		return 0, row, d, snap, false
 	}
@@ -555,6 +559,10 @@ func (s *Service) replay(w http.ResponseWriter, ctx context.Context, userID int6
 	case !bytes.Equal(prior.RequestHash, hash):
 		http.Error(w, "idempotency key reused with a different request", http.StatusUnprocessableEntity)
 	default:
+		if err := s.Queries.FailStalePendingOperation(ctx, prior.ID); err != nil {
+			s.internal(w, err)
+			return true
+		}
 		s.respond(w, ctx, http.StatusOK, userID, prior.ID, snap)
 	}
 	return true
@@ -643,6 +651,9 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 		return
 	}
 
+	// Once recording starts, a client disconnect must not strand the row between insert and mark-sent (or abandon the
+	// call and its recorded outcome later).
+	ctx = context.WithoutCancel(ctx)
 	var opID int64
 	insert := func() error {
 		return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
@@ -715,7 +726,6 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 		s.respond(w, ctx, http.StatusOK, userID, opID, snap)
 		return
 	}
-	ctx = context.WithoutCancel(ctx) // a client disconnect must not abandon the call or its recorded outcome
 	if c.kind == "create" {
 		// A create's confirmed copy is GitHub's create response: nothing stored for the new issue is older, so it is
 		// projected without the per-issue lock and never replaces a same-second copy.

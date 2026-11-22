@@ -1313,3 +1313,36 @@ func TestLostSendClaimAnswersRecordedOperation(t *testing.T) {
 		t.Fatalf("writes sent: %d", n)
 	}
 }
+
+// An update recorded but never marked sent (the process stopped in between) cannot stay pending forever: once stale,
+// a replay of its key or a read of the operation fails it as never sent, and nothing is sent.
+func TestStalePendingUpdateIsFailedOnRead(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetIssues(repo, seedIssue(1, "alice", "Existing"))
+	body := `{"labels":{"add":["triaged"]}}`
+	stall := func(key string) int64 {
+		resp, op := alice.send(changes(repo, 1), key, body)
+		if resp.StatusCode != http.StatusCreated || op.State != "succeeded" {
+			t.Fatalf("update: %d %+v", resp.StatusCode, op)
+		}
+		// Rewind it to a row recorded two minutes ago and never marked sent.
+		if _, err := e.pool.Exec(context.Background(), `UPDATE write_operations SET state='pending', sent_at=NULL, outcome='{}', created_at=now()-interval '2 minutes' WHERE id=$1`, op.ID); err != nil {
+			t.Fatal(err)
+		}
+		return op.ID
+	}
+	replayed := stall("stuck-replay")
+	labels := len(e.gh.Issues(repo)[0].Labels)
+	if resp, op := alice.send(changes(repo, 1), "stuck-replay", body); resp.StatusCode != http.StatusOK || op.ID != replayed || op.State != "failed" {
+		t.Fatalf("replay of a stale pending update: %d %+v", resp.StatusCode, op)
+	}
+	read := stall("stuck-read")
+	if resp, op := alice.get(opPath(read)); resp.StatusCode != http.StatusOK || op.State != "failed" {
+		t.Fatalf("read of a stale pending update: %d %+v", resp.StatusCode, op)
+	}
+	if n := len(e.gh.Issues(repo)[0].Labels); n != labels {
+		t.Fatalf("a stale pending update was resent: %d labels, want %d", n, labels)
+	}
+}

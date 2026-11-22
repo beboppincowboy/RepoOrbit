@@ -35,6 +35,19 @@ func (q *Queries) FailStalePendingCreate(ctx context.Context, arg FailStalePendi
 	return result.RowsAffected(), nil
 }
 
+const failStalePendingOperation = `-- name: FailStalePendingOperation :exec
+UPDATE write_operations SET state = 'failed', outcome = '{"error":"abandoned before sending; nothing was sent to GitHub"}', updated_at = now()
+WHERE id = $1 AND state = 'pending' AND created_at < now() - interval '1 minute'
+`
+
+// FailStalePendingCreate for one operation of any kind, run before an operation is read or replayed: a row still
+// pending a minute after it was recorded was never sent (the process stopped before MarkWriteOperationSent), so it is
+// failed instead of reading as pending forever. Same threshold and same safety: a resumed sender finds no pending row.
+func (q *Queries) FailStalePendingOperation(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, failStalePendingOperation, id)
+	return err
+}
+
 const findLatestCreate = `-- name: FindLatestCreate :one
 SELECT id FROM write_operations WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND content_hash = $3 ORDER BY id DESC LIMIT 1
 `
