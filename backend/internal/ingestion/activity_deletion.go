@@ -40,6 +40,13 @@ func applyDeletion(ctx context.Context, tx pgx.Tx, repoID int64, event, action s
 		_, err := tx.Exec(ctx, sql, args...)
 		return err
 	}
+	// An issue-write readback projects its confirmed copy under the per-issue lock, not a checkpoint lock. Take it
+	// after the job and checkpoint-stream rows SignalActivity touched; readbacks touch neither, so the order is safe.
+	if resource == "issues" && p.Issue.Number > 0 {
+		if err := LockIssue(ctx, tx, repoID, p.Issue.Number); err != nil {
+			return err
+		}
+	}
 	if err := lockCheckpoints(ctx, tx, repoID, resource, p.Issue.Number); err != nil {
 		return err
 	}
