@@ -1,24 +1,56 @@
 import { repositorySnapshotKey, repositorySnapshotPrefix } from "@/lib/repository-snapshots";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
+import { clearRepositoryIssueDrafts, hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/components/issue-editor";
 import { IssueIcon, PullRequestIcon } from "@/components/needs-attention";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { WriteHistory, writeOperationsQueryKey } from "@/components/write-history";
 import { selectedRepositoriesKey, flattenSelectedRepositoryRows, useSelectedRepositories } from "@/lib/selected-repositories";
-import { RepositoryAccessUnverifiedError, GraphQLUnavailableError, fetchSelectedRepositoryDetailsPage, fetchRepositoryOverview, fetchWorkspacePullRequests, type ActivityResourceStatus, type MetricWindow, type ReviewState, type WorkspacePullRequest } from "@/lib/api";
+import {
+  RepositoryAccessUnverifiedError,
+  GraphQLUnavailableError,
+  fetchIssueCapabilities,
+  fetchSelectedRepositoryDetailsPage,
+  fetchRepositoryOverview,
+  fetchWorkspaceIssues,
+  fetchWorkspacePullRequests,
+  type ActivityResourceStatus,
+  type MetricWindow,
+  type ReviewState,
+  type WorkspaceIssue,
+  type WorkspacePullRequest,
+  type WriteOperation,
+  type WriteOperationIssue,
+} from "@/lib/api";
 
-const tabs = { overview: "Overview", pulls: "Pull Requests", contributors: "Contributors", activity: "Activity" } as const;
+const tabs = { overview: "Overview", issues: "Issues", pulls: "Pull Requests", contributors: "Contributors", activity: "Activity" } as const;
 type Tab = keyof typeof tabs;
 const windows = [7, 30, 90] as const;
+type EditorSearch = "new" | number | undefined;
+
+function parseEditorSearch(raw: unknown): EditorSearch {
+  if (raw === "new") return "new";
+  if (typeof raw === "number" && Number.isInteger(raw) && raw > 0) return raw;
+  if (typeof raw === "string" && /^\d+$/.test(raw)) {
+    const n = Number.parseInt(raw, 10);
+    if (n > 0) return n;
+  }
+  return undefined;
+}
 
 export const Route = createFileRoute("/_shell/workspace/$repositoryId")({
-  validateSearch: (search: Record<string, unknown>): { days: MetricWindow; tab: Tab } => ({
-    days: search.days === 7 || search.days === 90 ? search.days : 30,
-    tab: typeof search.tab === "string" && Object.hasOwn(tabs, search.tab) ? search.tab as Tab : "overview",
-  }),
+  validateSearch: (search: Record<string, unknown>): { days: MetricWindow; tab: Tab; editor?: "new" | number } => {
+    const editor = parseEditorSearch(search.editor);
+    return {
+      days: search.days === 7 || search.days === 90 ? search.days : 30,
+      tab: typeof search.tab === "string" && Object.hasOwn(tabs, search.tab) ? search.tab as Tab : "overview",
+      ...(editor !== undefined ? { editor } : {}),
+    };
+  },
   component: RepositoryWorkspace,
 });
 
@@ -75,8 +107,12 @@ const coverageReason = (coverage: Coverage) => coverageReasons[coverage.reason ?
 function RepositoryWorkspace() {
   const { repositoryId } = Route.useParams();
   const search = Route.useSearch();
+  const navigate = useNavigate({ from: "/workspace/$repositoryId" });
   const { session } = Route.useRouteContext();
   const queryClient = useQueryClient();
+  const viewerKey = `${session.mode}:${session.user?.login ?? ""}`;
+  const [selectedEditIssue, setSelectedEditIssue] = useState<EditableIssue | null>(null);
+  const [draftRevision, setDraftRevision] = useState(0);
   const overviewKey = ["repositoryOverview", session.mode, session.user?.login, repositoryId, search.days] as const;
   const snapshotPrefix = repositorySnapshotPrefix(session, repositoryId);
   const snapshotKey = repositorySnapshotKey(session, repositoryId, search.days);
@@ -160,6 +196,61 @@ function RepositoryWorkspace() {
     }, Math.max(1000, delay + 1000));
     return () => window.clearTimeout(timer);
   }, [accessRejected, queryClient, refetchOverview, retryTime, session]);
+  useEffect(() => {
+    if (accessRejected && !query.isFetching) {
+      clearRepositoryIssueDrafts(viewerKey, repositoryId);
+    }
+  }, [accessRejected, query.isFetching, viewerKey, repositoryId]);
+  const editorOpen = search.editor !== undefined;
+  const capabilitiesQuery = useQuery({
+    queryKey: ["issueCapabilities", viewerKey, repositoryId],
+    queryFn: ({ signal }) => fetchIssueCapabilities(repositoryId, signal),
+    enabled: !demo && !snapshot && Boolean(overview) && (editorOpen || search.tab === "issues"),
+    gcTime: 0,
+    retry: false,
+  });
+  const savedCreateDraft = useMemo(() => {
+    void draftRevision;
+    return !demo && hasSavedCreateDraft(viewerKey, repositoryId);
+  }, [demo, viewerKey, repositoryId, draftRevision]);
+
+  function openNewIssue() {
+    setSelectedEditIssue(null);
+    void navigate({ search: prev => ({ ...prev, editor: "new" }), replace: true });
+  }
+
+  function openEditIssue(issue: EditableIssue) {
+    setSelectedEditIssue(issue);
+    void navigate({ search: prev => ({ ...prev, editor: issue.number }), replace: true });
+  }
+
+  function closeEditor() {
+    setSelectedEditIssue(null);
+    setDraftRevision(v => v + 1);
+    void navigate({ search: prev => ({ days: prev.days, tab: prev.tab }), replace: true });
+  }
+
+  function handleWriteRecorded(op: WriteOperation) {
+    setDraftRevision(v => v + 1);
+    void queryClient.invalidateQueries({ queryKey: writeOperationsQueryKey(viewerKey, repositoryId) });
+    if (op.state === "succeeded" || op.issueNumber) {
+      void queryClient.invalidateQueries({ queryKey: ["workspaceIssues", repositoryId, viewerKey] });
+      void queryClient.invalidateQueries({ queryKey: ["repositoryOverview", session.mode, session.user?.login, repositoryId] });
+      void queryClient.invalidateQueries({ queryKey: ["crossRepositoryOverview", session.mode, session.user?.login] });
+    }
+  }
+
+  function switchToEditIssue(issueNumber: number, confirmed?: WriteOperationIssue) {
+    openEditIssue({
+      number: issueNumber,
+      title: confirmed?.title,
+      state: confirmed?.state,
+      url: confirmed?.url,
+      labels: confirmed?.labels,
+      assignees: confirmed?.assignees,
+    });
+  }
+
   const sync: SyncInput | null = overview ? {
     syncState: overview.syncState,
     activity: demo ? null : overview.activity,
@@ -200,6 +291,11 @@ function RepositoryWorkspace() {
 
   const [owner, name] = overview.fullName.split("/");
   const github = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  const contributorSuggestions = overview.contributors.filter(c => !c.isBot).map(c => c.login);
+  const editingIssue: EditableIssue | undefined = typeof search.editor === "number"
+    ? (selectedEditIssue?.number === search.editor ? selectedEditIssue : { number: search.editor })
+    : undefined;
+  const tabSearch = { days: search.days, tab: search.tab };
 
   return <div className="flex h-full min-h-0 flex-col gap-3 max-[900px]:overflow-auto">
     <section className={`${card} flex flex-none flex-col gap-2.5 px-4 pt-4`}>
@@ -209,13 +305,23 @@ function RepositoryWorkspace() {
         {!demo && <a className={smallBtn} href={github}>View on GitHub {icons.ext}</a>}
         {snapshot ? <span className={smallBtn}>Frozen snapshot</span> : demo ? <SyncStatus compact {...sync} /> : <SyncDetails sync={sync} repositoryId={repositoryId} onRefresh={() => void query.refetch()} />}
         {overview.activity.archived && <span className={`${mini} border-border text-soft`}>Archived</span>}
-        <div role="group" aria-label="Time window" className="ml-auto inline-flex gap-0.5 rounded-full border border-border bg-card p-0.5">
-          {windows.map(days => <Link key={days} {...path} search={{ ...search, days }} aria-current={search.days === days ? "page" : undefined}
-            className="rounded-full px-[11px] py-[3px] text-xs text-muted-foreground aria-[current=page]:bg-primary-soft aria-[current=page]:font-semibold aria-[current=page]:text-primary">{days}d</Link>)}
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div role="group" aria-label="Time window" className="inline-flex gap-0.5 rounded-full border border-border bg-card p-0.5">
+            {windows.map(days => <Link key={days} {...path} search={{ ...tabSearch, days }} aria-current={search.days === days ? "page" : undefined}
+              className="rounded-full px-[11px] py-[3px] text-xs text-muted-foreground aria-[current=page]:bg-primary-soft aria-[current=page]:font-semibold aria-[current=page]:text-primary">{days}d</Link>)}
+          </div>
+          <Button
+            size="sm"
+            onClick={openNewIssue}
+            disabled={Boolean(snapshot)}
+            title={snapshot ? "Creating issues needs a live connection." : undefined}
+          >
+            + New issue{savedCreateDraft ? " (draft)" : ""}
+          </Button>
         </div>
       </div>
       <nav aria-label="Workspace sections" className="flex flex-wrap gap-x-5 gap-y-0.5 border-b border-border">
-        {(Object.keys(tabs) as Tab[]).map(tab => <Link key={tab} {...path} search={{ ...search, tab }} aria-current={search.tab === tab ? "page" : undefined}
+        {(Object.keys(tabs) as Tab[]).map(tab => <Link key={tab} {...path} search={{ ...tabSearch, tab }} aria-current={search.tab === tab ? "page" : undefined}
           className="-mb-px border-b-2 border-transparent py-2 text-muted-foreground aria-[current=page]:border-foreground aria-[current=page]:font-semibold aria-[current=page]:text-foreground">{tabs[tab]}</Link>)}
       </nav>
     </section>
@@ -224,10 +330,43 @@ function RepositoryWorkspace() {
       <span>{snapshotReason} {retryAt && `Retry after ${clock.format(new Date(retryAt))}.`}</span>
       {!rateLimited && <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>Retry</Button>}
     </div> : display && <Banner overview={overview} display={display} />}
-    {search.tab === "overview" && <OverviewTab overview={overview} days={search.days} recent={<Link {...path} search={{ ...search, tab: "activity" }} className={smallBtn}>All</Link>} github={github} />}
-    {search.tab === "pulls" && (snapshot ? <p className={`${card} p-4`}>The pull request list needs a live connection. Saved PR counts are available on Overview.</p> : <PullRequests key={repositoryId} id={repositoryId} viewer={`${session.mode}:${session.user?.login}`} github={github} />)}
+    {search.tab === "overview" && <OverviewTab overview={overview} days={search.days} recent={<Link {...path} search={{ ...tabSearch, tab: "activity" }} className={smallBtn}>All</Link>} github={github} />}
+    {search.tab === "issues" && (
+      <IssuesTab
+        id={repositoryId}
+        viewerKey={viewerKey}
+        demo={demo}
+        frozen={Boolean(snapshot)}
+        github={github}
+        onNewIssue={openNewIssue}
+        onEditIssue={openEditIssue}
+        onResolved={handleWriteRecorded}
+      />
+    )}
+    {search.tab === "pulls" && (snapshot ? <p className={`${card} p-4`}>The pull request list needs a live connection. Saved PR counts are available on Overview.</p> : <PullRequests key={repositoryId} id={repositoryId} viewer={viewerKey} github={github} />)}
     {search.tab === "contributors" && <Contributors overview={overview} days={search.days} />}
     {search.tab === "activity" && <section className={`${card} flex-1 overflow-auto`}><Timeline overview={overview} github={github} /></section>}
+    {editorOpen && !snapshot && (
+      <IssueEditor
+        key={`${repositoryId}:${search.editor}`}
+        mode={search.editor === "new" ? "create" : "update"}
+        issue={editingIssue}
+        viewerKey={viewerKey}
+        viewerLogin={session.user?.login ?? null}
+        repositoryId={repositoryId}
+        fullName={overview.fullName}
+        demo={demo}
+        archived={overview.activity.archived}
+        capabilities={capabilitiesQuery.data ?? null}
+        capabilitiesLoading={capabilitiesQuery.isPending && !demo}
+        capabilitiesError={capabilitiesQuery.isError ? capabilitiesQuery.error.message : null}
+        onRetryCapabilities={() => void capabilitiesQuery.refetch()}
+        contributorSuggestions={contributorSuggestions}
+        onClose={closeEditor}
+        onOperationRecorded={handleWriteRecorded}
+        onSwitchToEditIssue={switchToEditIssue}
+      />
+    )}
   </div>;
 }
 
@@ -431,4 +570,199 @@ function PullRequests({ id, viewer, github }: { id: string; viewer: string; gith
       {query.hasNextPage && <div className="p-3"><Button variant="outline" onClick={() => void query.fetchNextPage()} disabled={query.isFetching}>Load more pull requests</Button></div>}
     </>}
   </div>;
+}
+
+const issueColumn = createColumnHelper<typeof features, WorkspaceIssue>();
+const noIssues: WorkspaceIssue[] = [];
+
+function IssuesTab({
+  id,
+  viewerKey,
+  demo,
+  frozen,
+  github,
+  onNewIssue,
+  onEditIssue,
+  onResolved,
+}: {
+  id: string;
+  viewerKey: string;
+  demo: boolean;
+  frozen: boolean;
+  github: string;
+  onNewIssue: () => void;
+  onEditIssue: (issue: EditableIssue) => void;
+  onResolved: (op: WriteOperation) => void;
+}) {
+  const [jumpNumber, setJumpNumber] = useState("");
+  const query = useInfiniteQuery({
+    queryKey: ["workspaceIssues", id, viewerKey],
+    queryFn: ({ pageParam, signal }) => fetchWorkspaceIssues(id, pageParam, signal),
+    initialPageParam: null as string | null,
+    getNextPageParam: last => last.hasNextPage ? last.endCursor : undefined,
+    enabled: !frozen,
+    gcTime: 0,
+  });
+
+  const issues = useMemo(() => query.data?.pages.flatMap(page => page.nodes) ?? noIssues, [query.data]);
+
+  const columns = useMemo(() => issueColumn.columns([
+    issueColumn.accessor("number", {
+      header: "Issue",
+      cell: c => (
+        <a href={githubHref(c.row.original.url, `${github}/issues/${c.getValue()}`)} className="font-mono text-xs text-muted-foreground hover:underline">
+          #{c.getValue()}
+        </a>
+      ),
+    }),
+    issueColumn.accessor("title", {
+      header: "Title",
+      cell: c => (
+        <>
+          <span className="font-medium">{c.getValue()}</span>
+          {c.row.original.authorLogin && <span className={`ml-2 text-xs ${muted}`}>@{c.row.original.authorLogin}</span>}
+        </>
+      ),
+    }),
+    issueColumn.accessor("state", {
+      header: "State",
+      cell: c => (
+        <span className={`${mini} ${c.getValue() === "open" ? "border-success-soft bg-success-soft text-success-foreground" : "border-border bg-muted text-muted-foreground"}`}>
+          {c.getValue()}
+        </span>
+      ),
+    }),
+    issueColumn.accessor("labels", {
+      header: "Labels",
+      cell: c => (
+        <div className="flex flex-wrap gap-1">
+          {c.getValue().length
+            ? c.getValue().map(name => <span key={name} className={`${mini} border-border bg-muted text-soft`}>{name}</span>)
+            : <span className={`text-xs ${muted}`}>—</span>}
+        </div>
+      ),
+    }),
+    issueColumn.accessor("assignees", {
+      header: "Assignees",
+      cell: c => (
+        <span className="text-xs text-soft">
+          {c.getValue().length ? c.getValue().map(a => `@${a}`).join(", ") : <span className={muted}>Unassigned</span>}
+        </span>
+      ),
+    }),
+    issueColumn.display({
+      id: "actions",
+      header: () => <span className="sr-only">Actions</span>,
+      cell: c => (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={frozen}
+          onClick={() => onEditIssue({
+            number: c.row.original.number,
+            title: c.row.original.title,
+            state: c.row.original.state,
+            url: c.row.original.url,
+            authorLogin: c.row.original.authorLogin,
+            labels: c.row.original.labels,
+            assignees: c.row.original.assignees,
+          })}
+        >
+          Edit<span className="sr-only"> issue #{c.row.original.number}</span>
+        </Button>
+      ),
+    }),
+  ]), [github, frozen, onEditIssue]);
+
+  const table = useTable({ features, columns, data: issues });
+  const th = "sticky top-0 z-[1] whitespace-nowrap border-b border-border bg-card px-3 py-2 text-left text-xs font-medium text-muted-foreground";
+
+  function openByNumber(event: FormEvent) {
+    event.preventDefault();
+    const num = Number.parseInt(jumpNumber.trim(), 10);
+    if (!Number.isInteger(num) || num <= 0) return;
+    const matched = issues.find(item => item.number === num);
+    setJumpNumber("");
+    onEditIssue(matched
+      ? { number: matched.number, title: matched.title, state: matched.state, url: matched.url, authorLogin: matched.authorLogin, labels: matched.labels, assignees: matched.assignees }
+      : { number: num });
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 gap-3 max-[900px]:flex-col">
+      <section aria-label="Repository issues" className={`${card} flex min-h-0 flex-[1.35_1_480px] flex-col`}>
+        <div className="flex flex-none flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+          <div>
+            <h2 className="m-0 text-sm">Issues</h2>
+            <p className={`m-0 text-xs ${muted}`}>GitHub issues are tasks. Changes go through Review → Submit → Confirmed.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <form onSubmit={openByNumber} className="flex items-center gap-1.5">
+              <input
+                type="number"
+                min={1}
+                step={1}
+                aria-label="Edit issue by number"
+                placeholder="Issue #"
+                value={jumpNumber}
+                disabled={frozen}
+                onChange={e => setJumpNumber(e.target.value)}
+                className="w-24 rounded-lg border border-border bg-card px-2 py-1 text-xs"
+              />
+              <Button type="submit" variant="outline" size="sm" disabled={frozen || !jumpNumber.trim()}>Edit #</Button>
+            </form>
+            <Button size="sm" onClick={onNewIssue} disabled={frozen}>+ New issue</Button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {frozen ? (
+            <p className="p-4">The issue list needs a live connection. Saved issue counts are available on Overview.</p>
+          ) : query.isPending ? (
+            <p role="status" className="p-4">Loading issues…</p>
+          ) : query.isError ? (
+            <p role="alert" className="p-4">{query.error.message} <Button variant="outline" size="sm" onClick={() => void query.refetch()}>Retry</Button></p>
+          ) : (
+            <>
+              <table className="w-full border-collapse">
+                <thead>{table.getHeaderGroups().map(group => <tr key={group.id}>{group.headers.map(h => <th key={h.id} className={th}><table.FlexRender header={h} /></th>)}</tr>)}</thead>
+                <tbody>
+                  {table.getRowModel().rows.map(row => (
+                    <tr key={row.id} className="hover:bg-muted">
+                      {row.getAllCells().map(cell => (
+                        <td key={cell.id} className="border-b border-border px-3 py-[9px] align-middle"><table.FlexRender cell={cell} /></td>
+                      ))}
+                    </tr>
+                  ))}
+                  {!issues.length && <tr><td colSpan={columns.length} className={`p-6 text-center ${muted}`}>No imported issues yet.</td></tr>}
+                </tbody>
+              </table>
+              {query.hasNextPage && (
+                <div className="p-3">
+                  <Button variant="outline" onClick={() => void query.fetchNextPage()} disabled={query.isFetching}>Load more issues</Button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </section>
+
+      <div className="flex min-h-0 flex-[1_1_360px] flex-col">
+        <WriteHistory
+          repositoryId={id}
+          viewerKey={viewerKey}
+          demo={demo}
+          frozen={frozen}
+          onResolved={onResolved}
+          onEditIssue={(issueNumber, confirmed) => onEditIssue({
+            number: issueNumber,
+            title: confirmed?.title,
+            state: confirmed?.state,
+            url: confirmed?.url,
+            labels: confirmed?.labels,
+            assignees: confirmed?.assignees,
+          })}
+        />
+      </div>
+    </div>
+  );
 }

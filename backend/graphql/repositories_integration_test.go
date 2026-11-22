@@ -69,15 +69,15 @@ func TestDemoDatabaseGraphQL(t *testing.T) {
 		h.ServeHTTP(w, req)
 		return w.Body.String()
 	}
-	result := run(`{ selectedRepositories(first: 1) { nodes { id fullName } endCursor hasNextPage } issues(repositoryIds: ["1"], first: 1) { nodes { id title } hasNextPage } }`)
+	result := run(`{ selectedRepositories(first: 1) { nodes { id fullName } endCursor hasNextPage } issues(repositoryIds: ["1"], first: 1) { nodes { id number title state url authorLogin updatedAt labels assignees } hasNextPage } }`)
 	// The demo issue list reads the same seeded evidence the analytics count.
-	for _, want := range []string{"orbit/example", `"title":"Sample issue 1"`, `"hasNextPage":true`} {
+	for _, want := range []string{"orbit/example", `"number":1`, `"title":"Sample issue 1"`, `"state":"open"`, `"url":"https://github.com/orbit/example/issues/1"`, `"authorLogin":"sam"`, `"labels":[]`, `"assignees":[]`, `"hasNextPage":true`} {
 		if !strings.Contains(result, want) {
 			t.Fatalf("missing %s: %s", want, result)
 		}
 	}
-	result = run(`{ selectedRepositories(first: 1, after: "1") { nodes { fullName } } issues(repositoryIds: ["1"], first: 1, after: "900001001") { nodes { title } } }`)
-	if !strings.Contains(result, "orbit/launchpad") || !strings.Contains(result, `"title":"Sample issue 2"`) {
+	result = run(`{ selectedRepositories(first: 1, after: "1") { nodes { fullName } } issues(repositoryIds: ["1"], first: 1, after: "900001001") { nodes { number title assignees } } }`)
+	if !strings.Contains(result, "orbit/launchpad") || !strings.Contains(result, `"title":"Sample issue 2"`) || !strings.Contains(result, `"assignees":["demo-user"]`) {
 		t.Fatal(result)
 	}
 	for _, query := range []string{`{ selectedRepositories(first: 101) { nodes { fullName } } }`, `{ selectedRepositories(after: "bad") { nodes { fullName } } }`, `{ ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { selectedRepositories { nodes { fullName } } } } } } } } }`} {
