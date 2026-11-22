@@ -21,10 +21,10 @@ const navbtn = "flex w-full items-center gap-2.5 whitespace-nowrap rounded-lg px
 const navlabel = "px-2 pt-3 pb-1 font-mono text-[11px] font-medium uppercase tracking-[.06em] text-muted-foreground max-[900px]:hidden";
 const card = "rounded-xl border border-border bg-card";
 
-// A row's display state, mirroring the overview: access-unverified rows are withheld (no name, no link).
+// A row can remain navigable while its activity access check is unavailable.
 function rowDisplay({ repo, detail }: SelectedRow) {
   if (detail?.state === "access-unverified") return syncDisplay({ syncState: repo.syncState, withheld: 1, retryAt: detail.retryAt });
-  return syncDisplay({ syncState: repo.syncState, activity: detail?.activity ?? null, metadataStatus: repo.syncState === "awaiting-sync" ? repo.metadataStatus : null, retryAt: detail?.issues.retryAt ?? null });
+  return syncDisplay({ syncState: repo.syncState, activity: detail?.activity ?? null, metadataStatus: repo.metadataStatus, retryAt: detail?.issues.retryAt ?? null });
 }
 
 // Prototype D2 shell: sidebar (Overview, Repositories, then each selected repository) | top bar (breadcrumb, repository
@@ -79,7 +79,7 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
   if (!demo && (limited || metadata.error instanceof GraphQLUnavailableError)) {
     for (const [key, snapshot] of queryClient.getQueriesData<{ fullName: string }>({ queryKey: repositorySnapshotsKey(session) })) {
       const [, , , id, days] = key;
-      if (snapshot && typeof id === "string" && (days === 7 || days === 30 || days === 90) && !visible.some(row => row.repo.id === id)) {
+      if (snapshot && typeof id === "string" && (days === 7 || days === 30 || days === 90) && !rows.some(row => row.repo.id === id)) {
         saved.set(id, { fullName: snapshot.fullName, days });
       }
     }
@@ -106,11 +106,10 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
         {metadata.isPending && <span role="status" className={`${navbtn} text-xs`}><LoadingCircle />Loading repositories…</span>}
         {limited && <span role="status" className={`${navbtn} text-xs`}>Waiting for GitHub</span>}
         {rows.map(row => {
-          if (limited && row.detail?.state === "access-unverified") return null;
           const display = rowDisplay(row);
-          if (row.detail?.state === "access-unverified") return <span key={row.repo.id} title={syncLabels[display]} className={`${navbtn} text-[12.5px] text-muted-foreground hover:bg-transparent max-[900px]:hidden`}><SyncDot display={display} /><span className="truncate">Repository</span></span>;
-          return <Link key={row.repo.id} to="/workspace/$repositoryId" params={{ repositoryId: row.repo.id }} search={{ days: 30, tab: "overview" }} activeOptions={{ includeSearch: false }} title={`${row.repo.fullName} · ${syncLabels[display]}`} className={`${navbtn} text-[12.5px] max-[900px]:hidden`}>
-            <SyncDot display={display} /><span className="truncate">{row.repo.fullName.split("/")[1]}</span>
+          const name = row.repo.fullName.split("/")[1] || "Repository";
+          return <Link key={row.repo.id} to="/workspace/$repositoryId" params={{ repositoryId: row.repo.id }} search={{ days: 30, tab: "overview" }} activeOptions={{ includeSearch: false }} title={`${name} · ${syncLabels[display]}`} className={`${navbtn} text-[12.5px] max-[900px]:hidden`}>
+            <SyncDot display={display} /><span className="truncate">{name}</span>
           </Link>;
         })}
         {[...saved].map(([id, { fullName, days }]) => <Link key={id} to="/workspace/$repositoryId" params={{ repositoryId: id }} search={{ days, tab: "overview" }} activeOptions={{ includeSearch: false }} title={`${fullName} · Saved data`} className={`${navbtn} text-[12.5px] max-[900px]:hidden`}>

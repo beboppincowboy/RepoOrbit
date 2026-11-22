@@ -111,7 +111,7 @@ export async function fetchSelectedRepositoryMetadataPage(after: string | null, 
 
 // Enriches one metadata-page promise with ordered detail batches, issuing at most two detail requests at a time.
 // Metadata failure and cancellation reject the promise. A failed batch keeps its repositories with null details.
-// Explicit access failures appear as access-unverified details. Callers withhold those names and links.
+// Explicit access failures appear as access-unverified details. The selected list and protected details are authorized separately.
 export async function fetchSelectedRepositoryDetailsPage(metadataPage: Promise<RepositoryConnection>, signal?: AbortSignal): Promise<SelectedRepositoryPage> {
   const { nodes, ...connection } = await metadataPage;
   const batches: SelectedRepositoryBatch[] = [];
@@ -473,20 +473,15 @@ export async function fetchWriteOperation(operationId: number, signal?: AbortSig
 }
 
 export async function submitIssueCreate(repositoryId: string, idempotencyKey: string, draft: IssueCreateDraft): Promise<WriteOperation> {
-  const response = await fetch(`/api/repositories/${encodeURIComponent(repositoryId)}/issues`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "", "Idempotency-Key": idempotencyKey },
-    cache: "no-store",
-    body: JSON.stringify(draft),
-  }).catch(() => {
-    throw new IssueWriteError("No reliable answer from the server. Your draft is preserved; check Write history before retrying.", { status: 0, kind: "transport" });
-  });
-  if (!response.ok) throw await toIssueWriteError(response);
-  return response.json();
+  return submitIssueWrite(`/api/repositories/${encodeURIComponent(repositoryId)}/issues`, idempotencyKey, draft);
 }
 
 export async function submitIssueUpdate(repositoryId: string, issueNumber: number, idempotencyKey: string, draft: IssueUpdateDraft): Promise<WriteOperation> {
-  const response = await fetch(`/api/repositories/${encodeURIComponent(repositoryId)}/issues/${encodeURIComponent(String(issueNumber))}/updates`, {
+  return submitIssueWrite(`/api/repositories/${encodeURIComponent(repositoryId)}/issues/${encodeURIComponent(String(issueNumber))}/updates`, idempotencyKey, draft);
+}
+
+async function submitIssueWrite(path: string, idempotencyKey: string, draft: IssueCreateDraft | IssueUpdateDraft): Promise<WriteOperation> {
+  const response = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "", "Idempotency-Key": idempotencyKey },
     cache: "no-store",
