@@ -13,7 +13,18 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
+	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
+
+// access answers CheckOne from a fixed table: a listed user is allowed (or unverified), anyone else denied.
+type access struct {
+	allowed    map[int64]bool
+	unverified bool
+}
+
+func (a access) CheckOne(_ context.Context, userID, _ int64, _ bool) repositories.Decision {
+	return repositories.Decision{Allowed: !a.unverified && a.allowed[userID], Unverified: a.unverified}
+}
 
 type inventories struct {
 	calls   int
@@ -141,12 +152,17 @@ INSERT INTO activity_cleanup(repository_id) VALUES(70)`); err != nil {
 // repository: everyone when no installation does, only the uncovered when one still does. The audit row stays.
 func TestCleanupWipesWriteDrafts(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		inv  map[int64][]int64
-		kept []int64 // users whose drafts survive
+		name     string
+		inv      map[int64][]int64
+		access   access
+		kept     []int64 // users whose drafts survive
+		deferred bool
 	}{
-		{name: "no installation covers", inv: map[int64][]int64{}, kept: nil},
-		{name: "one installation still covers", inv: map[int64][]int64{3: {70}, 4: {}}, kept: []int64{5}},
+		{name: "no installation covers", inv: map[int64][]int64{}, access: access{allowed: map[int64]bool{5: true, 6: true}}, kept: nil},
+		{name: "one installation still covers", inv: map[int64][]int64{3: {70}, 4: {}}, access: access{allowed: map[int64]bool{5: true}}, kept: []int64{5}},
+		// GitHub grants an installation member only the covered repositories they can see themselves.
+		{name: "covered but no longer a collaborator", inv: map[int64][]int64{3: {70}, 4: {}}, access: access{}, kept: nil},
+		{name: "covered actor unverifiable", inv: map[int64][]int64{3: {70}, 4: {}}, access: access{unverified: true}, kept: []int64{5, 6}, deferred: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := setup(t)
@@ -162,8 +178,11 @@ INSERT INTO activity_cleanup(repository_id) VALUES(70)`); err != nil {
 			}
 			e.deps.Inventory = &inventories{results: []map[int64][]int64{tc.inv, tc.inv}}
 			e.deps.AppKey = &rsa.PrivateKey{}
-			if err := e.deps.CleanupPrivate(ctx, jobs.Job{Key: "repo:70"}, txFence{pool: e.pool}); err != nil {
-				t.Fatal(err)
+			e.deps.Access = tc.access
+			err := e.deps.CleanupPrivate(ctx, jobs.Job{Key: "repo:70"}, txFence{pool: e.pool})
+			var deferral *jobs.Defer
+			if tc.deferred != errors.As(err, &deferral) || err != nil && deferral == nil {
+				t.Fatalf("cleanup: %v (deferred: want %v)", err, tc.deferred)
 			}
 			rows, err := e.pool.Query(ctx, `SELECT user_id FROM write_operations WHERE draft IS NOT NULL AND outcome::text LIKE '%secret%' ORDER BY user_id`)
 			if err != nil {

@@ -99,6 +99,32 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 		}
 	}
 	present := len(covering) > 0
+	// Holding a covering installation is not access: GitHub grants a member only the covered repositories they can
+	// see themselves. Of the actors a covering installation names, keep the drafts of exactly those a fresh check
+	// still allows; an unverifiable check defers the whole cleanup, as an incomplete inventory does.
+	keep := []int64{}
+	if private && present {
+		rows, err := d.Pool.Query(ctx, `SELECT DISTINCT o.user_id FROM write_operations o JOIN installations i ON i.user_id = o.user_id
+			WHERE o.repository_id = $1 AND o.draft IS NOT NULL AND i.installation_id = ANY($2) ORDER BY o.user_id`, repoID, covering)
+		if err != nil {
+			return retry(time.Time{})
+		}
+		actors, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			return retry(time.Time{})
+		}
+		for _, uid := range actors {
+			if d.Access == nil {
+				return retry(time.Time{})
+			}
+			switch dec := d.Access.CheckOne(ctx, uid, repoID, true); {
+			case dec.Unverified:
+				return retry(dec.RetryAt)
+			case dec.Allowed:
+				keep = append(keep, uid)
+			}
+		}
+	}
 	err = fence.Commit(ctx, func(tx pgx.Tx) error {
 		current, err := snap.StillCurrent(ctx, tx)
 		if err != nil {
@@ -119,11 +145,11 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 		if liveVersion != version || livePrivate != private {
 			return errRace
 		}
-		// Private access comes only through installations: an actor who holds none of the covering installations
-		// lost it, so their issue-write drafts go and their outcomes are redacted (everyone's when none covers).
+		// Every actor not confirmed above lost private access: their issue-write drafts go and their outcomes are
+		// redacted (everyone's when no installation covers). An access change since the check bumps the version.
 		if private {
 			if _, err = tx.Exec(ctx, `UPDATE write_operations SET draft=NULL, outcome=redacted_write_outcome(outcome) WHERE repository_id=$1 AND draft IS NOT NULL
-				AND user_id NOT IN (SELECT user_id FROM installations WHERE installation_id = ANY($2))`, repoID, covering); err != nil {
+				AND NOT (user_id = ANY($2))`, repoID, keep); err != nil {
 				return err
 			}
 		}
