@@ -99,6 +99,7 @@ test('a failed access check clears previously loaded details and keeps the other
   await expect(page.getByRole('main').getByText('Access unverified', { exact: true })).toBeVisible();
   await expect(page.getByRole('main').getByText('repo-1')).toHaveCount(0);
   await expect(sidebar(page).getByRole('link', { name: 'repo-1', exact: true })).toHaveCount(0);
+  await expect(sidebar(page).getByRole('link', { name: 'Repository', exact: true })).toHaveAttribute('href', /\/workspace\/1/);
   await expect(sidebar(page).getByRole('link', { name: 'repo-2', exact: true })).toBeVisible();
 
   revalidation = 'list-error';
