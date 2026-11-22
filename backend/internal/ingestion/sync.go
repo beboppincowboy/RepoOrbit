@@ -96,7 +96,7 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 			}
 			return tightenToPrivate(ctx, fence, repoID)
 		}
-		before := d.Access.CheckOne(ctx, uid, repoID, true)
+		before := d.checkActivityAccess(ctx, uid, repoID, token)
 		if before.Unverified {
 			if err := tighten(); err != nil && !errors.Is(err, errRace) {
 				return err
@@ -156,7 +156,7 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 			}
 			return errors.New("issue fetch failed")
 		}
-		after := d.Access.CheckOne(ctx, uid, repoID, true)
+		after := d.checkActivityAccess(ctx, uid, repoID, token)
 		if after.Unverified {
 			if err := tighten(); err != nil && !errors.Is(err, errRace) {
 				return err
@@ -168,7 +168,7 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 			}
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeUnverified}
 		}
-		if !after.Allowed || after.Repo.Private != before.Repo.Private || after.Repo.FullName != before.Repo.FullName {
+		if !after.Allowed || after.InstallationID != before.InstallationID || after.Repo.Private != before.Repo.Private || after.Repo.FullName != before.Repo.FullName {
 			if !after.Allowed || after.Repo.Private {
 				if err := tighten(); err != nil && !errors.Is(err, errRace) {
 					return err
