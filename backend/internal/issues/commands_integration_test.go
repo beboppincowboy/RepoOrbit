@@ -1315,7 +1315,7 @@ func TestLostSendClaimAnswersRecordedOperation(t *testing.T) {
 }
 
 // An update recorded but never marked sent (the process stopped in between) cannot stay pending forever: once stale,
-// a replay of its key or a read of the operation fails it as never sent, and nothing is sent.
+// a replay of its key, a read, or a listing fails it as never sent, and nothing is sent.
 func TestStalePendingUpdateIsFailedOnRead(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1337,6 +1337,10 @@ func TestStalePendingUpdateIsFailedOnRead(t *testing.T) {
 	labels := len(e.gh.Issues(repo)[0].Labels)
 	if resp, op := alice.send(changes(repo, 1), "stuck-replay", body); resp.StatusCode != http.StatusOK || op.ID != replayed || op.State != "failed" {
 		t.Fatalf("replay of a stale pending update: %d %+v", resp.StatusCode, op)
+	}
+	listed := stall("stuck-list")
+	if resp := alice.do("GET", fmt.Sprintf("/api/repositories/%d/write-operations", repo), "", nil); !strings.Contains(string(alice.body(resp)), fmt.Sprintf(`"id":%d,"repositoryId":%d,"kind":"update","state":"failed"`, listed, repo)) {
+		t.Fatalf("list of a stale pending update: %d %s", resp.StatusCode, alice.body(resp))
 	}
 	read := stall("stuck-read")
 	if resp, op := alice.get(opPath(read)); resp.StatusCode != http.StatusOK || op.State != "failed" {

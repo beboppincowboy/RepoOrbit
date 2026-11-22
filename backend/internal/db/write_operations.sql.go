@@ -35,16 +35,17 @@ func (q *Queries) FailStalePendingCreate(ctx context.Context, arg FailStalePendi
 	return result.RowsAffected(), nil
 }
 
-const failStalePendingOperation = `-- name: FailStalePendingOperation :exec
+const failStalePendingOperations = `-- name: FailStalePendingOperations :exec
 UPDATE write_operations SET state = 'failed', outcome = '{"error":"abandoned before sending; nothing was sent to GitHub"}', updated_at = now()
-WHERE id = $1 AND state = 'pending' AND created_at < now() - interval '1 minute'
+WHERE user_id = $1 AND state = 'pending' AND created_at < now() - interval '1 minute'
 `
 
-// FailStalePendingCreate for one operation of any kind, run before an operation is read or replayed: a row still
-// pending a minute after it was recorded was never sent (the process stopped before MarkWriteOperationSent), so it is
-// failed instead of reading as pending forever. Same threshold and same safety: a resumed sender finds no pending row.
-func (q *Queries) FailStalePendingOperation(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, failStalePendingOperation, id)
+// FailStalePendingCreate for every operation of one user, of any kind, run before their operations are read, listed,
+// or replayed: a row still pending a minute after it was recorded was never sent (the process stopped before
+// MarkWriteOperationSent), so it is failed instead of reading as pending forever. Same threshold and same safety: a
+// resumed sender finds no pending row.
+func (q *Queries) FailStalePendingOperations(ctx context.Context, userID int64) error {
+	_, err := q.db.Exec(ctx, failStalePendingOperations, userID)
 	return err
 }
 
@@ -307,7 +308,7 @@ UPDATE write_operations SET state = 'unknown', sent_at = now(), updated_at = now
 `
 
 // Moves a pending operation to 'unknown' and stamps sent_at, just before its request is sent. 0 rows: it is no longer
-// pending (FailStalePendingCreate or FailStalePendingOperation failed it), and nothing may be sent; the caller answers with the row as it stands.
+// pending (FailStalePendingCreate or FailStalePendingOperations failed it), and nothing may be sent; the caller answers with the row as it stands.
 func (q *Queries) MarkWriteOperationSent(ctx context.Context, id int64) (int64, error) {
 	result, err := q.db.Exec(ctx, markWriteOperationSent, id)
 	if err != nil {
