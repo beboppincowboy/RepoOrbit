@@ -246,6 +246,14 @@ func ProjectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.
 	return projectIssue(ctx, tx, repoID, issue, false)
 }
 
+// LockIssue takes the per-issue write lock for the rest of tx: issue-write readbacks hold it while they project
+// GitHub's confirmed copy, and a signed issue deletion takes it before its tombstone, so neither misses the other's
+// uncommitted write. It is reentrant within one transaction.
+func LockIssue(ctx context.Context, tx pgx.Tx, repoID, number int64) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('issue-write:%s:%s', $1::bigint, $2::bigint), 0))`, repoID, number)
+	return err
+}
+
 // ProjectConfirmedIssue is ProjectIssue for an issue read back right after a confirmed write, by a caller that
 // serializes readbacks of that issue (so the later readback is projected last). It also replaces a stored copy with
 // the same updated_at: GitHub's timestamps have one-second resolution, so an edit in the same second

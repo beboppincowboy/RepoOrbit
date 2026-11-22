@@ -899,7 +899,7 @@ func (s *Service) finish(ctx context.Context, opID, repoID int64, snap accessfen
 			if _, err = tx.Exec(ctx, `SET LOCAL lock_timeout = '10s'`); err != nil {
 				return err
 			}
-			if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('issue-write:%s:%s', $1::bigint, $2::bigint), 0))`, repoID, lock); err != nil {
+			if err = ingestion.LockIssue(ctx, tx, repoID, lock); err != nil {
 				return err
 			}
 			if _, err = tx.Exec(ctx, `SET LOCAL lock_timeout = 0`); err != nil {
@@ -930,6 +930,10 @@ func (s *Service) finish(ctx context.Context, opID, repoID int64, snap accessfen
 		}
 		if lock != 0 {
 			return ingestion.ProjectConfirmedIssue(ctx, tx, repoID, *confirmed)
+		}
+		// A new issue needs no ordering against older readbacks, but a signed deletion of it must not interleave.
+		if err = ingestion.LockIssue(ctx, tx, repoID, confirmed.Number); err != nil {
+			return err
 		}
 		return ingestion.ProjectIssue(ctx, tx, repoID, *confirmed)
 	})
