@@ -197,16 +197,25 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 		}
 	}
 
+	// Real GitHub PR ids exceed int4, so the cursor must round-trip as a bigint.
+	if _, err := pool.Exec(ctx, `INSERT INTO activity_pull_requests(source_id,repository_id,number,title,state,html_url,created_at,updated_at,author_id,author_login,author_type)
+	  VALUES (3000000002,$1,7,'large id PR','open','url',now(),now(),1,'alice','User')`, repo); err != nil {
+		t.Fatal(err)
+	}
 	for _, page := range []struct {
 		after, want string
 	}{
-		{"", `"nodes":[{"number":6}],"endCursor":"105","hasNextPage":true`},
+		{"", `"nodes":[{"number":7}],"endCursor":"3000000002","hasNextPage":true`},
+		{`, after:"3000000002"`, `"nodes":[{"number":6}],"endCursor":"105","hasNextPage":true`},
 		{`, after:"105"`, `"nodes":[{"number":5}],"endCursor":"104","hasNextPage":true`},
 	} {
 		prs := fmt.Sprintf(`{ pullRequestEvidence(repositoryIds:["%d"], first:1, newestFirst:true%s) { nodes { number } endCursor hasNextPage } }`, repo, page.after)
 		if got := run(alice, prs); !strings.Contains(got, page.want) {
 			t.Fatalf("newest-first PR page: %s", got)
 		}
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM activity_pull_requests WHERE source_id=3000000002`); err != nil {
+		t.Fatal(err)
 	}
 
 	// Cross-repository overview: an uninstalled repository is denied and excluded; the other still counts.
