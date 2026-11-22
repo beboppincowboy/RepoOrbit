@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
   IssueWriteError,
@@ -279,93 +279,40 @@ export function IssueEditor(props: IssueEditorProps) {
     return "Changing labels, assignees, or issue state requires Triage or higher permission on GitHub.";
   }, [demo, archived, capabilitiesLoading, capabilitiesError, capabilities, isCreate, isAuthor]);
 
-  // Persist draft in localStorage whenever edit/failure/unknown state changes (never in Demo mode or after Confirmed).
-  useEffect(() => {
-    if (demo) return;
-    if (step === "confirmed" || step === "submitting") return;
-    // If a failed create already linked an issue on GitHub, don't keep a create draft that could tempt a duplicate.
-    if (isCreate && step === "failed" && lastOperation?.issueNumber) {
-      removeStorage(storageKey);
-      return;
-    }
+  const hasAnyDraft = isCreate
+    ? Boolean(title.trim() || body.trim() || createLabels.length || createAssignees.length || lastError || lastOperation || duplicateOperationId)
+    : Boolean(addLabels.length || removeLabels.length || addAssignees.length || removeAssignees.length || targetState || lastError || lastOperation);
+
+  const saveDraft = useCallback((status: Pick<StoredCreateDraft,
+    "step" | "idempotencyKey" | "keepKeyOnNextSubmit" | "lastError" | "lastOperation" | "duplicateOperationId"
+  >) => {
+    const { duplicateOperationId, ...writeState } = status;
     if (isCreate) {
-      const hasContent = Boolean(
-        title.trim()
-        || body.trim()
-        || createLabels.length
-        || createAssignees.length
-        || lastError
-        || lastOperation
-        || duplicateOperationId,
-      );
-      if (!hasContent) {
-        removeStorage(storageKey);
-        return;
-      }
-      const snapshot: StoredCreateDraft = {
-        version: 1,
-        title,
-        body,
-        labels: createLabels,
-        assignees: createAssignees,
-        idempotencyKey,
-        keepKeyOnNextSubmit,
-        lastError,
-        lastOperation,
-        duplicateOperationId,
-        step,
-      };
-      writeStorage(storageKey, snapshot);
+      writeStorage(storageKey, {
+        version: 1, title, body, labels: createLabels, assignees: createAssignees,
+        duplicateOperationId, ...writeState,
+      } satisfies StoredCreateDraft);
       return;
     }
-    const hasChanges = Boolean(
-      addLabels.length
-      || removeLabels.length
-      || addAssignees.length
-      || removeAssignees.length
-      || targetState
-      || lastError
-      || lastOperation,
-    );
-    if (!hasChanges) {
+    writeStorage(storageKey, {
+      version: 1, issueNumber, addLabels, removeLabels, addAssignees, removeAssignees,
+      state: targetState, ...writeState,
+    } satisfies StoredUpdateDraft);
+  }, [
+    isCreate, storageKey, title, body, createLabels, createAssignees,
+    issueNumber, addLabels, removeLabels, addAssignees, removeAssignees, targetState,
+  ]);
+
+  useEffect(() => {
+    if (demo || step === "confirmed" || step === "submitting") return;
+    if (!hasAnyDraft || (isCreate && step === "failed" && lastOperation?.issueNumber)) {
       removeStorage(storageKey);
       return;
     }
-    const snapshot: StoredUpdateDraft = {
-      version: 1,
-      issueNumber,
-      addLabels,
-      removeLabels,
-      addAssignees,
-      removeAssignees,
-      state: targetState,
-      idempotencyKey,
-      keepKeyOnNextSubmit,
-      lastError,
-      lastOperation,
-      step,
-    };
-    writeStorage(storageKey, snapshot);
+    saveDraft({ step, idempotencyKey, keepKeyOnNextSubmit, lastError, lastOperation, duplicateOperationId });
   }, [
-    demo,
-    isCreate,
-    storageKey,
-    step,
-    title,
-    body,
-    createLabels,
-    createAssignees,
-    issueNumber,
-    addLabels,
-    removeLabels,
-    addAssignees,
-    removeAssignees,
-    targetState,
-    idempotencyKey,
-    keepKeyOnNextSubmit,
-    lastError,
-    lastOperation,
-    duplicateOperationId,
+    demo, isCreate, hasAnyDraft, storageKey, step, idempotencyKey, keepKeyOnNextSubmit,
+    lastError, lastOperation, duplicateOperationId, saveDraft,
   ]);
 
   // Escape closes dialog unless a request is currently in flight.
@@ -600,9 +547,14 @@ export function IssueEditor(props: IssueEditorProps) {
 
     // Only reuse an existing idempotency key when explicitly replaying after an ambiguous transport/503 failure.
     // A fresh submit after a definite failure (4xx or recorded failed op) gets a new key so GitHub/API won't replay the old failure.
-    const key = (reuseExistingKey || keepKeyOnNextSubmit) && idempotencyKey
-      ? idempotencyKey
-      : generateIdempotencyKey();
+    const existingKey = (reuseExistingKey || keepKeyOnNextSubmit) ? idempotencyKey : null;
+    const key = existingKey ?? generateIdempotencyKey();
+    // A reload can interrupt the response before React persists the next state.
+    saveDraft({
+      step: "unknown", idempotencyKey: key, keepKeyOnNextSubmit: true,
+      lastError: null, lastOperation: null, duplicateOperationId: null,
+    });
+    setLastOperation(null);
     setIdempotencyKey(key);
     setKeepKeyOnNextSubmit(false);
 
@@ -655,7 +607,11 @@ export function IssueEditor(props: IssueEditorProps) {
           setDuplicateOperationId(error.operationId);
           setLastError(error.message);
           setStep("unknown");
-        } else if (error.kind === "transport" || (error.kind === "unverified" && /same Idempotency-Key/i.test(error.message))) {
+        } else if (
+          error.kind === "transport"
+          || (error.kind === "unverified" && (existingKey || /same Idempotency-Key/i.test(error.message)))
+          || (error.kind === "server" && existingKey)
+        ) {
           // Ambiguous outcome: preserve exact idempotency key, never resend automatically.
           setKeepKeyOnNextSubmit(true);
           setLastError(error.message);
@@ -746,9 +702,6 @@ export function IssueEditor(props: IssueEditorProps) {
   }
 
   const activeIdx = STEP_INDEX[step];
-  const hasAnyDraft = isCreate
-    ? Boolean(title.trim() || body.trim() || createLabels.length || createAssignees.length || lastError || lastOperation || duplicateOperationId)
-    : Boolean(addLabels.length || removeLabels.length || addAssignees.length || removeAssignees.length || targetState || lastError || lastOperation);
 
   const confirmedIssue = lastOperation?.outcome?.issue ?? null;
   const confirmedIssueHref = safeHref(confirmedIssue?.url);
@@ -1207,7 +1160,7 @@ export function IssueEditor(props: IssueEditorProps) {
               {!lastOperation && !duplicateOperationId && keepKeyOnNextSubmit && idempotencyKey && (
                 <div className="flex flex-col gap-2 rounded-[10px] border border-border bg-muted p-3 text-[13px]">
                   <p className="m-0 text-xs text-muted-foreground">
-                    The server may have already recorded this request under your idempotency key. Re-checking with the same key safely reads the recorded operation without sending a duplicate create.
+                    The server may have already recorded this request under your idempotency key. Retrying with the same key lets the server return any operation it already recorded for this request.
                   </p>
                   <div>
                     <Button variant="outline" size="sm" onClick={() => void submitWrite(true)}>Check recorded status with same key</Button>

@@ -161,7 +161,8 @@ function RepositoryWorkspace() {
   // Metadata refresh state and the access check's retry time come from the selection list the shell already loads.
   const selection = useSelectedRepositories(session);
   const row = flattenSelectedRepositoryRows(selection).find(r => r.repo.id === repositoryId);
-  const accessRejected = query.error instanceof RepositoryAccessUnverifiedError || (query.isSuccess && overview === null);
+  const accessLost = query.isSuccess && overview === null;
+  const accessRejected = query.error instanceof RepositoryAccessUnverifiedError || accessLost;
   useEffect(() => {
     if (!accessRejected || query.isFetching || row?.detail?.state !== "available") return;
     queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof fetchSelectedRepositoryDetailsPage>>>>(
@@ -197,10 +198,10 @@ function RepositoryWorkspace() {
     return () => window.clearTimeout(timer);
   }, [accessRejected, queryClient, refetchOverview, retryTime, session]);
   useEffect(() => {
-    if (accessRejected && !query.isFetching) {
+    if (accessLost && !query.isFetching) {
       clearRepositoryIssueDrafts(viewerKey, repositoryId);
     }
-  }, [accessRejected, query.isFetching, viewerKey, repositoryId]);
+  }, [accessLost, query.isFetching, viewerKey, repositoryId]);
   const editorOpen = search.editor !== undefined;
   const capabilitiesQuery = useQuery({
     queryKey: ["issueCapabilities", viewerKey, repositoryId],
