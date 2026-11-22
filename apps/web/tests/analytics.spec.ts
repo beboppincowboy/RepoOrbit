@@ -128,9 +128,9 @@ test('activity timeline marks the history gap where event coverage starts', asyn
 test('access unverified hides the repository name and offers re-verify', async ({ page }) => {
   await mockWorkspace(page, () => null, [{ message: 'access', extensions: { code: 'ACCESS_UNVERIFIED' } }]);
   await page.goto('/workspace/1');
-  await expect(page.getByRole('heading', { name: 'Access could not be verified' })).toBeVisible();
-  await expect(page.getByText('Protected content is hidden, not deleted.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Re-verify access' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Repository', exact: true })).toBeVisible();
+  await expect(page.getByRole('alert').filter({ hasText: 'GitHub access could not be verified' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
   await expect(page.getByRole('main').getByText('repo-1')).toHaveCount(0);
   await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'repo-1', exact: true })).toHaveCount(0);
 });
@@ -140,8 +140,8 @@ test('waits for a rate-limited access check and retries automatically', async ({
   const errors = [{ message: 'access', extensions: { code: 'ACCESS_UNVERIFIED', retryAt } }];
   const calls = await mockWorkspace(page, () => null, errors);
   await page.goto('/workspace/1');
-  await expect(page.getByRole('heading', { name: 'Waiting for GitHub' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Re-verify access' })).toHaveCount(0);
+  await expect(page.getByRole('alert').filter({ hasText: 'GitHub limited access checks' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
   expect(calls.overview).toBe(1);
   await expect.poll(() => calls.overview, { timeout: 7000 }).toBeGreaterThan(1);
 });
@@ -245,7 +245,7 @@ test('a failed overview load offers Retry', async ({ page }) => {
   await page.route('**/graphql', route => fail && String(route.request().postDataJSON().query).startsWith('query RepositoryOverview')
     ? route.fulfill({ status: 500, body: '' }) : route.fallback());
   await page.goto('/workspace/1');
-  await expect(page.getByRole('alert')).toContainText('Could not load repository analytics.', { timeout: 10_000 });
+  await expect(page.getByRole('alert')).toContainText('Repository analytics are unavailable.', { timeout: 10_000 });
   fail = false;
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'repo-1', exact: true })).toBeVisible();
