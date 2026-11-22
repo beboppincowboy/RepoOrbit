@@ -45,11 +45,9 @@ func (q *Queries) ListDemoRepositories(ctx context.Context, arg ListDemoReposito
 }
 
 const listIssues = `-- name: ListIssues :many
-SELECT id, repository_id, title, state FROM (
- SELECT i.id, i.repository_id, i.title, i.state FROM issues i JOIN repositories r ON r.id = i.repository_id WHERE r.is_demo = $1::boolean
- UNION ALL
- SELECT i.source_id AS id, i.repository_id, i.title, i.state FROM activity_issues i JOIN repositories r ON r.id = i.repository_id WHERE NOT r.is_demo AND NOT $1::boolean
-) AS source WHERE repository_id = ANY($2::bigint[]) AND id > $3::bigint ORDER BY id LIMIT $4::int
+SELECT i.source_id AS id, i.repository_id, i.title, i.state FROM activity_issues i JOIN repositories r ON r.id = i.repository_id
+WHERE r.is_demo = $1::boolean AND i.repository_id = ANY($2::bigint[]) AND i.source_id > $3::bigint
+ORDER BY i.source_id LIMIT $4::int
 `
 
 type ListIssuesParams struct {
@@ -59,7 +57,15 @@ type ListIssuesParams struct {
 	PageSize      int32
 }
 
-func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]Issue, error) {
+type ListIssuesRow struct {
+	ID           int64
+	RepositoryID int64
+	Title        string
+	State        string
+}
+
+// Demo and real mode both list the synced evidence the analytics count; each mode sees only its own repositories.
+func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]ListIssuesRow, error) {
 	rows, err := q.db.Query(ctx, listIssues,
 		arg.Demo,
 		arg.RepositoryIds,
@@ -70,9 +76,9 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]Issue
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Issue
+	var items []ListIssuesRow
 	for rows.Next() {
-		var i Issue
+		var i ListIssuesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.RepositoryID,

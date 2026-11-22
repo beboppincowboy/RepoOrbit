@@ -57,7 +57,7 @@ func TestDemoDatabaseGraphQL(t *testing.T) {
 	}
 	defer pool.Close()
 	var repos, issues int
-	if err = pool.QueryRow(ctx, "SELECT (SELECT count(*) FROM repositories), (SELECT count(*) FROM issues)").Scan(&repos, &issues); err != nil || repos != 2 || issues != 3 {
+	if err = pool.QueryRow(ctx, "SELECT (SELECT count(*) FROM repositories), (SELECT count(*) FROM activity_issues)").Scan(&repos, &issues); err != nil || repos != 2 || issues != 55 {
 		t.Fatalf("seed counts %d %d: %v", repos, issues, err)
 	}
 	h := Server(&Resolver{Queries: db.New(pool), Demo: true, DemoPool: pool})
@@ -70,13 +70,14 @@ func TestDemoDatabaseGraphQL(t *testing.T) {
 		return w.Body.String()
 	}
 	result := run(`{ selectedRepositories(first: 1) { nodes { id fullName } endCursor hasNextPage } issues(repositoryIds: ["1"], first: 1) { nodes { id title } hasNextPage } }`)
-	for _, want := range []string{"orbit/example", "Improve onboarding documentation", `"hasNextPage":true`} {
+	// The demo issue list reads the same seeded evidence the analytics count.
+	for _, want := range []string{"orbit/example", `"title":"Sample issue 1"`, `"hasNextPage":true`} {
 		if !strings.Contains(result, want) {
 			t.Fatalf("missing %s: %s", want, result)
 		}
 	}
-	result = run(`{ selectedRepositories(first: 1, after: "1") { nodes { fullName } } issues(repositoryIds: ["1"], first: 1, after: "1") { nodes { title } } }`)
-	if !strings.Contains(result, "orbit/launchpad") || !strings.Contains(result, "Add keyboard shortcuts") {
+	result = run(`{ selectedRepositories(first: 1, after: "1") { nodes { fullName } } issues(repositoryIds: ["1"], first: 1, after: "900001001") { nodes { title } } }`)
+	if !strings.Contains(result, "orbit/launchpad") || !strings.Contains(result, `"title":"Sample issue 2"`) {
 		t.Fatal(result)
 	}
 	for _, query := range []string{`{ selectedRepositories(first: 101) { nodes { fullName } } }`, `{ selectedRepositories(after: "bad") { nodes { fullName } } }`, `{ ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { ... on Query { selectedRepositories { nodes { fullName } } } } } } } } }`} {
@@ -130,7 +131,8 @@ func TestModesSeeOnlyTheirOwnRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO repositories (id, name, description) VALUES (500, 'real/private-thing', 'x');
-		INSERT INTO issues (id, repository_id, title, state) VALUES (500, 500, 'real issue', 'open')`); err != nil {
+		INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, author_type)
+		VALUES (500, 500, 1, 'real issue', 'open', 'url', now(), now(), 'User')`); err != nil {
 		t.Fatal(err)
 	}
 	run := func(demo bool, query string) string {
