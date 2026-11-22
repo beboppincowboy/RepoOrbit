@@ -728,7 +728,7 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 	}
 	if c.kind == "create" {
 		// A create's confirmed copy is GitHub's create response: nothing stored for the new issue is older, so it is
-		// projected without the per-issue lock and never replaces a same-second copy.
+		// projected without ordering against earlier readbacks and never replaces a same-second copy.
 		state, out, confirmed := s.sendCreate(ctx, userID, token, d.Repo.FullName, c.draft.(*createDraft))
 		err = s.finish(ctx, opID, repoID, snap, 0, confirmed != nil, func() (string, outcome, *githubapp.Issue, error) { return state, out, confirmed, nil })
 	} else {
@@ -885,7 +885,8 @@ var errMismatch = errors.New("not confirmed") // a recheck read that found nothi
 // fence still holds, projects the confirmed issue locally. link records a create's issue number. With lock (an issue
 // number, 0 for none) the transaction first takes a per-issue advisory lock, so the readbacks of one issue and their
 // projections happen one at a time: the later readback is projected last and may replace a stored copy with the same
-// updated_at (GitHub's timestamps have one-second resolution). Without the lock a tie never replaces. The fence rows
+// updated_at (GitHub's timestamps have one-second resolution). Without it a tie never replaces, and the per-issue lock
+// is taken only to project, so a signed deletion of the issue cannot interleave with the projection. The fence rows
 // are locked before the operation row, the order accessfence.InvalidateAccess takes them in, so the two cannot
 // deadlock. An unknown outcome with a confirmed read is recorded without projecting it. read runs while the
 // transaction holds a pool connection: it may call GitHub and compute, but must not use the pool (no queries, no
