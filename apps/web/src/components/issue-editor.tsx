@@ -63,7 +63,7 @@ type StoredUpdateDraft = {
 
 const DRAFT_PREFIX = "repoorbit:issue-draft:";
 
-export function issueDraftStorageKey(viewerKey: string, repositoryId: string, target: "create" | number): string {
+function issueDraftStorageKey(viewerKey: string, repositoryId: string, target: "create" | number): string {
   return `${DRAFT_PREFIX}${viewerKey}:${repositoryId}:${target === "create" ? "create" : `update:${target}`}`;
 }
 
@@ -157,7 +157,7 @@ function splitTokens(raw: string): string[] {
   return raw.split(",").map(part => part.trim()).filter(Boolean);
 }
 
-export type IssueEditorProps = {
+type IssueEditorProps = {
   mode: "create" | "update";
   issue?: EditableIssue;
   viewerKey: string;
