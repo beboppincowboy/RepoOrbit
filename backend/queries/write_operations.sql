@@ -22,7 +22,7 @@ FROM write_operations o JOIN users u ON u.id = o.user_id JOIN repositories r ON 
 
 -- name: MarkWriteOperationSent :execrows
 -- Moves a pending operation to 'unknown' and stamps sent_at, just before its request is sent. 0 rows: it is no longer
--- pending (FailStalePendingCreate failed it), and nothing may be sent; the caller answers with the row as it stands.
+-- pending (FailStalePendingCreate or FailStalePendingOperation failed it), and nothing may be sent; the caller answers with the row as it stands.
 UPDATE write_operations SET state = 'unknown', sent_at = now(), updated_at = now() WHERE id = $1 AND state = 'pending';
 
 -- name: FinishWriteOperation :execrows
