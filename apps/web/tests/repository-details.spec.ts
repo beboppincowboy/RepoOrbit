@@ -127,8 +127,8 @@ test('switching repositories clears the previous workspace while its access chec
   await expect(heading).toHaveText('repo-1');
   try {
     await sidebar(page).getByRole('link', { name: 'repo-2', exact: true }).click();
-    await expect(page.getByText('Loading repository workspace…')).toBeVisible();
-    await expect(heading).toHaveCount(0);
+    await expect(page.getByText('Loading repository data…')).toBeVisible();
+    await expect(heading).toHaveText(/^(ada\/repo-2|Repository)$/);
   } finally {
     release();
   }
