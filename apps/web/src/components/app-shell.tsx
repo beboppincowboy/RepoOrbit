@@ -107,7 +107,7 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
         {limited && <span role="status" className={`${navbtn} text-xs`}>Waiting for GitHub</span>}
         {rows.map(row => {
           const display = rowDisplay(row);
-          const name = row.repo.fullName.split("/")[1] || "Repository";
+          const name = row.detail?.state === "access-unverified" ? "Repository" : row.repo.fullName.split("/")[1] || "Repository";
           return <Link key={row.repo.id} to="/workspace/$repositoryId" params={{ repositoryId: row.repo.id }} search={{ days: 30, tab: "overview" }} activeOptions={{ includeSearch: false }} title={`${name} · ${syncLabels[display]}`} className={`${navbtn} text-[12.5px] max-[900px]:hidden`}>
             <SyncDot display={display} /><span className="truncate">{name}</span>
           </Link>;
