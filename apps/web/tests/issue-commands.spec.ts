@@ -595,3 +595,72 @@ test('duplicate create 409 offers inspecting the existing unresolved operation w
   await expect(dialog.getByRole('button', { name: 'Recheck' })).toBeVisible();
   expect(createCalls).toBe(1);
 });
+
+test('reload during create recovers with the original key after a server error', async ({ page }) => {
+  await setupWorkspace(page);
+  const keys: string[] = [];
+  let releaseFirstRequest!: () => void;
+  const firstRequest = new Promise<void>(resolve => { releaseFirstRequest = resolve; });
+  await page.route('**/api/repositories/1/issues', async route => {
+    keys.push(route.request().headers()['idempotency-key']);
+    if (keys.length === 1) {
+      await firstRequest;
+      return;
+    }
+    await route.fulfill(keys.length === 2
+      ? { status: 500, body: 'Temporary server error' }
+      : { status: 503, body: 'GitHub access could not be verified' });
+  });
+
+  try {
+    await page.goto('/workspace/1?editor=new');
+    const dialog = page.getByRole('dialog', { name: 'New issue' });
+    await dialog.getByLabel('Title').fill('Keep the original request');
+    await dialog.getByRole('button', { name: 'Review' }).click();
+    await dialog.getByRole('button', { name: 'Submit to GitHub' }).click();
+    await expect.poll(() => keys.length).toBe(1);
+
+    await page.reload();
+    const recover = dialog.getByRole('button', { name: 'Check recorded status with same key' });
+    await expect(recover).toBeVisible();
+    expect(keys).toHaveLength(1);
+    await recover.click();
+    await expect(dialog.getByRole('status').filter({ hasText: 'Outcome unknown.' })).toContainText('Temporary server error');
+    await recover.click();
+    await expect(dialog.getByRole('status').filter({ hasText: 'Outcome unknown.' })).toContainText('GitHub access could not be verified');
+    await expect(recover).toBeVisible();
+    expect(keys).toEqual([keys[0], keys[0], keys[0]]);
+  } finally {
+    releaseFirstRequest();
+  }
+});
+
+test('keeps a draft when access is unverified and clears it when access is lost', async ({ page }) => {
+  await setupWorkspace(page);
+  await page.goto('/workspace/1?editor=new');
+  await page.getByRole('dialog', { name: 'New issue' }).getByLabel('Title').fill('Saved while GitHub is unavailable');
+  const draftExists = () => page.evaluate(() =>
+    Object.keys(localStorage).some(key => key.startsWith('repoorbit:issue-draft:')),
+  );
+  await expect.poll(draftExists).toBe(true);
+
+  let denied = false;
+  await page.route('**/graphql', route => {
+    if (!String(route.request().postDataJSON().query).startsWith('query RepositoryOverview')) return route.fallback();
+    return route.fulfill({
+      json: {
+        data: { repositoryOverview: null },
+        ...(denied ? {} : { errors: [{ message: 'Rate limited', extensions: {
+          code: 'ACCESS_UNVERIFIED', retryAt: new Date(Date.now() + 600_000).toISOString(),
+        } }] }),
+      },
+    });
+  });
+  await page.reload();
+  await expect(page.getByText(/GitHub limited access checks/i).first()).toBeVisible();
+  expect(await draftExists()).toBe(true);
+
+  denied = true;
+  await page.reload();
+  await expect.poll(draftExists).toBe(false);
+});
