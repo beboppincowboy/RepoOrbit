@@ -109,6 +109,9 @@ func (r *Resolver) attachEvidenceStatus(ctx context.Context, id int64, a *model.
 		if err != nil {
 			return nil, err
 		}
+		if resource == "pull_requests" && code != nil && *code == ingestion.CodePullRequestsDisabled {
+			return &model.ActivityResourceStatus{Phase: "disabled", Boundary: stamp(boundary), JobState: state}, nil
+		}
 		return &model.ActivityResourceStatus{Phase: phase, Boundary: stamp(boundary), CatchupThrough: rfc3339(watermark), LastSuccessAt: rfc3339(success), FailureCode: safeActivityCode(code), JobState: state, NextAttemptAt: rfc3339(next)}, nil
 	}
 	var err error
@@ -138,7 +141,7 @@ func (r *Resolver) attachEvidenceStatus(ctx context.Context, id int64, a *model.
 		if err != nil {
 			return err
 		}
-		complete := parentComplete(a.PullRequests) && pending == 0
+		complete := (parentComplete(a.PullRequests) || (a.PullRequests != nil && a.PullRequests.Phase == "disabled")) && pending == 0
 		if resource == "comments" {
 			complete = complete && parentComplete(a.Issues)
 		}
@@ -173,7 +176,7 @@ func synchronized(a *model.ActivityStatus, now time.Time) bool {
 	if a.IssueEvents == nil {
 		return false
 	}
-	return fresh(a.Issues) && fresh(a.PullRequests) && fresh(a.Releases) && fresh(a.IssueEvents.Traversal) && child(a.Reviews) && child(a.Comments)
+	return fresh(a.Issues) && (fresh(a.PullRequests) || (a.PullRequests != nil && a.PullRequests.Phase == "disabled")) && fresh(a.Releases) && fresh(a.IssueEvents.Traversal) && child(a.Reviews) && child(a.Comments)
 }
 
 func safeActivityCode(code *string) *string {
