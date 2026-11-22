@@ -104,7 +104,7 @@ export async function fetchSelectedRepositoryMetadataPage(after: string | null, 
 
 // Enriches one metadata-page promise with ordered detail batches, issuing at most two detail requests at a time.
 // Metadata failure and cancellation reject the promise. A failed batch keeps its repositories with null details.
-// Explicit access failures appear as access-unverified details. Callers withhold those names and links.
+// Explicit access failures appear as access-unverified details. The selected list and protected details are authorized separately.
 export async function fetchSelectedRepositoryDetailsPage(metadataPage: Promise<RepositoryConnection>, signal?: AbortSignal): Promise<SelectedRepositoryPage> {
   const { nodes, ...connection } = await metadataPage;
   const batches: SelectedRepositoryBatch[] = [];
