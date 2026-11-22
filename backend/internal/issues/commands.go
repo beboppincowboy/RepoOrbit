@@ -435,6 +435,10 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if err := s.Queries.FailStalePendingOperations(r.Context(), userID); err != nil {
+		s.internal(w, err)
+		return
+	}
 	rows, err := s.Queries.ListWriteOperations(r.Context(), db.ListWriteOperationsParams{UserID: userID, RepositoryID: repoID})
 	if err != nil {
 		s.internal(w, err)
@@ -480,7 +484,7 @@ func (s *Service) operation(w http.ResponseWriter, r *http.Request) (int64, db.G
 	if !ok {
 		return 0, row, d, snap, false
 	}
-	if err := s.Queries.FailStalePendingOperation(r.Context(), row.ID); err != nil {
+	if err := s.Queries.FailStalePendingOperations(r.Context(), userID); err != nil {
 		s.internal(w, err)
 		return 0, row, d, snap, false
 	}
@@ -559,7 +563,7 @@ func (s *Service) replay(w http.ResponseWriter, ctx context.Context, userID int6
 	case !bytes.Equal(prior.RequestHash, hash):
 		http.Error(w, "idempotency key reused with a different request", http.StatusUnprocessableEntity)
 	default:
-		if err := s.Queries.FailStalePendingOperation(ctx, prior.ID); err != nil {
+		if err := s.Queries.FailStalePendingOperations(ctx, userID); err != nil {
 			s.internal(w, err)
 			return true
 		}
