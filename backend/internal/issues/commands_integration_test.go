@@ -1346,3 +1346,50 @@ func TestStalePendingUpdateIsFailedOnRead(t *testing.T) {
 		t.Fatalf("a stale pending update was resent: %d labels, want %d", n, labels)
 	}
 }
+
+// A recheck whose body arrives after access ended and the draft was wiped must not answer with the draft it loaded
+// before reading the body.
+func TestRecheckReadsBodyBeforeLoadingOperation(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "vault", true)
+	e.gh.Install("alice", 7001, repo)
+	_, op := alice.send(create(repo), "slow-body", `{"title":"Private","body":"draft"}`)
+	if op.State != "succeeded" {
+		t.Fatalf("create: %+v", op)
+	}
+	body, send := io.Pipe()
+	req, _ := http.NewRequest("POST", e.srv.URL+opPath(op.ID)+"/recheck", body)
+	for k, v := range map[string]string{"Origin": appURL, "X-CSRF-Token": alice.csrf, "Content-Type": "application/json"} {
+		req.Header.Set(k, v)
+	}
+	done := make(chan *http.Response, 1)
+	go func() {
+		resp, err := alice.client.Do(req)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- resp
+	}()
+	time.Sleep(300 * time.Millisecond) // the handler is waiting for the body
+	e.gh.Uninstall(7001)
+	if err := db.InTx(context.Background(), e.pool, func(tx pgx.Tx) error {
+		return accessfence.InvalidateAccess(context.Background(), tx, accessfence.ScopeInstallation, 7001)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.pool.Exec(context.Background(), `UPDATE write_operations SET draft = NULL WHERE id = $1`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = send.Write([]byte(`{}`))
+	send.Close()
+	resp := <-done
+	if resp == nil {
+		return
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK || strings.Contains(string(b), "draft") {
+		t.Fatalf("recheck after revocation: %d %s", resp.StatusCode, b)
+	}
+}

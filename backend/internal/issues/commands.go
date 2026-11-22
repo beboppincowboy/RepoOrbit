@@ -955,15 +955,16 @@ const sendSkew = 5 * time.Second
 // update is re-read: it succeeds only once every requested change shows, fails only when no request of it can still
 // land, and otherwise stays unknown (409).
 func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
-	userID, row, d, snap, ok := s.operation(w, r)
-	if !ok {
-		return
-	}
+	// The body is read first: a slow body must not hold an operation loaded under access that has since ended.
 	var in struct {
 		IssueNumber int64 `json:"issueNumber"`
 	}
 	if err := decodeStrict(w, r, &in); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	userID, row, d, snap, ok := s.operation(w, r)
+	if !ok {
 		return
 	}
 	if row.State != "unknown" {
