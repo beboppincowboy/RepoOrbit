@@ -172,7 +172,7 @@ test('polls while syncing and stops once settled', async ({ page }) => {
   let syncing = true;
   const calls = await mockWorkspace(page, () => overview({ activity: activity({ synchronized: !syncing, issues: stream({ jobState: syncing ? 'running' : 'queued', phase: syncing ? 'backfill' : 'current' }) }) }));
   await page.goto('/workspace/1');
-  await expect(page.getByText(/^Syncing/).first()).toBeVisible();
+  await expect(page.locator('[data-sync-state="partial"]')).toBeVisible();
   await expect.poll(() => calls.overview, { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
   syncing = false;
   await expect(page.locator('[data-sync-state="synced"]')).toBeVisible({ timeout: 15_000 });
