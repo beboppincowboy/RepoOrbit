@@ -1,0 +1,3 @@
+# Shared synchronization uses eligible users' credentials
+
+Repository synchronization is shared across selecting users, while access and credentials belong to individuals. U3 reuses an eligible selecting user's credential instead of introducing installation-token authentication; private reads additionally require current installation access, and losing one user's eligibility must not stop work another eligible user needs. Selection expresses ongoing intent independently of a browser Session, so logout does not stop background synchronization; unavailable credentials pause work, and throttling never triggers credential rotation to evade limits.
