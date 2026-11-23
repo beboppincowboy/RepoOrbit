@@ -366,3 +366,61 @@ func TestCommentCatchupListsOnlyChangesSinceLastScan(t *testing.T) {
 		t.Fatalf("comment children=%d err=%v", children, err)
 	}
 }
+
+// A catch-up reopens a finished review history only when its pull request changed after that history's last
+// converged scan, or when the history is a day old (a safety net for edits that do not move updated_at).
+func TestReviewChildReopensOnlyWhenPullRequestChanged(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.store(e.signIn("alice"), 70, false)
+	signal := func(request bool) {
+		t.Helper()
+		tx, err := e.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if request {
+			err = ingestion.RequestActivity(ctx, tx, 70, time.Now())
+		} else {
+			_, err = ingestion.SignalActivity(ctx, tx, 70, time.Now())
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	signal(true)
+	created := time.Now().UTC().Add(-time.Hour)
+	f := &evidenceFixture{pulls: []githubapp.PullRequest{{ID: 101, Number: 4, Title: "PR", State: "open", CreatedAt: created, UpdatedAt: created}}}
+	e.deps.GitHub, e.deps.Access = f, f
+	parent, review, fence := jobs.Job{Key: "repo:70"}, jobs.Job{Key: "repo:70:parent:101"}, txFence{pool: e.pool}
+	drain(t, func() error { return e.deps.SyncPullRequests(ctx, parent, fence) })
+	drain(t, func() error { return e.deps.SyncReviews(ctx, review, fence) })
+	reopened := func() bool {
+		t.Helper()
+		signal(false)
+		drain(t, func() error { return e.deps.SyncPullRequests(ctx, parent, fence) })
+		var complete bool
+		if err := e.pool.QueryRow(ctx, `SELECT complete FROM activity_children WHERE repository_id=70 AND resource='reviews' AND parent_id=101`).Scan(&complete); err != nil {
+			t.Fatal(err)
+		}
+		drain(t, func() error { return e.deps.SyncReviews(ctx, review, fence) })
+		return !complete
+	}
+	if reopened() {
+		t.Fatal("unchanged pull request reopened its review history")
+	}
+	f.pulls[0].UpdatedAt = time.Now().UTC().Add(time.Minute)
+	if !reopened() {
+		t.Fatal("changed pull request did not reopen its review history")
+	}
+	if _, err := e.pool.Exec(ctx, `UPDATE activity_children SET watermark=watermark - interval '25 hours' WHERE resource='reviews'`); err != nil {
+		t.Fatal(err)
+	}
+	f.pulls[0].UpdatedAt = created
+	if !reopened() {
+		t.Fatal("day-old review history was not rescanned")
+	}
+}
