@@ -339,7 +339,6 @@ func (s *Server) issueAssignees(w http.ResponseWriter, r *http.Request, login st
 	_ = json.NewEncoder(w).Encode(issueJSON(r, *issue))
 }
 
-// assignable mirrors GET /repos/{owner}/{repo}/assignees/{login}: 204 when the login can be assigned, else 404.
 // assignees lists the owner and every user with triage or higher permission, sorted by login.
 func (s *Server) assignees(w http.ResponseWriter, r *http.Request, login string) {
 	s.mu.Lock()
@@ -362,6 +361,7 @@ func (s *Server) assignees(w http.ResponseWriter, r *http.Request, login string)
 	writeJSON(w, out)
 }
 
+// assignable mirrors GET /repos/{owner}/{repo}/assignees/{login}: 204 when the login can be assigned, else 404.
 func (s *Server) assignable(w http.ResponseWriter, r *http.Request, login string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

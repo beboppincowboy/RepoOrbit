@@ -226,6 +226,9 @@ function RepositoryWorkspace() {
     queryKey: ["assignableUsers", viewerKey, repositoryId],
     queryFn: ({ signal }) => fetchAssignableUsers(repositoryId, signal),
     enabled: !demo && !snapshot && Boolean(overview) && editorOpen,
+    // Each fetch is a live GitHub call on the viewer's token; the assignable list rarely changes.
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
     retry: false,
   });
   const savedCreateDraft = useMemo(() => {
