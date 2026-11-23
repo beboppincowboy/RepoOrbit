@@ -40,6 +40,27 @@ func (f *evidenceFixture) FetchRepoCommentsCursor(_ context.Context, _, _, curso
 	return f.comments, "", nil
 }
 
+// signalActivity schedules a repository's activity (request) or reopens its caught-up streams for a catch-up.
+func signalActivity(t *testing.T, e *env, repoID int64, request bool) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request {
+		err = ingestion.RequestActivity(ctx, tx, repoID, time.Now())
+	} else {
+		_, err = ingestion.SignalActivity(ctx, tx, repoID, time.Now())
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // drain runs a stream job until it reports nothing left to do, tolerating continue/retry deferrals.
 func drain(t *testing.T, call func() error) {
 	t.Helper()
@@ -306,24 +327,7 @@ func TestCommentCatchupListsOnlyChangesSinceLastScan(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	e.store(e.signIn("alice"), 70, false)
-	signal := func(request bool) {
-		t.Helper()
-		tx, err := e.pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if request {
-			err = ingestion.RequestActivity(ctx, tx, 70, time.Now())
-		} else {
-			_, err = ingestion.SignalActivity(ctx, tx, 70, time.Now())
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
+	signal := func(request bool) { signalActivity(t, e, 70, request) }
 	signal(true)
 	now := time.Now().UTC()
 	f := &evidenceFixture{comments: []githubapp.IssueComment{{ID: 301, IssueNumber: 4, Body: "first", CreatedAt: now, UpdatedAt: now}, {ID: 302, IssueNumber: 7, Body: "on a PR", CreatedAt: now, UpdatedAt: now}}}
@@ -373,24 +377,7 @@ func TestReviewChildReopensOnlyWhenPullRequestChanged(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	e.store(e.signIn("alice"), 70, false)
-	signal := func(request bool) {
-		t.Helper()
-		tx, err := e.pool.Begin(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if request {
-			err = ingestion.RequestActivity(ctx, tx, 70, time.Now())
-		} else {
-			_, err = ingestion.SignalActivity(ctx, tx, 70, time.Now())
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
+	signal := func(request bool) { signalActivity(t, e, 70, request) }
 	signal(true)
 	created := time.Now().UTC().Add(-time.Hour)
 	f := &evidenceFixture{pulls: []githubapp.PullRequest{{ID: 101, Number: 4, Title: "PR", State: "open", CreatedAt: created, UpdatedAt: created}}}
