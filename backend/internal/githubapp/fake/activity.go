@@ -121,21 +121,21 @@ func (s *Server) repoActivity(w http.ResponseWriter, r *http.Request, login stri
 	}
 	number, _ := strconv.ParseInt(r.PathValue("number"), 10, 64)
 	if strings.HasSuffix(r.URL.Path, "/releases") {
-		activityFixturePage(w, r, s.releases[id], false)
+		activityFixturePage(w, r, s.releases[id])
 	} else if strings.HasSuffix(r.URL.Path, "/issues/comments") {
-		activityFixturePage(w, r, s.repoComments(id, r), false)
+		activityFixturePage(w, r, s.repoComments(id, r))
 	} else if strings.HasSuffix(r.URL.Path, "/issues/events") {
-		activityFixturePage(w, r, s.issueEvents[id], false)
+		activityFixturePage(w, r, s.issueEvents[id])
 	} else if strings.HasSuffix(r.URL.Path, "/pulls") {
 		if r.URL.Query().Get("state") != "all" {
 			http.Error(w, `{"message":"Bad Request"}`, http.StatusBadRequest)
 			return
 		}
-		activityFixturePage(w, r, s.pulls[id], true)
+		activityFixturePage(w, r, s.pulls[id])
 	} else if number <= 0 {
 		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 	} else {
-		activityFixturePage(w, r, s.reviews[id][number], false)
+		activityFixturePage(w, r, s.reviews[id][number])
 	}
 }
 
@@ -159,7 +159,7 @@ func (s *Server) repoComments(id int64, r *http.Request) []CommentFixture {
 	return out
 }
 
-func activityFixturePage[T any](w http.ResponseWriter, r *http.Request, items []T, all bool) {
+func activityFixturePage[T any](w http.ResponseWriter, r *http.Request, items []T) {
 	per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
 	pg, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if per < 1 || per > 100 {

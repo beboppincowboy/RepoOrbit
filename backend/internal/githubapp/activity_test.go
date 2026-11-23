@@ -102,3 +102,14 @@ func TestRepoCommentsRejectsMissingIssueNumber(t *testing.T) {
 		}
 	}
 }
+
+func TestRepoCommentsParseNumberWhenRepoIsNamedIssues(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":5,"html_url":"url","issue_url":"https://api.github.com/repos/issues/issues/issues/7","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","user":{"id":3,"login":"bot","type":"Bot"}}]`))
+	}))
+	defer server.Close()
+	comments, _, err := New("", "", "", server.URL, "").FetchRepoCommentsCursor(context.Background(), "token", "issues/issues", "", time.Time{})
+	if err != nil || len(comments) != 1 || comments[0].IssueNumber != 7 {
+		t.Fatalf("comments=%+v err=%v", comments, err)
+	}
+}

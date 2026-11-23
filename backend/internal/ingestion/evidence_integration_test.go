@@ -353,8 +353,8 @@ func TestCommentCatchupListsOnlyChangesSinceLastScan(t *testing.T) {
 	if err := e.deps.SyncComments(ctx, job, fence); err != nil {
 		t.Fatalf("catch-up did not converge in one run: %v", err)
 	}
-	if len(f.commentSince) != 1 || !f.commentSince[0].Equal(watermark) {
-		t.Fatalf("catch-up since=%v, want one listing from watermark %v", f.commentSince, watermark)
+	if len(f.commentSince) != 1 || !f.commentSince[0].Equal(watermark.Add(-5*time.Minute)) {
+		t.Fatalf("catch-up since=%v, want one listing from watermark-5m %v", f.commentSince, watermark)
 	}
 	// An edited comment is picked up by the next catch-up; numbers come from the listing, including PR comments.
 	f.comments = []githubapp.IssueComment{{ID: 301, IssueNumber: 4, Body: "edited", CreatedAt: now, UpdatedAt: now.Add(time.Minute)}}
