@@ -340,6 +340,28 @@ func (s *Server) issueAssignees(w http.ResponseWriter, r *http.Request, login st
 }
 
 // assignable mirrors GET /repos/{owner}/{repo}/assignees/{login}: 204 when the login can be assigned, else 404.
+// assignees lists the owner and every user with triage or higher permission, sorted by login.
+func (s *Server) assignees(w http.ResponseWriter, r *http.Request, login string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	x, _, ok := s.writeTarget(w, r, login)
+	if !ok {
+		return
+	}
+	logins := []string{x.owner}
+	for user := range s.perms[x.id] {
+		if user != x.owner && s.assignableTo(x, user) {
+			logins = append(logins, user)
+		}
+	}
+	slices.Sort(logins)
+	out := make([]IssueActor, 0, len(logins))
+	for _, l := range logins {
+		out = append(out, actor(l))
+	}
+	writeJSON(w, out)
+}
+
 func (s *Server) assignable(w http.ResponseWriter, r *http.Request, login string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

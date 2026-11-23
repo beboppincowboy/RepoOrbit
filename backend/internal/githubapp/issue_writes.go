@@ -139,6 +139,23 @@ func (c *Client) SetIssueState(ctx context.Context, token, fullName string, numb
 	return c.issueCall(ctx, token, http.MethodPatch, fullName, fmt.Sprintf("/issues/%d", number), map[string]string{"state": state}, nil)
 }
 
+// ListAssignees returns the logins that can be assigned issues in the repository, in GitHub's order.
+// ponytail: first page only (100 users); page through Link headers if suggestions must cover larger teams.
+func (c *Client) ListAssignees(ctx context.Context, token, fullName string) ([]string, error) {
+	var users []IssueUser
+	if err := c.issueCall(ctx, token, http.MethodGet, fullName, "/assignees?per_page=100", nil, &users); err != nil {
+		return nil, err
+	}
+	logins := make([]string, 0, len(users))
+	for _, u := range users {
+		if u.Login == "" {
+			return nil, fmt.Errorf("github: invalid assignee listing")
+		}
+		logins = append(logins, u.Login)
+	}
+	return logins, nil
+}
+
 // IsAssignable reports whether login can be assigned issues in the repository (GitHub answers 204 or 404).
 func (c *Client) IsAssignable(ctx context.Context, token, fullName, login string) (bool, error) {
 	err := c.issueCall(ctx, token, http.MethodGet, fullName, "/assignees/"+url.PathEscape(login), nil, nil)

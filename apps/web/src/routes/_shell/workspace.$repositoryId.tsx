@@ -15,6 +15,7 @@ import {
   GraphQLUnavailableError,
   fetchIssueCapabilities,
   fetchWorkspaceIssue,
+  fetchAssignableUsers,
   fetchSelectedRepositoryDetailsPage,
   fetchRepositoryOverview,
   fetchWorkspaceIssues,
@@ -221,6 +222,12 @@ function RepositoryWorkspace() {
     gcTime: 0,
     retry: false,
   });
+  const assigneesQuery = useQuery({
+    queryKey: ["assignableUsers", viewerKey, repositoryId],
+    queryFn: ({ signal }) => fetchAssignableUsers(repositoryId, signal),
+    enabled: !demo && !snapshot && Boolean(overview) && editorOpen,
+    retry: false,
+  });
   const savedCreateDraft = useMemo(() => {
     void draftRevision;
     return !demo && hasSavedCreateDraft(viewerKey, repositoryId);
@@ -292,7 +299,8 @@ function RepositoryWorkspace() {
 
   const [owner, name] = overview.fullName.split("/");
   const github = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-  const contributorSuggestions = overview.contributors.filter(c => !c.isBot).map(c => c.login);
+  // Suggest only users GitHub accepts as assignees; demo mode, which cannot write, suggests its sample contributors.
+  const assigneeSuggestions = demo ? overview.contributors.filter(c => !c.isBot).map(c => c.login) : assigneesQuery.data ?? [];
   const editingIssue: EditableIssue | undefined = typeof search.editor === "number"
     ? (selectedEditIssue?.number === search.editor ? selectedEditIssue : restoredIssueQuery.data ?? { number: search.editor })
     : undefined;
@@ -365,7 +373,7 @@ function RepositoryWorkspace() {
         capabilitiesLoading={capabilitiesQuery.isPending && !demo}
         capabilitiesError={capabilitiesQuery.isError ? capabilitiesQuery.error.message : null}
         onRetryCapabilities={() => void capabilitiesQuery.refetch()}
-        contributorSuggestions={contributorSuggestions}
+        assigneeSuggestions={assigneeSuggestions}
         onClose={closeEditor}
         onOperationRecorded={handleWriteRecorded}
         onSwitchToEditIssue={switchToEditIssue}
