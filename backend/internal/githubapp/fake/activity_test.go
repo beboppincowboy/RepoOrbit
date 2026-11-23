@@ -43,8 +43,8 @@ func TestActivityPaginationAndAuthorization(t *testing.T) {
 	if err != nil || len(reviews) != 1 || reviews[0].SubmittedAt != nil {
 		t.Fatalf("reviews=%v err=%v", reviews, err)
 	}
-	comments, _, err := c.FetchIssueCommentsCursor(ctx, "token", "alice/project", 1, "")
-	if err != nil || len(comments) != 1 || comments[0].Body != "body" {
+	comments, _, err := c.FetchRepoCommentsCursor(ctx, "token", "alice/project", "", now)
+	if err != nil || len(comments) != 1 || comments[0].Body != "body" || comments[0].IssueNumber != 1 {
 		t.Fatalf("comments=%v err=%v", comments, err)
 	}
 }

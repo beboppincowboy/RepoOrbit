@@ -52,8 +52,8 @@ func TestActivityEventsSignalCaughtUpStreamsOnce(t *testing.T) {
 		}
 	}
 	var reopened int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM activity_resources WHERE phase='catchup' AND generation=1`).Scan(&reopened); err != nil || reopened != 4 {
-		t.Fatalf("reopened %d (%v), want 4 streams once", reopened, err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM activity_resources WHERE phase='catchup' AND generation=1`).Scan(&reopened); err != nil || reopened != 5 {
+		t.Fatalf("reopened %d (%v), want 5 streams once", reopened, err)
 	}
 	if n := count(t, pool, "jobs WHERE kind='repo_metadata_refresh'"); n != 0 {
 		t.Fatalf("%d metadata refreshes for an activity-only event", n)
@@ -65,8 +65,8 @@ func TestActivityEventsSignalCaughtUpStreamsOnce(t *testing.T) {
 	if w := post(h, testSecret, "issue_comment", "d-1", body, ""); w.Code != 200 {
 		t.Fatalf("status %d", w.Code)
 	}
-	if n := count(t, pool, "activity_resources WHERE phase='current' AND generation=1"); n != 4 {
-		t.Fatalf("repeated delivery reopened streams (%d still current, want 4)", n)
+	if n := count(t, pool, "activity_resources WHERE phase='current' AND generation=1"); n != 5 {
+		t.Fatalf("repeated delivery reopened streams (%d still current, want 5)", n)
 	}
 	if w := post(h, testSecret, "release", "d-2", `{"action":"published","repository":{"id":99},"release":{"id":1}}`, ""); w.Code != 200 {
 		t.Fatalf("status %d", w.Code)

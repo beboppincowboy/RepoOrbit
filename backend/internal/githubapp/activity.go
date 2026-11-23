@@ -99,23 +99,6 @@ func (c *Client) FetchReviewsCursor(ctx context.Context, token, fullName string,
 	return items, next, nil
 }
 
-func (c *Client) FetchIssueCommentsCursor(ctx context.Context, token, fullName string, number int64, cursor string) ([]IssueComment, string, error) {
-	if number <= 0 {
-		return nil, "", fmt.Errorf("github: invalid issue number")
-	}
-	var items []IssueComment
-	next, err := c.activityPage(ctx, token, fullName, "/issues/"+strconv.FormatInt(number, 10)+"/comments", cursor, false, &items)
-	if err != nil {
-		return nil, "", err
-	}
-	for _, v := range items {
-		if v.ID <= 0 || !validActivityUser(v.User) || v.HTMLURL == "" || v.CreatedAt.IsZero() || v.UpdatedAt.IsZero() {
-			return nil, "", fmt.Errorf("github: invalid comment listing")
-		}
-	}
-	return items, next, nil
-}
-
 func validActivityUser(u *IssueUser) bool {
 	return u == nil || (u.ID > 0 && u.Login != "" && u.Type != "")
 }

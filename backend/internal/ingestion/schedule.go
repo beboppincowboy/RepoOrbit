@@ -20,22 +20,19 @@ func childKey(repoID, parentID int64) string {
 	return fmt.Sprintf("repo:%d:parent:%d", repoID, parentID)
 }
 
-// registerChild commits discovered history work with the parent page checkpoint.
-func registerChild(ctx context.Context, tx pgx.Tx, repoID int64, resource string, parentID, number int64, refreshCompleted bool, now time.Time) error {
-	kind := jobs.KindActivityComments
-	if resource == "reviews" {
-		kind = jobs.KindActivityReviews
-	}
-	result, err := tx.Exec(ctx, `INSERT INTO activity_children(repository_id,resource,parent_id,parent_number) VALUES($1,$2,$3,$4)
+// registerReviewChild commits a pull request's review history work with the parent page checkpoint. Comments are
+// not children: they sync as one repository-wide stream.
+func registerReviewChild(ctx context.Context, tx pgx.Tx, repoID, parentID, number int64, refreshCompleted bool, now time.Time) error {
+	result, err := tx.Exec(ctx, `INSERT INTO activity_children(repository_id,resource,parent_id,parent_number) VALUES($1,'reviews',$2,$3)
 		ON CONFLICT(repository_id,resource,parent_id) DO UPDATE SET parent_number=EXCLUDED.parent_number, cursor='', complete=false, generation=activity_children.generation+1, scan_started_at=NULL, previous_scan=NULL, current_scan='{}'
-		WHERE (activity_children.complete AND $5) OR activity_children.parent_number <> EXCLUDED.parent_number`, repoID, resource, parentID, number, refreshCompleted)
+		WHERE (activity_children.complete AND $4) OR activity_children.parent_number <> EXCLUDED.parent_number`, repoID, parentID, number, refreshCompleted)
 	if err != nil {
 		return err
 	}
 	if result.RowsAffected() == 0 {
 		return nil
 	}
-	return jobs.Enqueue(ctx, tx, kind, childKey(repoID, parentID), now)
+	return jobs.Enqueue(ctx, tx, jobs.KindActivityReviews, childKey(repoID, parentID), now)
 }
 
 // RequestMetadataRefresh enqueues a metadata refresh for repoID inside tx, only when the repository
@@ -66,7 +63,7 @@ func RequestActivity(ctx context.Context, tx pgx.Tx, repoID int64, now time.Time
 	if _, err := tx.Exec(ctx, `INSERT INTO activity_resources (repository_id, resource, boundary) SELECT $1, 'pull_requests', boundary FROM activity_resources WHERE repository_id=$1 AND resource='issues' ON CONFLICT DO NOTHING`, repoID); err != nil {
 		return err
 	}
-	for _, resource := range []string{"releases", "issue_events"} {
+	for _, resource := range []string{"releases", "issue_events", "comments"} {
 		if _, err := tx.Exec(ctx, `INSERT INTO activity_resources (repository_id, resource, boundary) SELECT $1, $2, boundary FROM activity_resources WHERE repository_id=$1 AND resource='issues' ON CONFLICT DO NOTHING`, repoID, resource); err != nil {
 			return err
 		}
@@ -122,7 +119,7 @@ const (
 	ActivityIneligible ActivityOutcome = "ineligible" // no eligible selection: nothing is scheduled
 )
 
-var activityParentKinds = []jobs.Kind{jobs.KindActivityIssues, jobs.KindActivityPullRequests, jobs.KindActivityReleases, jobs.KindActivityIssueEvents}
+var activityParentKinds = []jobs.Kind{jobs.KindActivityIssues, jobs.KindActivityPullRequests, jobs.KindActivityReleases, jobs.KindActivityIssueEvents, jobs.KindActivityComments}
 
 // SignalActivity is the single reconciliation entry point for webhooks, polling and the Refresh action. It
 // reopens every caught-up stream for another catch-up scan from the retained boundary (a stream still
@@ -181,4 +178,4 @@ func activityFailureCode(result error) (code string, ok bool) {
 }
 
 // eventStreamKinds are the streams added after issues and pull requests.
-var eventStreamKinds = []jobs.Kind{jobs.KindActivityReleases, jobs.KindActivityIssueEvents}
+var eventStreamKinds = []jobs.Kind{jobs.KindActivityReleases, jobs.KindActivityIssueEvents, jobs.KindActivityComments}
