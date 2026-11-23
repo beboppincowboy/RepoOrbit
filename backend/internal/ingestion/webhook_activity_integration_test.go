@@ -140,7 +140,6 @@ func TestSignedIssueDeletionRemovesDependents(t *testing.T) {
 		`INSERT INTO activity_issues(source_id,repository_id,number,title,state,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES (5,42,3,'t','open','u',now(),now(),1,'a','User')`,
 		`INSERT INTO activity_comments(source_id,repository_id,issue_number,body,html_url,created_at,updated_at) VALUES (6,42,3,'b','u',now(),now())`,
 		`INSERT INTO activity_issue_events(source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at) VALUES (7,42,5,3,'closed','u',now(),now())`,
-		`INSERT INTO activity_children(repository_id,resource,parent_id,parent_number) VALUES (42,'comments',3,3)`,
 	} {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatal(err)
@@ -150,7 +149,7 @@ func TestSignedIssueDeletionRemovesDependents(t *testing.T) {
 	if w := post(h, testSecret, "issues", "del-i", `{"action":"deleted","repository":{"id":42},"issue":{"id":5,"number":3}}`, ""); w.Code != 200 {
 		t.Fatalf("status %d", w.Code)
 	}
-	for _, table := range []string{"activity_issues", "activity_comments", "activity_issue_events", "activity_children"} {
+	for _, table := range []string{"activity_issues", "activity_comments", "activity_issue_events"} {
 		if n := count(t, pool, table); n != 0 {
 			t.Errorf("%s has %d rows", table, n)
 		}
@@ -190,6 +189,10 @@ func TestSignedDeletionSerializesWithInFlightSyncCommit(t *testing.T) {
 			`INSERT INTO activity_releases(source_id,repository_id,name,tag_name,body,html_url,created_at,published_at,observed_at,prerelease) VALUES (7,42,'n','v1','','u',now(),now(),now(),false)`},
 		{"issue event", "issue_events", "issues", `{"action":"deleted","repository":{"id":42},"issue":{"id":5,"number":3}}`,
 			`INSERT INTO activity_issue_events(source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at) VALUES (9,42,5,3,'closed','u',now(),now())`},
+		{"comment", "comments", "issue_comment", `{"action":"deleted","repository":{"id":42},"issue":{"number":3},"comment":{"id":6}}`,
+			`INSERT INTO activity_comments(source_id,repository_id,issue_number,body,html_url,created_at,updated_at) VALUES (6,42,3,'b','u',now(),now())`},
+		{"comment on deleted issue", "comments", "issues", `{"action":"deleted","repository":{"id":42},"issue":{"id":5,"number":3}}`,
+			`INSERT INTO activity_comments(source_id,repository_id,issue_number,body,html_url,created_at,updated_at) VALUES (6,42,3,'b','u',now(),now())`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -228,9 +231,15 @@ func TestSignedDeletionSerializesWithInFlightSyncCommit(t *testing.T) {
 			if n := count(t, pool, "activity_tombstones WHERE repository_id=42"); n != 1 {
 				t.Fatalf("%d tombstones, want 1", n)
 			}
-			for _, table := range []string{"activity_releases", "activity_issue_events"} {
+			for _, table := range []string{"activity_releases", "activity_issue_events", "activity_comments"} {
 				if n := count(t, pool, table); n != 0 {
 					t.Fatalf("%s has %d rows next to the tombstone", table, n)
+				}
+			}
+			// A comment page fetched before the deletion but committed after it fails its generation check and refetches.
+			if tc.resource == "comments" {
+				if n := count(t, pool, "activity_resources WHERE repository_id=42 AND resource='comments' AND generation=1"); n != 1 {
+					t.Fatal("deletion did not invalidate in-flight comment pages")
 				}
 			}
 		})
