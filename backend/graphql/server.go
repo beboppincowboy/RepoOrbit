@@ -69,7 +69,7 @@ func Server(resolver *Resolver) http.Handler {
 		return 1 + first*child
 	}
 	cfg.Complexity.Query.SelectedRepositories = func(child, first int, _ *string) int { return weight(child, first) }
-	cfg.Complexity.Query.Issues = func(child int, ids []string, first int, _ *string) int {
+	cfg.Complexity.Query.Issues = func(child int, ids []string, first int, _ *string, _ *int) int {
 		if len(ids) > maxRepositoryIDs {
 			return 100000
 		}

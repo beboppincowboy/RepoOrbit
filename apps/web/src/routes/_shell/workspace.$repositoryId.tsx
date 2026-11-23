@@ -14,6 +14,7 @@ import {
   RepositoryAccessUnverifiedError,
   GraphQLUnavailableError,
   fetchIssueCapabilities,
+  fetchWorkspaceIssue,
   fetchSelectedRepositoryDetailsPage,
   fetchRepositoryOverview,
   fetchWorkspaceIssues,
@@ -210,6 +211,16 @@ function RepositoryWorkspace() {
     gcTime: 0,
     retry: false,
   });
+  // An editor restored from the URL (after a reload) knows only the issue number: load the imported issue so author-only
+  // actions such as close/reopen are offered again.
+  const restoredNumber = typeof search.editor === "number" && selectedEditIssue?.number !== search.editor ? search.editor : null;
+  const restoredIssueQuery = useQuery({
+    queryKey: ["workspaceIssue", viewerKey, repositoryId, restoredNumber],
+    queryFn: ({ signal }) => fetchWorkspaceIssue(repositoryId, restoredNumber!, signal),
+    enabled: !snapshot && restoredNumber !== null,
+    gcTime: 0,
+    retry: false,
+  });
   const savedCreateDraft = useMemo(() => {
     void draftRevision;
     return !demo && hasSavedCreateDraft(viewerKey, repositoryId);
@@ -283,7 +294,7 @@ function RepositoryWorkspace() {
   const github = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
   const contributorSuggestions = overview.contributors.filter(c => !c.isBot).map(c => c.login);
   const editingIssue: EditableIssue | undefined = typeof search.editor === "number"
-    ? (selectedEditIssue?.number === search.editor ? selectedEditIssue : { number: search.editor })
+    ? (selectedEditIssue?.number === search.editor ? selectedEditIssue : restoredIssueQuery.data ?? { number: search.editor })
     : undefined;
   const tabSearch = { days: search.days, tab: search.tab };
 

@@ -76,6 +76,10 @@ func TestDemoDatabaseGraphQL(t *testing.T) {
 			t.Fatalf("missing %s: %s", want, result)
 		}
 	}
+	// number narrows the listing to one issue, so an editor can load its author and state.
+	if got := run(`{ issues(repositoryIds: ["1"], number: 2) { nodes { number title } hasNextPage } }`); !strings.Contains(got, `"nodes":[{"number":2,"title":"Sample issue 2"}],"hasNextPage":false`) {
+		t.Fatalf("issue by number: %s", got)
+	}
 	result = run(`{ selectedRepositories(first: 1, after: "1") { nodes { fullName } } issues(repositoryIds: ["1"], first: 1, after: "900001001") { nodes { number title assignees } } }`)
 	if !strings.Contains(result, "orbit/launchpad") || !strings.Contains(result, `"title":"Sample issue 2"`) || !strings.Contains(result, `"assignees":["demo-user"]`) {
 		t.Fatal(result)
