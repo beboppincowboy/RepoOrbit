@@ -20,12 +20,18 @@ func childKey(repoID, parentID int64) string {
 	return fmt.Sprintf("repo:%d:parent:%d", repoID, parentID)
 }
 
+// reviewRescanAge bounds how long a finished review history goes without a rescan when its pull request's updated_at
+// does not move (an edit GitHub does not reflect there).
+const reviewRescanAge = 24 * time.Hour
+
 // registerReviewChild commits a pull request's review history work with the parent page checkpoint. Comments are
-// not children: they sync as one repository-wide stream.
-func registerReviewChild(ctx context.Context, tx pgx.Tx, repoID, parentID, number int64, refreshCompleted bool, now time.Time) error {
+// not children: they sync as one repository-wide stream. On a refresh pass, a finished history is reopened only when
+// the pull request changed after its last converged scan began, or that scan is older than reviewRescanAge.
+func registerReviewChild(ctx context.Context, tx pgx.Tx, repoID, parentID, number int64, updatedAt time.Time, refreshCompleted bool, now time.Time) error {
 	result, err := tx.Exec(ctx, `INSERT INTO activity_children(repository_id,resource,parent_id,parent_number) VALUES($1,'reviews',$2,$3)
 		ON CONFLICT(repository_id,resource,parent_id) DO UPDATE SET parent_number=EXCLUDED.parent_number, cursor='', complete=false, generation=activity_children.generation+1, scan_started_at=NULL, previous_scan=NULL, current_scan='{}'
-		WHERE (activity_children.complete AND $4) OR activity_children.parent_number <> EXCLUDED.parent_number`, repoID, parentID, number, refreshCompleted)
+		WHERE (activity_children.complete AND $4 AND (activity_children.watermark IS NULL OR activity_children.watermark < $5 OR activity_children.watermark < $6))
+			OR activity_children.parent_number <> EXCLUDED.parent_number`, repoID, parentID, number, refreshCompleted, updatedAt, now.Add(-reviewRescanAge))
 	if err != nil {
 		return err
 	}
