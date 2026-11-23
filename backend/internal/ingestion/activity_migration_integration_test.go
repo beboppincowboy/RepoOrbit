@@ -6,8 +6,10 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/pressly/goose/v3"
+	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
 	"github.com/repoorbit/repoorbit/backend/internal/platform"
 	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
@@ -80,4 +82,64 @@ func TestActivityMigrationPreservesExistingDataOnRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertData()
+}
+
+// 00016 drops per-issue comment progress and queued per-issue comment jobs, keeps stored comments, and gives every
+// repository with an issue stream a comment stream from the same boundary.
+func TestRepoWideCommentMigration(t *testing.T) {
+	ctx := context.Background()
+	dbURL, pool := testutil.Database(t)
+	db, err := sql.Open("pgx", dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = goose.DownToContext(ctx, db, "migrations", 15); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO repositories(id,name,description) VALUES(72,'a/d',''),(73,'a/e','');
+INSERT INTO users (github_id, login, access_token_enc, refresh_token_enc) VALUES (1072,'u','\x01','\x02');
+INSERT INTO selections (user_id, repository_id, source, selected_at) SELECT id, 72, 'owned', now() FROM users WHERE login='u';
+INSERT INTO activity_resources(repository_id,resource,boundary) VALUES(72,'issues','2026-08-01Z');
+INSERT INTO activity_children(repository_id,resource,parent_id,parent_number) VALUES(72,'comments',4,4),(72,'reviews',100,5);
+INSERT INTO activity_comments(source_id,repository_id,issue_number,body,html_url,created_at,updated_at) VALUES(9,72,4,'kept','u',now(),now());
+INSERT INTO jobs(kind,key,state,run_at) VALUES('activity_comments','repo:72:parent:4','queued',now()),('activity_reviews','repo:72:parent:100','queued',now())`); err != nil {
+		t.Fatal(err)
+	}
+	if err = goose.UpContext(ctx, db, "migrations"); err != nil {
+		t.Fatal(err)
+	}
+	var children, commentJobs, reviewJobs, comments, streams int
+	var boundary string
+	if err := pool.QueryRow(ctx, `SELECT
+		(SELECT count(*) FROM activity_children WHERE resource='comments'),
+		(SELECT count(*) FROM jobs WHERE kind='activity_comments'),
+		(SELECT count(*) FROM jobs WHERE kind='activity_reviews'),
+		(SELECT count(*) FROM activity_comments),
+		(SELECT count(*) FROM activity_resources WHERE resource='comments'),
+		(SELECT to_char(boundary AT TIME ZONE 'UTC','YYYY-MM-DD') FROM activity_resources WHERE repository_id=72 AND resource='comments')`).Scan(&children, &commentJobs, &reviewJobs, &comments, &streams, &boundary); err != nil {
+		t.Fatal(err)
+	}
+	if children != 0 || commentJobs != 0 || reviewJobs != 1 || comments != 1 || streams != 1 || boundary != "2026-08-01" {
+		t.Fatalf("children=%d commentJobs=%d reviewJobs=%d comments=%d streams=%d boundary=%s", children, commentJobs, reviewJobs, comments, streams, boundary)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ingestion.SignalActivity(ctx, tx, 72, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE kind='activity_comments' AND key='repo:72'`).Scan(&commentJobs); err != nil || commentJobs != 1 {
+		t.Fatalf("comment stream job=%d err=%v", commentJobs, err)
+	}
+	if err = goose.DownToContext(ctx, db, "migrations", 15); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM activity_resources WHERE resource='comments'`).Scan(&streams); err != nil || streams != 0 {
+		t.Fatalf("rollback left %d comment streams (%v)", streams, err)
+	}
 }
