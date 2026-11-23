@@ -63,6 +63,7 @@ type Service struct {
 // "operationId"}) and a recheck's 409 (the unchanged operation).
 func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/repositories/{id}/issue-capabilities", s.capabilities)
+	mux.HandleFunc("GET /api/repositories/{id}/assignees", s.assignees)
 	mux.HandleFunc("POST /api/repositories/{id}/issues", s.create)
 	mux.HandleFunc("POST /api/repositories/{id}/issues/{number}/updates", s.update)
 	mux.HandleFunc("GET /api/repositories/{id}/write-operations", s.list)
@@ -421,6 +422,35 @@ func (s *Service) capabilities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"canCreateIssue": canCreate(d.Repo), "canCreateIssueWithMetadata": canCreateWithMetadata(d.Repo), "canManageIssues": canManage(d.Repo)})
+}
+
+// assignees lists the users GitHub would accept as assignees ({"assignees": [login]}), read with the viewer's own
+// token, so editor suggestions pass the submit-time eligibility check. A viewer who cannot assign gets an empty list.
+func (s *Service) assignees(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.SignedInUserID(r.Context())
+	repoID, idOK := pathID(r, "id")
+	if !ok || !idOK {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	d, ok := s.access(w, r, userID, repoID, false)
+	if !ok {
+		return
+	}
+	if !canManage(d.Repo) && !canCreateWithMetadata(d.Repo) {
+		writeJSON(w, http.StatusOK, map[string][]string{"assignees": {}})
+		return
+	}
+	token, ok := s.token(w, r.Context(), userID)
+	if !ok {
+		return
+	}
+	logins, err := s.GitHub.ListAssignees(r.Context(), token, d.Repo.FullName)
+	if err != nil {
+		s.upstream(w, r.Context(), userID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string][]string{"assignees": logins})
 }
 
 // list returns the viewer's own operations on one repository; other users' operations are never listed.

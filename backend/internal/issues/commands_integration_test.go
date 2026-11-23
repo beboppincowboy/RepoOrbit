@@ -1397,3 +1397,27 @@ func TestRecheckReadsBodyBeforeLoadingOperation(t *testing.T) {
 		t.Fatalf("recheck after revocation: %d %s", resp.StatusCode, b)
 	}
 }
+
+// Assignee suggestions come from GitHub's assignable users, so a suggestion never fails the R12 eligibility check.
+func TestAssigneeSuggestionsListOnlyAssignableUsers(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetPermission("bob", repo, "write")
+	e.gh.SetPermission("carol", repo, "read")
+	resp := alice.do("GET", fmt.Sprintf("/api/repositories/%d/assignees", repo), "", nil)
+	var got struct{ Assignees []string }
+	if err := json.NewDecoder(resp.Body).Decode(&got); resp.StatusCode != http.StatusOK || err != nil {
+		t.Fatalf("status=%d err=%v", resp.StatusCode, err)
+	}
+	if !slices.Equal(got.Assignees, []string{"alice", "bob"}) {
+		t.Fatalf("assignees=%v, want alice and bob only", got.Assignees)
+	}
+	carol := e.signIn("carol")
+	if resp := carol.do("GET", fmt.Sprintf("/api/repositories/%d/assignees", repo), "", nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("read user status=%d", resp.StatusCode)
+	} else if err := json.NewDecoder(resp.Body).Decode(&got); err != nil || len(got.Assignees) != 0 {
+		t.Fatalf("a user who cannot assign got suggestions %v (%v)", got.Assignees, err)
+	}
+	e.noInstallationAuthority()
+}

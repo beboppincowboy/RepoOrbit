@@ -119,6 +119,7 @@ async function setupWorkspace(
     const caps = opts.capabilities ?? { canCreateIssue: true, canCreateIssueWithMetadata: true, canManageIssues: true };
     await page.route('**/api/repositories/1/issue-capabilities', route => route.fulfill({ json: caps }));
     await page.route('**/api/repositories/1/write-operations', route => route.fulfill({ json: { operations } }));
+    await page.route('**/api/repositories/1/assignees', route => route.fulfill({ json: { assignees: ['ada', 'alex'] } }));
   }
 }
 
@@ -172,6 +173,10 @@ test('creates a new issue through Edit -> Review -> Submit -> Confirmed and show
   await dialog.getByLabel('Description').fill('Add shortcuts for workspace tabs.');
   await dialog.getByLabel('Labels (optional)').fill('enhancement');
   await dialog.getByRole('button', { name: 'Add label' }).click();
+  // Suggestions are the users GitHub accepts as assignees, not every recent contributor.
+  const suggestions = dialog.locator(`#${await dialog.getByLabel('Assignees (optional)').getAttribute('list')} option`);
+  await expect(suggestions).toHaveCount(2);
+  await expect(suggestions.nth(1)).toHaveAttribute('value', 'alex');
   await dialog.getByLabel('Assignees (optional)').fill('alex');
   await dialog.getByRole('button', { name: 'Add assignee' }).click();
 

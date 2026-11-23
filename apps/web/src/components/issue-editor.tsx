@@ -170,7 +170,7 @@ type IssueEditorProps = {
   capabilitiesLoading: boolean;
   capabilitiesError: string | null;
   onRetryCapabilities: () => void;
-  contributorSuggestions: string[];
+  assigneeSuggestions: string[];
   onClose: () => void;
   onOperationRecorded: (op: WriteOperation) => void;
   onSwitchToEditIssue?: (issueNumber: number, confirmed?: WriteOperationIssue) => void;
@@ -197,7 +197,7 @@ export function IssueEditor(props: IssueEditorProps) {
     capabilitiesLoading,
     capabilitiesError,
     onRetryCapabilities,
-    contributorSuggestions,
+    assigneeSuggestions,
     onClose,
     onOperationRecorded,
     onSwitchToEditIssue,
@@ -867,7 +867,7 @@ export function IssueEditor(props: IssueEditorProps) {
                       <Button type="button" variant="outline" size="sm" onClick={handleAddAssignee} disabled={demo || !canCreateMetadata || !assigneeInput.trim()}>Add assignee</Button>
                     </div>
                     <datalist id={suggestId}>
-                      {contributorSuggestions.map(login => <option key={login} value={login} />)}
+                      {assigneeSuggestions.map(login => <option key={login} value={login} />)}
                     </datalist>
                     <span className="text-xs text-muted-foreground">
                       {!demo && canCreate && !canCreateMetadata
@@ -1015,7 +1015,7 @@ export function IssueEditor(props: IssueEditorProps) {
                       <Button type="button" variant="outline" size="sm" onClick={handleAddAssignee} disabled={demo || !canManage || !assigneeInput.trim()}>Add assignee</Button>
                     </div>
                     <datalist id={suggestId}>
-                      {contributorSuggestions.map(login => <option key={login} value={login} />)}
+                      {assigneeSuggestions.map(login => <option key={login} value={login} />)}
                     </datalist>
                     {addAssignees.length > 0 && (
                       <div className="flex flex-wrap gap-1.5">

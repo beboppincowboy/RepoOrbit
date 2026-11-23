@@ -472,6 +472,13 @@ export async function fetchIssueCapabilities(id: string, signal?: AbortSignal): 
   return response.json();
 }
 
+// Lists the users GitHub would accept as assignees (empty when the viewer cannot assign), for editor suggestions.
+export async function fetchAssignableUsers(id: string, signal?: AbortSignal): Promise<string[]> {
+  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/assignees`, { cache: "no-store", signal });
+  if (!response.ok) throw await toIssueWriteError(response);
+  return ((await response.json()) as { assignees: string[] }).assignees;
+}
+
 export async function fetchWriteOperations(id: string, signal?: AbortSignal): Promise<WriteOperation[]> {
   const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/write-operations`, { cache: "no-store", signal });
   if (!response.ok) throw await toIssueWriteError(response);

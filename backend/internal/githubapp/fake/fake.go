@@ -127,6 +127,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/labels", s.api(s.issueLabels))
 	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/labels/{name}", s.api(s.issueLabels))
 	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/assignees", s.api(s.issueAssignees))
+	mux.HandleFunc("/repos/{owner}/{repo}/assignees", s.api(s.assignees))
 	mux.HandleFunc("/repos/{owner}/{repo}/assignees/{login}", s.api(s.assignable))
 	mux.HandleFunc("/repos/{owner}/{repo}/releases", s.api(s.repoActivity))
 	mux.HandleFunc("/repos/{owner}/{repo}/issues/events", s.api(s.repoActivity))
