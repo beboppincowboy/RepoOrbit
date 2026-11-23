@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestActivityPages(t *testing.T) {
@@ -83,5 +84,21 @@ func TestActivityAllowsNullActorsButRejectsMalformedActors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRepoCommentsRejectsMissingIssueNumber(t *testing.T) {
+	for _, issueURL := range []string{"", "https://api.github.com/repos/a/b/issues/", "https://api.github.com/repos/a/b/issues/x", "https://api.github.com/repos/a/b/pulls/3"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/repos/a/b/issues/comments" || r.URL.Query().Get("since") != "2026-01-01T00:00:00Z" || r.URL.Query().Get("sort") != "updated" || r.URL.Query().Get("direction") != "asc" {
+				t.Errorf("unexpected request %s", r.URL)
+			}
+			_, _ = w.Write([]byte(`[{"id":5,"body":"hello","html_url":"url","issue_url":"` + issueURL + `","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","user":null}]`))
+		}))
+		_, _, err := New("", "", "", server.URL, "").FetchRepoCommentsCursor(context.Background(), "token", "a/b", "", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+		server.Close()
+		if err == nil {
+			t.Fatalf("issue_url %q accepted", issueURL)
+		}
 	}
 }

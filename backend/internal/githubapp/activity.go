@@ -35,12 +35,37 @@ type Review struct {
 }
 
 type IssueComment struct {
-	ID        int64      `json:"id"`
-	User      *IssueUser `json:"user"`
-	Body      string     `json:"body"`
-	HTMLURL   string     `json:"html_url"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
+	ID          int64      `json:"id"`
+	User        *IssueUser `json:"user"`
+	Body        string     `json:"body"`
+	HTMLURL     string     `json:"html_url"`
+	IssueURL    string     `json:"issue_url"`
+	IssueNumber int64      `json:"-"` // parsed from IssueURL; pull request conversation comments carry the PR number
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// FetchRepoCommentsCursor pages through a repository's issue and pull request conversation comments in ascending
+// update order. An empty cursor starts a scan of comments updated at or after since; later pages follow GitHub's
+// Link header, which carries the since, sort and direction parameters forward.
+func (c *Client) FetchRepoCommentsCursor(ctx context.Context, token, fullName, cursor string, since time.Time) ([]IssueComment, string, error) {
+	if cursor == "" {
+		cursor = "sort=updated&direction=asc&per_page=100&since=" + url.QueryEscape(since.UTC().Format(time.RFC3339))
+	}
+	var items []IssueComment
+	next, err := c.activityPage(ctx, token, fullName, "/issues/comments", cursor, false, &items)
+	if err != nil {
+		return nil, "", err
+	}
+	for i, v := range items {
+		_, tail, _ := strings.Cut(v.IssueURL, "/issues/")
+		number, err := strconv.ParseInt(tail, 10, 64)
+		if v.ID <= 0 || !validActivityUser(v.User) || v.HTMLURL == "" || v.CreatedAt.IsZero() || v.UpdatedAt.IsZero() || err != nil || number <= 0 {
+			return nil, "", fmt.Errorf("github: invalid comment listing")
+		}
+		items[i].IssueNumber = number
+	}
+	return items, next, nil
 }
 
 func (c *Client) FetchPullRequestsCursor(ctx context.Context, token, fullName, cursor string) ([]PullRequest, string, error) {
