@@ -237,7 +237,7 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 		 (900,$1,10,'mine open','open','url',now(),now(),1,'User'), (901,$1,11,'mine closed','closed','url',now(),now(),1,'User'),
 		 (902,$1,12,'bobs issue','open','url',now(),now(),1,'User'), (903,$2,1,'hidden assigned','open','url',now(),now(),1,'User')`, []any{repo, hidden}},
 		{`INSERT INTO activity_issue_assignees(issue_id,source_id,login,type) VALUES (900,$1,'alice','User'), (901,$1,'alice','User'), (902,$2,'bob','User'), (903,$1,'alice','User')`, []any{aliceGitHub, bobGitHub}},
-		{`INSERT INTO activity_children(repository_id,resource,parent_id,parent_number,watermark) VALUES ($1,'comments',10,10,now()), ($1,'comments',12,12,now()), ($2,'comments',1,1,now())`, []any{repo, hidden}},
+		{`INSERT INTO activity_resources(repository_id,resource,boundary,watermark) VALUES ($1,'comments',now()-interval '90 days',now()), ($2,'comments',now()-interval '90 days',now())`, []any{repo, hidden}},
 	} {
 		if _, err := pool.Exec(ctx, step.sql, step.args...); err != nil {
 			t.Fatal(err)

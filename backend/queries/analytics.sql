@@ -2,8 +2,10 @@
 -- A window is [window_start, now]; stale_before = today - 29 days.
 
 -- name: GetMetricCoverage :one
--- Stream watermarks and boundaries, the issue-event coverage start, and per-parent-set child coverage
--- (missing = qualifying parents whose child history row is absent or has never converged).
+-- Stream watermarks and boundaries, the issue-event coverage start, and review child coverage per parent set
+-- (missing = qualifying pull requests whose review history row is absent or has never converged). Comments are one
+-- stream that holds comments updated since its boundary, so an open issue created before that boundary may have
+-- replies the stream never fetched (open_issues_before_comments_boundary).
 WITH pr_children AS (
   SELECT
     count(*) FILTER (WHERE p.state = 'open' AND c.watermark IS NULL) AS open_missing,
@@ -15,25 +17,6 @@ WITH pr_children AS (
   FROM activity_pull_requests p
   LEFT JOIN activity_children c ON c.repository_id = p.repository_id AND c.resource = 'reviews' AND c.parent_id = p.source_id
   WHERE p.repository_id = sqlc.arg(repository_id)
-), issue_children AS (
-  SELECT
-    count(*) FILTER (WHERE i.state = 'open' AND c.watermark IS NULL) AS open_missing,
-    min(c.watermark) FILTER (WHERE i.state = 'open') AS open_through,
-    count(*) FILTER (WHERE i.created_at BETWEEN sqlc.arg(window_start)::timestamptz AND sqlc.arg(now)::timestamptz AND c.watermark IS NULL) AS created_missing,
-    min(c.watermark) FILTER (WHERE i.created_at BETWEEN sqlc.arg(window_start)::timestamptz AND sqlc.arg(now)::timestamptz) AS created_through
-  FROM activity_issues i
-  LEFT JOIN activity_children c ON c.repository_id = i.repository_id AND c.resource = 'comments' AND c.parent_id = i.number
-  WHERE i.repository_id = sqlc.arg(repository_id)
-), comment_children AS (
-  -- Comment histories of every issue or PR updated in the window (a new comment moves its parent's updated_at).
-  SELECT count(*) FILTER (WHERE c.watermark IS NULL) AS updated_missing, min(c.watermark) AS updated_through
-  FROM (
-    SELECT xi.number, xi.updated_at FROM activity_issues xi WHERE xi.repository_id = sqlc.arg(repository_id)
-    UNION ALL
-    SELECT xp.number, xp.updated_at FROM activity_pull_requests xp WHERE xp.repository_id = sqlc.arg(repository_id)
-  ) parents
-  LEFT JOIN activity_children c ON c.repository_id = sqlc.arg(repository_id) AND c.resource = 'comments' AND c.parent_id = parents.number
-  WHERE parents.updated_at >= sqlc.arg(window_start)::timestamptz
 )
 SELECT
   si.boundary AS issues_boundary, si.watermark AS issues_watermark,
@@ -44,14 +27,14 @@ SELECT
   pc.open_missing AS open_pr_reviews_missing, pc.open_through::timestamptz AS open_pr_reviews_through,
   pc.created_missing AS created_pr_reviews_missing, pc.created_through::timestamptz AS created_pr_reviews_through,
   pc.updated_missing AS updated_pr_reviews_missing, pc.updated_through::timestamptz AS updated_pr_reviews_through,
-  ic.open_missing AS open_issue_comments_missing, ic.open_through::timestamptz AS open_issue_comments_through,
-  ic.created_missing AS created_issue_comments_missing, ic.created_through::timestamptz AS created_issue_comments_through,
-  cc.updated_missing AS updated_comments_missing, cc.updated_through::timestamptz AS updated_comments_through
-FROM pr_children pc CROSS JOIN issue_children ic CROSS JOIN comment_children cc
+  sc.boundary AS comments_boundary, sc.watermark AS comments_watermark,
+  (SELECT count(*) FROM activity_issues i WHERE i.repository_id = sqlc.arg(repository_id) AND i.state = 'open' AND i.created_at < sc.boundary) AS open_issues_before_comments_boundary
+FROM pr_children pc
 LEFT JOIN activity_resources si ON si.repository_id = sqlc.arg(repository_id) AND si.resource = 'issues'
 LEFT JOIN activity_resources sp ON sp.repository_id = sqlc.arg(repository_id) AND sp.resource = 'pull_requests'
 LEFT JOIN activity_resources sr ON sr.repository_id = sqlc.arg(repository_id) AND sr.resource = 'releases'
-LEFT JOIN activity_resources se ON se.repository_id = sqlc.arg(repository_id) AND se.resource = 'issue_events';
+LEFT JOIN activity_resources se ON se.repository_id = sqlc.arg(repository_id) AND se.resource = 'issue_events'
+LEFT JOIN activity_resources sc ON sc.repository_id = sqlc.arg(repository_id) AND sc.resource = 'comments';
 
 -- name: GetMetricCounts :one
 -- Raw counts and medians. Coverage is applied by the caller; a median is 0 when its sample is empty.

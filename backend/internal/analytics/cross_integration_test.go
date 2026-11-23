@@ -26,7 +26,7 @@ func TestCrossRepositoryOverview(t *testing.T) {
 		`INSERT INTO repositories (id, name, description, is_private) VALUES (30, 'test/second', '', false), (40, 'test/syncing', '', false)`,
 		`INSERT INTO activity_resources (repository_id, resource, boundary, phase, watermark)
 		 SELECT 30, resource, '2026-08-18 00:00Z', 'catchup', '2026-11-17 10:30Z'
-		 FROM unnest(ARRAY['issues', 'pull_requests', 'releases', 'issue_events']) AS resource`,
+		 FROM unnest(ARRAY['issues', 'pull_requests', 'releases', 'issue_events', 'comments']) AS resource`,
 		`INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, closed_at, author_id, author_type) VALUES
 		 (501, 30, 1, 'Quiet issue', 'open', 'https://github.com/test/second/issues/1', '2026-09-01 00:00Z', '2026-09-02 00:00Z', null, 20, 'User'),
 		 (502, 30, 2, 'Assigned to viewer', 'open', 'https://github.com/test/second/issues/2', '2026-11-12 00:00Z', '2026-11-16 00:00Z', null, 20, 'User'),
@@ -46,8 +46,7 @@ func TestCrossRepositoryOverview(t *testing.T) {
 		`INSERT INTO activity_reviews (source_id, repository_id, pull_request_id, state, body, html_url, submitted_at, author_id, author_login, author_type) VALUES
 		 (651, 30, 601, 'APPROVED', '', '', '2026-11-14 12:00Z', 20, 'a', 'User')`,
 		`INSERT INTO activity_children (repository_id, resource, parent_id, parent_number, watermark)
-		 SELECT 30, 'comments', n, n, '2026-11-17 10:00Z'::timestamptz FROM unnest(ARRAY[1, 2, 3, 4, 10, 11]) AS n
-		 UNION ALL SELECT 30, 'reviews', id, id - 590, '2026-11-17 10:00Z' FROM unnest(ARRAY[600, 601]) AS id`,
+		 SELECT 30, 'reviews', id, id - 590, '2026-11-17 10:00Z' FROM unnest(ARRAY[600, 601]) AS id`,
 	} {
 		if _, err := pool.Exec(ctx, sql); err != nil {
 			t.Fatal(err)
@@ -118,11 +117,11 @@ func TestCrossRepositoryOverview(t *testing.T) {
 		t.Fatalf("assigned to me: %+v", cross.AssignedToMe)
 	}
 
-	// A new issue whose comment history is still importing keeps its repository counted: totals stay exact, and only
-	// that repository's issue rows leave Needs attention.
+	// A repository whose comment stream is still importing stays counted: totals stay exact, and only that
+	// repository's issue rows leave Needs attention.
 	if _, err := pool.Exec(ctx, `INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, author_id, author_type)
 		VALUES (505, 30, 5, 'New issue', 'open', '', '2026-11-17 09:00Z', '2026-11-17 09:00Z', 20, 'User');
-		INSERT INTO activity_children (repository_id, resource, parent_id, parent_number) VALUES (30, 'comments', 5, 5)`); err != nil {
+		UPDATE activity_resources SET watermark=NULL, phase='backfill' WHERE repository_id=30 AND resource='comments'`); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := LoadCrossRepositoryOverview(ctx, pool, []int64{10, 30, 40}, 77, 7, now)

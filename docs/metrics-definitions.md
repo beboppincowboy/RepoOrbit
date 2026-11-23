@@ -103,7 +103,7 @@ A metric's coverage is the weakest of its inputs: `covered` is the AND of its in
 
 ## 5. First-release metrics
 
-Notation: `W` means in the window (section 1). `S(x)` is stream coverage, with `ᵂ` marking a windowed check. `C(R, parents)` is child coverage. Qualifying first comment for issue `i`: a comment `c` with `c.repository_id = i.repository_id AND c.issue_number = i.number AND c.author_id IS NOT NULL AND c.author_type <> 'Bot' AND c.author_id IS DISTINCT FROM i.author_id`. Qualifying review for PR `p`: a qualifying review `r` with `r.pull_request_id = p.source_id AND r.author_id IS NOT NULL AND r.author_type <> 'Bot' AND r.author_id IS DISTINCT FROM p.author_id`.
+Notation: `W` means in the window (section 1). `S(x)` is stream coverage, with `ᵂ` marking a windowed check. `C(R, parents)` is child coverage. Comments are one repository-wide stream holding comments updated since its boundary, so comment coverage is `S(comments)`. Qualifying first comment for issue `i`: a comment `c` with `c.repository_id = i.repository_id AND c.issue_number = i.number AND c.author_id IS NOT NULL AND c.author_type <> 'Bot' AND c.author_id IS DISTINCT FROM i.author_id`. Qualifying review for PR `p`: a qualifying review `r` with `r.pull_request_id = p.source_id AND r.author_id IS NOT NULL AND r.author_type <> 'Bot' AND r.author_id IS DISTINCT FROM p.author_id`.
 
 ### 5.1 Snapshots (current state, not windowed)
 
@@ -115,7 +115,7 @@ Notation: `W` means in the window (section 1). `S(x)` is stream coverage, with `
 | `staleOpenIssues` | open issues with `updated_at < today − 29d` | included | `S(issues)` |
 | `staleOpenPullRequests` | open PRs with `updated_at < today − 29d` | included | `S(pull_requests)` |
 | `unreviewedOpenPullRequests` | open PRs with no qualifying review | bot reviews do not count | `S(pull_requests)` + `C(reviews, open PRs)` |
-| `unansweredOpenIssues` | open issues with no qualifying first comment | bot comments do not count | `S(issues)` + `C(comments, open issues)` |
+| `unansweredOpenIssues` | open issues with no qualifying first comment | bot comments do not count | `S(issues)` + `S(comments)`, and no open issue created before the comments boundary (its older replies were never fetched; otherwise `windowBeforeBoundary`) |
 
 `updated_at` is GitHub's own value and changes on any edit, including bot activity, so stale means "GitHub records no update of any kind".
 
@@ -136,7 +136,7 @@ Notation: `W` means in the window (section 1). `S(x)` is stream coverage, with `
 
 | GraphQL name | Qualifying records → duration | Companion count | Coverage |
 |---|---|---|---|
-| `firstResponseTime` | issues `i` with `i.created_at ∈ W` and a qualifying first comment → `min(c.created_at) − i.created_at` | `issuesWithoutResponse`: issues created in `W` with no qualifying comment | `S(issues)ᵂ` + `C(comments, issues created in W)` |
+| `firstResponseTime` | issues `i` with `i.created_at ∈ W` and a qualifying first comment → `min(c.created_at) − i.created_at` | `issuesWithoutResponse`: issues created in `W` with no qualifying comment | `S(issues)ᵂ` + `S(comments)ᵂ` |
 | `firstReviewTime` | PRs `p` with `p.created_at ∈ W` and a qualifying review → `min(r.submitted_at) − p.created_at` | `pullRequestsNeverReviewed`: PRs created in `W` with no qualifying review, whether open, closed or merged | `S(pull_requests)ᵂ` + `C(reviews, PRs created in W)` |
 | `mergeTime` | PRs with `merged_at ∈ W` → `merged_at − created_at` | none (`sampleSize` = `pullRequestsMerged`) | `S(pull_requests)ᵂ` |
 
@@ -156,7 +156,7 @@ Issue authors and commenters are not counted (KTD6). Commenting alone does not p
 |---|---|---|
 | `activeContributors` | count of active humans | `S(pull_requests)ᵂ` + `C(reviews, PRs with updated_at >= windowStart)` (a submitted review moves the PR's `updated_at`, so these are the only PRs that can hold a review in `W`) |
 | `activeBotContributors` | the same count with `author_type = 'Bot'` | same |
-| `contributors` | the active participants (humans and bots), up to 20 humans followed by up to 5 bots: `{ login, isBot, pullRequestsOpened, reviewsSubmitted, commentsCreated }` (all in `W`). `commentsCreated` counts their `activity_comments` with `created_at ∈ W` on any issue or PR of the repository. Within each group, ordered by `pullRequestsOpened + reviewsSubmitted + commentsCreated DESC, login ASC`. `login` comes from that `author_id`'s most recent PR or review row (greatest `created_at` / `submitted_at`). Rows with a null `author_type` are left out, as in the counts. | same + `S(issues)ᵂ` + `C(comments, issues and PRs with updated_at >= windowStart)` (a new comment moves its parent's `updated_at`) |
+| `contributors` | the active participants (humans and bots), up to 20 humans followed by up to 5 bots: `{ login, isBot, pullRequestsOpened, reviewsSubmitted, commentsCreated }` (all in `W`). `commentsCreated` counts their `activity_comments` with `created_at ∈ W` on any issue or PR of the repository. Within each group, ordered by `pullRequestsOpened + reviewsSubmitted + commentsCreated DESC, login ASC`. `login` comes from that `author_id`'s most recent PR or review row (greatest `created_at` / `submitted_at`). Rows with a null `author_type` are left out, as in the counts. | same + `S(issues)ᵂ` + `S(comments)ᵂ` |
 
 The order shows participation for scanning the list. It is not a ranking: no score is computed or shown, and the UI must not label positions.
 

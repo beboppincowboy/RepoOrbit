@@ -60,7 +60,7 @@ func TestEvidenceCoverageRequiresParentsAndChildren(t *testing.T) {
 	ctx := context.Background()
 	_, pool := testutil.Database(t)
 	_, err := pool.Exec(ctx, `INSERT INTO repositories (id,name,description) VALUES (10,'o/a','');
- INSERT INTO activity_resources(repository_id,resource,boundary,phase,watermark) VALUES (10,'issues',now(),'current',now()),(10,'pull_requests',now(),'catchup',NULL);
+ INSERT INTO activity_resources(repository_id,resource,boundary,phase,watermark) VALUES (10,'issues',now(),'current',now()),(10,'pull_requests',now(),'catchup',NULL),(10,'comments',now(),'backfill',NULL);
  INSERT INTO activity_children(repository_id,resource,parent_id,parent_number,complete,last_error_code,last_success_at) VALUES (10,'reviews',100,1,false,'rate_limited',now());`)
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestEvidenceCoverageRequiresParentsAndChildren(t *testing.T) {
 	if a.Reviews.Complete || a.Comments.Complete || a.Reviews.PendingChildren != 1 || a.Reviews.FailureCode == nil || *a.Reviews.FailureCode != "rate_limited" || a.Reviews.LastSuccessAt == nil {
 		t.Fatalf("incomplete %+v", a)
 	}
-	_, err = pool.Exec(ctx, `UPDATE activity_resources SET phase='current',watermark=now() WHERE resource='pull_requests'; UPDATE activity_children SET complete=true WHERE repository_id=10`)
+	_, err = pool.Exec(ctx, `UPDATE activity_resources SET phase='current',watermark=now() WHERE resource IN ('pull_requests','comments'); UPDATE activity_children SET complete=true WHERE repository_id=10`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,11 +83,14 @@ func TestEvidenceCoverageRequiresParentsAndChildren(t *testing.T) {
 	if !a.Reviews.Complete || !a.Comments.Complete || a.Reviews.FailureCode == nil {
 		t.Fatalf("completed evidence should retain later error: %+v", a)
 	}
-	a.Issues.Phase = "catchup"
+	// Comments are their own stream: a comment catch-up leaves review coverage alone, and its failure is reported.
+	if _, err = pool.Exec(ctx, `UPDATE activity_resources SET phase='catchup',last_error_code='rate_limited' WHERE resource='comments'`); err != nil {
+		t.Fatal(err)
+	}
 	if err = r.attachEvidenceStatus(ctx, 10, a); err != nil {
 		t.Fatal(err)
 	}
-	if !a.Reviews.Complete || a.Comments.Complete {
+	if !a.Reviews.Complete || a.Comments.Complete || a.Comments.PendingChildren != 0 || a.Comments.FailureCode == nil || *a.Comments.FailureCode != "rate_limited" {
 		t.Fatalf("independent coverage: %+v", a)
 	}
 }

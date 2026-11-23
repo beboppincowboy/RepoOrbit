@@ -74,12 +74,30 @@ func TestRepositoryMetrics(t *testing.T) {
 			t.Errorf("contributor %d: got %+v, want %+v", i, out.Contributors[i], want)
 		}
 	}
-	if _, err := pool.Exec(ctx, `UPDATE activity_children SET watermark=NULL WHERE resource='comments' AND parent_id=6`); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE activity_resources SET watermark=NULL WHERE repository_id=10 AND resource='comments'`); err != nil {
 		t.Fatal(err)
 	}
 	out = load()
-	if len(out.Contributors) != 0 || *out.ContributorsCoverage.Reason != ReasonChildrenIncomplete || out.ActiveContributors.Value == nil {
-		t.Fatalf("missing PR comment history must hide only the contributor list: %+v", out)
+	if len(out.Contributors) != 0 || *out.ContributorsCoverage.Reason != ReasonNotSynchronized || out.ActiveContributors.Value == nil ||
+		out.FirstResponseTime.SampleSize != nil || out.UnansweredOpenIssues.Value != nil || out.IssuesOpened.Value == nil {
+		t.Fatalf("an unsynchronized comment stream must hide only comment-derived metrics: %+v", out)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE activity_resources SET watermark='2026-11-17 09:00Z' WHERE repository_id=10 AND resource='comments'`); err != nil {
+		t.Fatal(err)
+	}
+	// An open issue created before the comment boundary may have replies the stream never fetched.
+	if _, err := pool.Exec(ctx, `UPDATE activity_resources SET boundary='2026-11-11 00:00:01Z' WHERE repository_id=10 AND resource='comments'`); err != nil {
+		t.Fatal(err)
+	}
+	out = load()
+	if out.UnansweredOpenIssues.Value != nil || *out.UnansweredOpenIssues.Coverage.Reason != ReasonWindowBeforeBoundary || out.OpenIssues.Value == nil {
+		t.Fatalf("old open issue must make unanswered unknown: %+v", out.UnansweredOpenIssues)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE activity_resources SET boundary='2026-08-18 00:00Z' WHERE repository_id=10 AND resource='comments'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE activity_resources SET watermark=NULL WHERE repository_id=10 AND resource='comments'`); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `DELETE FROM activity_children WHERE resource='reviews' AND parent_id=101`); err != nil {
 		t.Fatal(err)
