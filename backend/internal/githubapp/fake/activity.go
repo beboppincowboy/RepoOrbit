@@ -1,8 +1,10 @@
 package fake
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +35,7 @@ type CommentFixture struct {
 	User      IssueActor `json:"user"`
 	Body      string     `json:"body"`
 	HTMLURL   string     `json:"html_url"`
+	IssueURL  string     `json:"issue_url"` // set by the repo-wide listing
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 }
@@ -119,6 +122,8 @@ func (s *Server) repoActivity(w http.ResponseWriter, r *http.Request, login stri
 	number, _ := strconv.ParseInt(r.PathValue("number"), 10, 64)
 	if strings.HasSuffix(r.URL.Path, "/releases") {
 		activityFixturePage(w, r, s.releases[id], false)
+	} else if strings.HasSuffix(r.URL.Path, "/issues/comments") {
+		activityFixturePage(w, r, s.repoComments(id, r), false)
 	} else if strings.HasSuffix(r.URL.Path, "/issues/events") {
 		activityFixturePage(w, r, s.issueEvents[id], false)
 	} else if strings.HasSuffix(r.URL.Path, "/pulls") {
@@ -136,6 +141,26 @@ func (s *Server) repoActivity(w http.ResponseWriter, r *http.Request, login stri
 	}
 }
 
+// repoComments flattens a repository's comments the way GET /repos/{o}/{r}/issues/comments does: filtered by since,
+// in ascending update order (then id), each carrying its issue_url.
+func (s *Server) repoComments(id int64, r *http.Request) []CommentFixture {
+	since, _ := time.Parse(time.RFC3339, r.URL.Query().Get("since"))
+	var out []CommentFixture
+	for number, items := range s.comments[id] {
+		for _, c := range items {
+			if c.UpdatedAt.Before(since) {
+				continue
+			}
+			c.IssueURL = fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d", r.PathValue("owner"), r.PathValue("repo"), number)
+			out = append(out, c)
+		}
+	}
+	slices.SortFunc(out, func(a, b CommentFixture) int {
+		return cmp.Or(a.UpdatedAt.Compare(b.UpdatedAt), cmp.Compare(a.ID, b.ID))
+	})
+	return out
+}
+
 func activityFixturePage[T any](w http.ResponseWriter, r *http.Request, items []T, all bool) {
 	per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
 	pg, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -151,11 +176,10 @@ func activityFixturePage[T any](w http.ResponseWriter, r *http.Request, items []
 		if r.TLS != nil {
 			scheme = "https"
 		}
-		state := ""
-		if all {
-			state = "state=all&"
-		}
-		w.Header().Set("Link", fmt.Sprintf(`<%s://%s%s?%sper_page=%d&page=%d>; rel="next"`, scheme, r.Host, r.URL.Path, state, per, pg+1))
+		q := r.URL.Query() // carry state, since, sort and direction forward as GitHub does
+		q.Set("per_page", strconv.Itoa(per))
+		q.Set("page", strconv.Itoa(pg+1))
+		w.Header().Set("Link", fmt.Sprintf(`<%s://%s%s?%s>; rel="next"`, scheme, r.Host, r.URL.Path, q.Encode()))
 	}
 	out := make([]T, hi-lo)
 	copy(out, items[lo:hi])
