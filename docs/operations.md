@@ -6,6 +6,8 @@ Rolling back migration `00012_review_evidence.sql` fails safely if any `activity
 
 Before running the Down step of `00015_write_operations.sql`, roll back the API and worker binaries. Current binaries reference `write_operations` whenever access is revoked (`accessfence.InvalidateAccess`) and during private projection cleanup, so on the older schema every revocation would fail. Rolling back also deletes the issue-write audit history.
 
+Migration `00016_repo_wide_comments.sql` changes the `activity_comments` job key from `repo:N:parent:M` to `repo:N`. Stop every worker before running it, in either direction, and start only the matching build afterwards. A worker from before 00016 marks the new `repo:N` comment jobs dead, and `SignalActivity` never revives dead work, so a rolling deploy needs an operator requeue afterwards. (Newer workers finish leftover `repo:N:parent:M` comment jobs as no-ops.) The Down step does not restore per-issue comment progress: older code rescans comments only on issues and pull requests that change again.
+
 ## Job queue
 
 Background work lives in the PostgreSQL `jobs` table, one row per `(kind, key)`. Rows are written inside the same transaction as the change that needs them. A job that finishes with no new intent deletes its row, so the table only holds work that is waiting, running, parked, or dead.

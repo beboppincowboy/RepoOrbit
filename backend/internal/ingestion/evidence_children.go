@@ -19,7 +19,8 @@ type childPage struct {
 	next    string
 }
 
-func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFence, resource string) (result error) {
+func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) (result error) {
+	const resource = "reviews"
 	var repoID, parentID int64
 	if _, err := fmt.Sscanf(job.Key, "repo:%d:parent:%d", &repoID, &parentID); err != nil || repoID <= 0 || parentID <= 0 || job.Key != childKey(repoID, parentID) {
 		return jobs.Permanent(errors.New("invalid child key"))
@@ -111,5 +112,5 @@ func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFenc
 	return &jobs.Defer{RetryAt: d.Clock.Now(), Reason: "continue"}
 }
 func (d *Deps) SyncReviews(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) error {
-	return d.syncChild(ctx, job, fence, "reviews")
+	return d.syncChild(ctx, job, fence)
 }

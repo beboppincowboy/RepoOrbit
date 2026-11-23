@@ -3,6 +3,7 @@ package ingestion
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -39,8 +40,12 @@ func (d *Deps) SyncIssueEvents(ctx context.Context, j jobs.Job, f jobs.ClaimFenc
 }
 
 // SyncComments pages through the repository-wide comment listing. Each scan starts from the last converged scan's
-// start time (or the activity boundary), so a catch-up lists only comments changed since then.
+// start time (or the activity boundary), so a catch-up lists only comments changed since then. Five minutes of
+// overlap absorbs clock skew between this server and GitHub; re-listed comments upsert unchanged.
 func (d *Deps) SyncComments(ctx context.Context, j jobs.Job, f jobs.ClaimFence) error {
+	if strings.Contains(j.Key, ":parent:") {
+		return nil // a per-issue job queued by a pre-00016 worker; the repository stream covers it
+	}
 	return d.syncEventResource(ctx, j, f, "comments")
 }
 
@@ -62,7 +67,7 @@ func (d *Deps) syncEventResource(ctx context.Context, job jobs.Job, fence jobs.C
 	var phase, cursor string
 	var generation int64
 	var since time.Time
-	err = d.Pool.QueryRow(ctx, `SELECT phase,cursor,generation,COALESCE(watermark,boundary) FROM activity_resources WHERE repository_id=$1 AND resource=$2`, repoID, resource).Scan(&phase, &cursor, &generation, &since)
+	err = d.Pool.QueryRow(ctx, `SELECT phase,cursor,generation,COALESCE(watermark-interval '5 minutes',boundary) FROM activity_resources WHERE repository_id=$1 AND resource=$2`, repoID, resource).Scan(&phase, &cursor, &generation, &since)
 	if errors.Is(err, pgx.ErrNoRows) || phase == "current" {
 		return nil
 	}

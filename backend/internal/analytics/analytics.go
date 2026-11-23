@@ -121,7 +121,7 @@ type Overview struct {
 	ActiveContributors    Count
 	ActiveBotContributors Count
 	// Contributors holds up to 20 humans then up to 5 bots; empty unless ContributorsCoverage is covered, which
-	// also requires the comment histories of every issue and PR updated in the window.
+	// also requires the repository comment stream to cover the window.
 	Contributors         []Contributor
 	ContributorsCoverage Coverage
 

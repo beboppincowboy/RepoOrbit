@@ -3,10 +3,12 @@ package githubapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -58,8 +60,12 @@ func (c *Client) FetchRepoCommentsCursor(ctx context.Context, token, fullName, c
 		return nil, "", err
 	}
 	for i, v := range items {
-		_, tail, _ := strings.Cut(v.IssueURL, "/issues/")
-		number, err := strconv.ParseInt(tail, 10, 64)
+		// The last segment: an owner or repository may itself be named "issues".
+		dir, last := path.Split(v.IssueURL)
+		number, err := strconv.ParseInt(last, 10, 64)
+		if !strings.HasSuffix(dir, "/issues/") {
+			err = errors.New("not an issue URL")
+		}
 		if v.ID <= 0 || !validActivityUser(v.User) || v.HTMLURL == "" || v.CreatedAt.IsZero() || v.UpdatedAt.IsZero() || err != nil || number <= 0 {
 			return nil, "", fmt.Errorf("github: invalid comment listing")
 		}
