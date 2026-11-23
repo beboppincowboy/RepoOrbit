@@ -14,13 +14,9 @@ import (
 type reviewFetcher interface {
 	FetchReviewsCursor(context.Context, string, string, int64, string) ([]githubapp.Review, string, error)
 }
-type commentFetcher interface {
-	FetchIssueCommentsCursor(context.Context, string, string, int64, string) ([]githubapp.IssueComment, string, error)
-}
 type childPage struct {
-	reviews  []githubapp.Review
-	comments []githubapp.IssueComment
-	next     string
+	reviews []githubapp.Review
+	next    string
 }
 
 func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFence, resource string) (result error) {
@@ -50,21 +46,12 @@ func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFenc
 	}
 	started := d.Clock.Now()
 	err = d.withEvidencePage(ctx, job, fence, repoID, func(token string, repo githubapp.Repo) (any, error) {
-		name := repo.FullName
-		if resource == "reviews" {
-			f, ok := d.GitHub.(reviewFetcher)
-			if !ok {
-				return nil, errors.New("reviews unavailable")
-			}
-			items, next, err := f.FetchReviewsCursor(ctx, token, name, number, cursor)
-			return childPage{reviews: items, next: next}, err
-		}
-		f, ok := d.GitHub.(commentFetcher)
+		f, ok := d.GitHub.(reviewFetcher)
 		if !ok {
-			return nil, errors.New("comments unavailable")
+			return nil, errors.New("reviews unavailable")
 		}
-		items, next, err := f.FetchIssueCommentsCursor(ctx, token, name, number, cursor)
-		return childPage{comments: items, next: next}, err
+		items, next, err := f.FetchReviewsCursor(ctx, token, repo.FullName, number, cursor)
+		return childPage{reviews: items, next: next}, err
 	}, func(tx pgx.Tx, data any) error {
 		var liveGen int64
 		var liveCursor string
@@ -80,7 +67,7 @@ func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFenc
 			return errRace
 		}
 		page := data.(childPage)
-		ids := make([]int64, 0, len(page.reviews)+len(page.comments))
+		ids := make([]int64, 0, len(page.reviews))
 		for _, r := range page.reviews {
 			if r.SubmittedAt == nil || strings.EqualFold(r.State, "PENDING") {
 				continue
@@ -94,20 +81,6 @@ func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFenc
 			}
 			ids = append(ids, r.ID)
 			_, err = tx.Exec(ctx, `INSERT INTO activity_reviews(source_id,repository_id,pull_request_id,state,body,html_url,submitted_at,author_id,author_login,author_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(source_id) DO UPDATE SET state=EXCLUDED.state,body=EXCLUDED.body,html_url=EXCLUDED.html_url,submitted_at=EXCLUDED.submitted_at,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_reviews.repository_id=EXCLUDED.repository_id AND activity_reviews.submitted_at<EXCLUDED.submitted_at`, r.ID, repoID, parentID, r.State, r.Body, r.HTMLURL, r.SubmittedAt, actorID, actorLogin, actorType)
-			if err != nil {
-				return err
-			}
-		}
-		for _, c := range page.comments {
-			if c.ID <= 0 || c.CreatedAt.IsZero() || c.UpdatedAt.IsZero() {
-				return errors.New("invalid comment page")
-			}
-			actorID, actorLogin, actorType, err := evidenceActor(c.User)
-			if err != nil {
-				return err
-			}
-			ids = append(ids, c.ID)
-			_, err = tx.Exec(ctx, `INSERT INTO activity_comments(source_id,repository_id,issue_number,body,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(source_id) DO UPDATE SET body=EXCLUDED.body,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_comments.repository_id=EXCLUDED.repository_id AND activity_comments.updated_at<EXCLUDED.updated_at`, c.ID, repoID, number, c.Body, c.HTMLURL, c.CreatedAt, c.UpdatedAt, actorID, actorLogin, actorType)
 			if err != nil {
 				return err
 			}
@@ -139,7 +112,4 @@ func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFenc
 }
 func (d *Deps) SyncReviews(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) error {
 	return d.syncChild(ctx, job, fence, "reviews")
-}
-func (d *Deps) SyncComments(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) error {
-	return d.syncChild(ctx, job, fence, "comments")
 }

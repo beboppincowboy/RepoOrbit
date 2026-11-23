@@ -21,7 +21,7 @@ func TestActivityPages(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/reviews"):
 			_, _ = w.Write([]byte(`[{"id":4,"state":"PENDING","body":"private","html_url":"url","submitted_at":null,"user":{"id":3,"login":"bot","type":"Bot"}}]`))
 		default:
-			_, _ = w.Write([]byte(`[{"id":5,"body":"hello","html_url":"url","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","user":{"id":3,"login":"bot","type":"Bot"}}]`))
+			_, _ = w.Write([]byte(`[{"id":5,"body":"hello","html_url":"url","issue_url":"https://api.github.com/repos/a/b/issues/2","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","user":{"id":3,"login":"bot","type":"Bot"}}]`))
 		}
 	}))
 	defer server.Close()
@@ -35,8 +35,8 @@ func TestActivityPages(t *testing.T) {
 	if err != nil || len(reviews) != 1 || reviews[0].SubmittedAt != nil || reviews[0].Body != "private" {
 		t.Fatalf("reviews=%+v err=%v", reviews, err)
 	}
-	comments, _, err := c.FetchIssueCommentsCursor(ctx, "token", "a/b", 2, "")
-	if err != nil || len(comments) != 1 || comments[0].Body != "hello" {
+	comments, _, err := c.FetchRepoCommentsCursor(ctx, "token", "a/b", "", time.Time{})
+	if err != nil || len(comments) != 1 || comments[0].Body != "hello" || comments[0].IssueNumber != 2 {
 		t.Fatalf("comments=%+v err=%v", comments, err)
 	}
 }
@@ -69,7 +69,7 @@ func TestActivityAllowsNullActorsButRejectsMalformedActors(t *testing.T) {
 				case strings.HasSuffix(r.URL.Path, "/reviews"):
 					_, _ = w.Write([]byte(`[{"id":2,"state":"APPROVED","html_url":"url","submitted_at":"2026-01-01T00:00:00Z","user":` + actor.json + `}]`))
 				default:
-					_, _ = w.Write([]byte(`[{"id":3,"html_url":"url","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","user":` + actor.json + `}]`))
+					_, _ = w.Write([]byte(`[{"id":3,"html_url":"url","issue_url":"https://api.github.com/repos/a/b/issues/2","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","user":` + actor.json + `}]`))
 				}
 			}))
 			defer server.Close()
@@ -77,7 +77,7 @@ func TestActivityAllowsNullActorsButRejectsMalformedActors(t *testing.T) {
 			ctx := context.Background()
 			_, _, prErr := c.FetchPullRequestsCursor(ctx, "token", "a/b", "")
 			_, _, reviewErr := c.FetchReviewsCursor(ctx, "token", "a/b", 2, "")
-			_, _, commentErr := c.FetchIssueCommentsCursor(ctx, "token", "a/b", 2, "")
+			_, _, commentErr := c.FetchRepoCommentsCursor(ctx, "token", "a/b", "", time.Time{})
 			for _, err := range []error{prErr, reviewErr, commentErr} {
 				if (err == nil) != actor.valid {
 					t.Fatalf("valid=%v err=%v", actor.valid, err)

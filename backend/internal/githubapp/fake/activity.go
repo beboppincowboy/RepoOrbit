@@ -134,10 +134,8 @@ func (s *Server) repoActivity(w http.ResponseWriter, r *http.Request, login stri
 		activityFixturePage(w, r, s.pulls[id], true)
 	} else if number <= 0 {
 		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
-	} else if strings.HasSuffix(r.URL.Path, "/reviews") {
-		activityFixturePage(w, r, s.reviews[id][number], false)
 	} else {
-		activityFixturePage(w, r, s.comments[id][number], false)
+		activityFixturePage(w, r, s.reviews[id][number], false)
 	}
 }
 

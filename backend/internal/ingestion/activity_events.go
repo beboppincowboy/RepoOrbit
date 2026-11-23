@@ -3,6 +3,7 @@ package ingestion
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
@@ -14,6 +15,9 @@ type releaseFetcher interface {
 }
 type issueEventFetcher interface {
 	FetchIssueEventsCursor(context.Context, string, string, string) ([]githubapp.IssueEvent, string, error)
+}
+type commentFetcher interface {
+	FetchRepoCommentsCursor(context.Context, string, string, string, time.Time) ([]githubapp.IssueComment, string, error)
 }
 type activityPage struct {
 	items any
@@ -34,6 +38,12 @@ func (d *Deps) SyncIssueEvents(ctx context.Context, j jobs.Job, f jobs.ClaimFenc
 	return d.syncEventResource(ctx, j, f, "issue_events")
 }
 
+// SyncComments pages through the repository-wide comment listing. Each scan starts from the last converged scan's
+// start time (or the activity boundary), so a catch-up lists only comments changed since then.
+func (d *Deps) SyncComments(ctx context.Context, j jobs.Job, f jobs.ClaimFence) error {
+	return d.syncEventResource(ctx, j, f, "comments")
+}
+
 func (d *Deps) syncEventResource(ctx context.Context, job jobs.Job, fence jobs.ClaimFence, resource string) (result error) {
 	repoID, err := parseRepoKey(job.Key)
 	if err != nil {
@@ -51,7 +61,8 @@ func (d *Deps) syncEventResource(ctx context.Context, job jobs.Job, fence jobs.C
 	}()
 	var phase, cursor string
 	var generation int64
-	err = d.Pool.QueryRow(ctx, `SELECT phase,cursor,generation FROM activity_resources WHERE repository_id=$1 AND resource=$2`, repoID, resource).Scan(&phase, &cursor, &generation)
+	var since time.Time
+	err = d.Pool.QueryRow(ctx, `SELECT phase,cursor,generation,COALESCE(watermark,boundary) FROM activity_resources WHERE repository_id=$1 AND resource=$2`, repoID, resource).Scan(&phase, &cursor, &generation, &since)
 	if errors.Is(err, pgx.ErrNoRows) || phase == "current" {
 		return nil
 	}
@@ -67,6 +78,14 @@ func (d *Deps) syncEventResource(ctx context.Context, job jobs.Job, fence jobs.C
 				return nil, errors.New("release fetch unavailable")
 			}
 			items, next, err := f.FetchReleasesCursor(ctx, token, name, cursor)
+			return activityPage{items, next}, err
+		}
+		if resource == "comments" {
+			f, ok := d.GitHub.(commentFetcher)
+			if !ok {
+				return nil, errors.New("comment fetch unavailable")
+			}
+			items, next, err := f.FetchRepoCommentsCursor(ctx, token, name, cursor, since)
 			return activityPage{items, next}, err
 		}
 		f, ok := d.GitHub.(issueEventFetcher)
@@ -112,6 +131,22 @@ func (d *Deps) syncEventResource(ctx context.Context, job jobs.Job, fence jobs.C
 					return err
 				}
 			}
+		} else if resource == "comments" {
+			for _, c := range page.items.([]githubapp.IssueComment) {
+				if c.ID <= 0 || c.IssueNumber <= 0 || c.CreatedAt.IsZero() || c.UpdatedAt.IsZero() {
+					return errors.New("invalid comment page")
+				}
+				aid, login, kind, err := evidenceActor(c.User)
+				if err != nil {
+					return err
+				}
+				ids = append(ids, c.ID)
+				// The activity_comments tombstone trigger skips a comment a signed webhook deleted.
+				_, err = tx.Exec(ctx, `INSERT INTO activity_comments(source_id,repository_id,issue_number,body,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(source_id) DO UPDATE SET body=EXCLUDED.body,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_comments.repository_id=EXCLUDED.repository_id AND activity_comments.updated_at<EXCLUDED.updated_at`, c.ID, repoID, c.IssueNumber, c.Body, c.HTMLURL, c.CreatedAt, c.UpdatedAt, aid, login, kind)
+				if err != nil {
+					return err
+				}
+			}
 		} else {
 			for _, v := range page.items.([]githubapp.IssueEvent) {
 				if !supportedIssueEvent(v.Event) {
@@ -151,7 +186,9 @@ func (d *Deps) syncEventResource(ctx context.Context, job jobs.Job, fence jobs.C
 			_, err = tx.Exec(ctx, `UPDATE activity_resources SET phase='catchup',page=1,cursor='',scan_started_at=NULL,current_scan='{}',previous_scan=NULL WHERE repository_id=$1 AND resource=$2`, repoID, resource)
 			return err
 		}
-		_, err = tx.Exec(ctx, `UPDATE activity_resources SET phase=CASE WHEN previous_scan=current_scan THEN 'current' ELSE 'catchup' END,watermark=CASE WHEN previous_scan=current_scan THEN scan_started_at ELSE watermark END,last_success_at=CASE WHEN previous_scan=current_scan THEN $3 ELSE last_success_at END,previous_scan=current_scan,current_scan='{}',scan_started_at=NULL,page=1,cursor='' WHERE repository_id=$1 AND resource=$2`, repoID, resource, d.Clock.Now())
+		// A catch-up is stable when it repeats the previous scan, or when it fit in one response ($4): the two-scan rule
+		// guards against items shifting between pages, which a single page cannot suffer.
+		_, err = tx.Exec(ctx, `UPDATE activity_resources SET phase=CASE WHEN $4 OR previous_scan=current_scan THEN 'current' ELSE 'catchup' END,watermark=CASE WHEN $4 OR previous_scan=current_scan THEN scan_started_at ELSE watermark END,last_success_at=CASE WHEN $4 OR previous_scan=current_scan THEN $3 ELSE last_success_at END,previous_scan=current_scan,current_scan='{}',scan_started_at=NULL,page=1,cursor='' WHERE repository_id=$1 AND resource=$2`, repoID, resource, d.Clock.Now(), cursor == "")
 		return err
 	})
 	if err != nil {

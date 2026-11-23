@@ -133,7 +133,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/repos/{owner}/{repo}/issues/comments", s.api(s.repoActivity))
 	mux.HandleFunc("/repos/{owner}/{repo}/pulls", s.api(s.repoActivity))
 	mux.HandleFunc("/repos/{owner}/{repo}/pulls/{number}/reviews", s.api(s.repoActivity))
-	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/comments", s.api(s.repoActivity))
 	mux.HandleFunc("/apps/{slug}/installations/new", s.installNew)
 	return mux
 }
