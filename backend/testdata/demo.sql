@@ -13,7 +13,7 @@ DELETE FROM activity_children WHERE repository_id IN (SELECT id FROM repositorie
 DELETE FROM activity_resources WHERE repository_id IN (SELECT id FROM repositories WHERE is_demo);
 INSERT INTO activity_resources (repository_id, resource, boundary, phase, watermark, last_success_at)
 SELECT r.id, res, now() - interval '90 days', 'current', now(), now()
-FROM repositories r CROSS JOIN unnest(ARRAY['issues', 'pull_requests', 'releases', 'issue_events']) AS res WHERE r.is_demo;
+FROM repositories r CROSS JOIN unnest(ARRAY['issues', 'pull_requests', 'releases', 'issue_events', 'comments']) AS res WHERE r.is_demo;
 WITH people(k, login) AS (VALUES (0, 'maya'), (1, 'sam'), (2, 'jordan'), (3, 'priya'), (4, 'alex')),
 issues AS (
   SELECT r.id AS repo, r.name, g, 900000000 + r.id * 1000 + g AS source_id, now() - g * interval '53 hours' AS created
@@ -54,8 +54,4 @@ SELECT p.source_id + 500, p.repository_id, p.source_id, CASE WHEN p.number % 6 =
 FROM activity_pull_requests p
 WHERE p.repository_id IN (SELECT id FROM repositories WHERE is_demo) AND p.number % 5 <> 0;
 INSERT INTO activity_children (repository_id, resource, parent_id, parent_number, complete, watermark)
-SELECT repository_id, 'comments', number, number, true, now() FROM activity_issues WHERE repository_id IN (SELECT id FROM repositories WHERE is_demo)
-UNION ALL
-SELECT repository_id, 'comments', number, number, true, now() FROM activity_pull_requests WHERE repository_id IN (SELECT id FROM repositories WHERE is_demo)
-UNION ALL
 SELECT repository_id, 'reviews', source_id, number, true, now() FROM activity_pull_requests WHERE repository_id IN (SELECT id FROM repositories WHERE is_demo);

@@ -269,12 +269,19 @@ func assemble(days int, start, now time.Time, c db.GetMetricCoverageRow, m db.Ge
 	if reopens.Covered && c.EventsCoveredFrom.Time.After(start) {
 		reopens = uncovered(ReasonHistoricalGap)
 	}
-	openComments := childCoverage(issues, c.OpenIssueCommentsMissing, c.OpenIssueCommentsThrough)
+	// Comments sync as one stream of comments updated since its boundary. A window inside the boundary sees every
+	// comment on its issues; an open issue created before the boundary may have older replies the stream never
+	// fetched, so "unanswered" is not claimed for a repository that has one.
+	windowComments := streamCoverage(c.CommentsWatermark, c.CommentsBoundary, start)
+	openComments := combineCoverage(issues, streamCoverage(c.CommentsWatermark, c.CommentsBoundary, time.Time{}))
+	if openComments.Covered && c.OpenIssuesBeforeCommentsBoundary > 0 {
+		openComments = uncovered(ReasonWindowBeforeBoundary)
+	}
 	openReviews := childCoverage(pulls, c.OpenPrReviewsMissing, c.OpenPrReviewsThrough)
-	createdComments := childCoverage(windowIssues, c.CreatedIssueCommentsMissing, c.CreatedIssueCommentsThrough)
+	createdComments := combineCoverage(windowIssues, windowComments)
 	createdReviews := childCoverage(windowPulls, c.CreatedPrReviewsMissing, c.CreatedPrReviewsThrough)
 	participants := childCoverage(windowPulls, c.UpdatedPrReviewsMissing, c.UpdatedPrReviewsThrough)
-	contributorList := childCoverage(combineCoverage(participants, windowIssues), c.UpdatedCommentsMissing, c.UpdatedCommentsThrough)
+	contributorList := combineCoverage(combineCoverage(participants, windowIssues), windowComments)
 
 	out := &Overview{
 		Days: days, WindowStart: start, Now: now,
