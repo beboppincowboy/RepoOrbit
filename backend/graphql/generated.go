@@ -286,7 +286,7 @@ type ComplexityRoot struct {
 		CommentEvidence         func(childComplexity int, repositoryIds []string, first int, after *string) int
 		CrossRepositoryOverview func(childComplexity int, days int) int
 		IssueEventEvidence      func(childComplexity int, repositoryIds []string, first int, after *string) int
-		Issues                  func(childComplexity int, repositoryIds []string, first int, after *string) int
+		Issues                  func(childComplexity int, repositoryIds []string, first int, after *string, number *int) int
 		PullRequestEvidence     func(childComplexity int, repositoryIds []string, first int, after *string, newestFirst bool) int
 		ReleaseEvidence         func(childComplexity int, repositoryIds []string, first int, after *string) int
 		Repository              func(childComplexity int, id string) int
@@ -408,7 +408,7 @@ type QueryResolver interface {
 	Viewer(ctx context.Context) (*model.Viewer, error)
 	SelectedRepositories(ctx context.Context, first int, after *string) (*model.RepositoryConnection, error)
 	Repository(ctx context.Context, id string) (*model.Repository, error)
-	Issues(ctx context.Context, repositoryIds []string, first int, after *string) (*model.IssueConnection, error)
+	Issues(ctx context.Context, repositoryIds []string, first int, after *string, number *int) (*model.IssueConnection, error)
 	PullRequestEvidence(ctx context.Context, repositoryIds []string, first int, after *string, newestFirst bool) (*model.PullRequestEvidenceConnection, error)
 	ReviewEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.ReviewEvidenceConnection, error)
 	CommentEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.CommentEvidenceConnection, error)
@@ -1561,7 +1561,7 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 			return 0, false
 		}
 
-		return e.complexity.Query.Issues(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string)), true
+		return e.complexity.Query.Issues(childComplexity, args["repositoryIds"].([]string), args["first"].(int), args["after"].(*string), args["number"].(*int)), true
 
 	case "Query.pullRequestEvidence":
 		if e.complexity.Query.PullRequestEvidence == nil {
@@ -2511,6 +2511,11 @@ func (ec *executionContext) field_Query_issues_args(ctx context.Context, rawArgs
 		return nil, err
 	}
 	args["after"] = arg2
+	arg3, err := ec.field_Query_issues_argsNumber(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["number"] = arg3
 	return args, nil
 }
 func (ec *executionContext) field_Query_issues_argsRepositoryIds(
@@ -2564,6 +2569,24 @@ func (ec *executionContext) field_Query_issues_argsAfter(
 	}
 
 	var zeroVal *string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_issues_argsNumber(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (*int, error) {
+	if _, ok := rawArgs["number"]; !ok {
+		var zeroVal *int
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("number"))
+	if tmp, ok := rawArgs["number"]; ok {
+		return ec.unmarshalOInt2ᚖint(ctx, tmp)
+	}
+
+	var zeroVal *int
 	return zeroVal, nil
 }
 
@@ -10209,7 +10232,7 @@ func (ec *executionContext) _Query_issues(ctx context.Context, field graphql.Col
 	}()
 	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
 		ctx = rctx // use context from middleware stack in children
-		return ec.resolvers.Query().Issues(rctx, fc.Args["repositoryIds"].([]string), fc.Args["first"].(int), fc.Args["after"].(*string))
+		return ec.resolvers.Query().Issues(rctx, fc.Args["repositoryIds"].([]string), fc.Args["first"].(int), fc.Args["after"].(*string), fc.Args["number"].(*int))
 	})
 	if err != nil {
 		ec.Error(ctx, err)
@@ -20640,6 +20663,24 @@ func (ec *executionContext) marshalOID2ᚖstring(ctx context.Context, sel ast.Se
 	_ = sel
 	_ = ctx
 	res := graphql.MarshalID(*v)
+	return res
+}
+
+func (ec *executionContext) unmarshalOInt2ᚖint(ctx context.Context, v any) (*int, error) {
+	if v == nil {
+		return nil, nil
+	}
+	res, err := graphql.UnmarshalInt(v)
+	return &res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalOInt2ᚖint(ctx context.Context, sel ast.SelectionSet, v *int) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	_ = sel
+	_ = ctx
+	res := graphql.MarshalInt(*v)
 	return res
 }
 

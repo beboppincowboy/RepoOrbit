@@ -453,6 +453,19 @@ export async function fetchWorkspaceIssues(id: string, after: string | null, sig
   return data.issues;
 }
 
+// Fetches one imported issue by number (null when it has not been imported), so a restored editor knows its author and state.
+export async function fetchWorkspaceIssue(id: string, number: number, signal: AbortSignal): Promise<WorkspaceIssue | null> {
+  const { data, errors } = await graphqlQuery<{ issues: { nodes: WorkspaceIssue[]; withheld: number; retryAt: string | null } }>(`query WorkspaceIssue($id: ID!, $number: Int!) {
+    issues(repositoryIds: [$id], first: 1, number: $number) {
+      nodes { id repositoryId number title state url authorLogin updatedAt labels assignees }
+      withheld retryAt
+    }
+  }`, { id, number }, signal);
+  if (!data || errors?.length) throw new Error("Could not load the issue");
+  if (data.issues.withheld) throw new RepositoryAccessUnverifiedError(data.issues.retryAt ?? null);
+  return data.issues.nodes[0] ?? null;
+}
+
 export async function fetchIssueCapabilities(id: string, signal?: AbortSignal): Promise<IssueCapabilities> {
   const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/issue-capabilities`, { cache: "no-store", signal });
   if (!response.ok) throw await toIssueWriteError(response);

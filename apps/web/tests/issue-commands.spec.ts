@@ -108,6 +108,10 @@ async function setupWorkspace(
         },
       });
     }
+    if (query.startsWith('query WorkspaceIssue(')) {
+      const number = route.request().postDataJSON().variables.number;
+      return route.fulfill({ json: { data: { issues: { nodes: issues.filter(i => i.number === number), withheld: 0, retryAt: null } } } });
+    }
     return route.fallback();
   });
 
@@ -457,6 +461,12 @@ test('disables disallowed actions with the GitHub permission reason', async ({ p
   await expect(dialog).toContainText('With Read access you can close or reopen issues you authored');
   await expect(dialog.getByLabel('Open / closed state')).toBeEnabled();
   await expect(dialog.getByLabel('Labels (add or remove)')).toBeDisabled();
+
+  // After a reload the editor knows only the number from the URL; it loads the issue so the author keeps close/reopen.
+  await page.reload();
+  dialog = page.getByRole('dialog', { name: 'Edit issue #15' });
+  await expect(dialog).toContainText('With Read access you can close or reopen issues you authored');
+  await expect(dialog.getByLabel('Open / closed state')).toBeEnabled();
 });
 
 test('demo mode shows the issue editor with writes disabled and labeled', async ({ page }) => {
