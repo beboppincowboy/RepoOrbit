@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/analytics"
@@ -162,104 +161,7 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 
 // Issues is the resolver for the issues field.
 func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, first int, after *string, number *int) (*model.IssueConnection, error) {
-	n, err := pageLimit(first)
-	if err != nil {
-		return nil, err
-	}
-	id, err := parsePositiveID(after)
-	if err != nil {
-		return nil, err
-	}
-	if len(repositoryIds) > maxRepositoryIDs {
-		return nil, fmt.Errorf("at most %d repositories", maxRepositoryIDs)
-	}
-	ids := make([]int64, 0, len(repositoryIds))
-	for _, raw := range repositoryIds {
-		v, err := parsePositiveID(&raw)
-		if err != nil {
-			return nil, err
-		}
-		ids = append(ids, v)
-	}
-	ctx, cancel := withReadDeadline(ctx)
-	defer cancel()
-	result := &model.IssueConnection{Nodes: []*model.Issue{}}
-	var readFence accessfence.Snapshot
-	if !r.Demo {
-		// Only the user's selected repositories, and only those still verified, can contribute issues.
-		userID, err := r.userID(ctx)
-		if err != nil {
-			return nil, err
-		}
-		readFence, err = accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, userID)
-		if err != nil {
-			return nil, fmt.Errorf("database unavailable")
-		}
-		if ids, err = r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: userID, RepositoryIds: ids}); err != nil {
-			return nil, fmt.Errorf("database unavailable")
-		}
-		checks := r.RepoAccess.Check(ctx, userID, ids, true)
-		allowed := ids[:0:0]
-		for repoID, d := range checks {
-			if d.Allowed {
-				allowed = append(allowed, repoID)
-			}
-			if d.Unverified {
-				result.Withheld++
-				result.RetryAt = laterRetry(result.RetryAt, d.RetryAt)
-			}
-		}
-		if ids = allowed; len(ids) == 0 {
-			return result, nil
-		}
-	}
-	var issueNumber pgtype.Int8
-	if number != nil {
-		issueNumber = pgtype.Int8{Int64: int64(*number), Valid: true}
-	}
-	rows, err := r.Queries.ListIssues(ctx, db.ListIssuesParams{Demo: r.Demo, RepositoryIds: ids, After: id, Number: issueNumber, PageSize: int32(n + 1)})
-	if err != nil {
-		return nil, fmt.Errorf("database unavailable")
-	}
-	if !r.Demo {
-		current, err := readFence.Current(ctx, r.RepoAccess.Pool)
-		if err != nil || !current {
-			result.Withheld += len(ids)
-			return result, nil
-		}
-	}
-	result.HasNextPage = len(rows) > n
-	rows = rows[:min(len(rows), n)]
-	for _, row := range rows {
-		id := strconv.FormatInt(row.ID, 10)
-		var authorLogin *string
-		if row.AuthorLogin.Valid {
-			v := row.AuthorLogin.String
-			authorLogin = &v
-		}
-		labels := row.Labels
-		if labels == nil {
-			labels = []string{}
-		}
-		assignees := row.Assignees
-		if assignees == nil {
-			assignees = []string{}
-		}
-		result.Nodes = append(result.Nodes, &model.Issue{
-			ID:           id,
-			RepositoryID: strconv.FormatInt(row.RepositoryID, 10),
-			Number:       int(row.Number),
-			Title:        row.Title,
-			State:        row.State,
-			URL:          row.HtmlUrl,
-			AuthorLogin:  authorLogin,
-			UpdatedAt:    stamp(row.UpdatedAt.Time),
-			Labels:       labels,
-			Assignees:    assignees,
-		})
-		result.EndCursor = &id
-	}
-	return result, nil
+	return r.issues(ctx, repositoryIds, first, after, number)
 }
 
 // PullRequestEvidence is the resolver for the pullRequestEvidence field.
