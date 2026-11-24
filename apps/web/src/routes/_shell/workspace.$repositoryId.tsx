@@ -3,7 +3,8 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "re
 import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
-import { clearRepositoryIssueDrafts, hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/components/issue-editor";
+import { hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/components/issue-editor";
+import { clearRepositoryIssueDrafts } from "@/lib/drafts";
 import { IssueIcon, PullRequestIcon } from "@/components/needs-attention";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
