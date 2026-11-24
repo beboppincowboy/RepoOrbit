@@ -90,7 +90,7 @@ export function StatusSourceSetup({ repositoryId, viewerKey, demo, frozen }: { r
           {" "}Only Admin or Maintain users can change this.
         </p>
       ) : state!.enabled ? (
-        step === "confirm-off" || (step === "submitting" && !result) ? (
+        step === "confirm-off" || step === "submitting" ? (
           <div className="flex flex-col gap-2 rounded-lg border border-border p-2.5 text-xs">
             <span>Turn status labels off for everyone? The labels stay on GitHub, and the Board shows &ldquo;No status source&rdquo;.</span>
             <div className="flex gap-2">

@@ -131,22 +131,19 @@ func (s *Service) disableStatusLabels(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ensureStatusLabels creates each missing status label, stopping at the first error, then reads all three back: the
-// outcome is what the read shows. Creating a label that exists is harmless (GitHub answers 422), so nothing here can
+// ensureStatusLabels creates each status label, stopping at the first error, then reads all three back: the outcome is
+// what the read shows. A label that already exists, in any case, is answered 422 and reused, so nothing here can
 // duplicate anything; an ambiguous step only leaves the operation unknown when the read still misses a label.
 func (s *Service) ensureStatusLabels(ctx context.Context, userID int64, token, fullName string) (string, outcome) {
 	out := outcome{}
 	answered := true
 	for _, l := range statusLabels {
-		exists, err := s.GitHub.LabelExists(ctx, token, fullName, l.name)
-		if err == nil && !exists {
-			err = s.GitHub.CreateLabel(ctx, token, fullName, l.name, l.color)
-			var api *githubapp.APIError
-			if errors.As(err, &api) && api.Status == http.StatusUnprocessableEntity {
-				err = nil // most likely created meanwhile; the read below decides
-			} else if err == nil {
-				out.Created = append(out.Created, l.name)
-			}
+		err := s.GitHub.CreateLabel(ctx, token, fullName, l.name, l.color)
+		var api *githubapp.APIError
+		if errors.As(err, &api) && api.Status == http.StatusUnprocessableEntity {
+			err = nil // it already exists (or the name is refused); the read below decides
+		} else if err == nil {
+			out.Created = append(out.Created, l.name)
 		}
 		if err != nil {
 			s.revokeIfUnauthorized(ctx, userID, err)

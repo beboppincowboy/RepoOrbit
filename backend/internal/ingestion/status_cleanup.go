@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
@@ -47,11 +48,7 @@ func enqueueStatusCleanup(ctx context.Context, tx pgx.Tx, repoID int64, issue gi
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO jobs (kind, key, state, run_at) VALUES ($1, $2, 'queued', now())
-		ON CONFLICT (kind, key) DO UPDATE SET run_at = CASE WHEN jobs.state = 'queued' THEN LEAST(jobs.run_at, EXCLUDED.run_at) ELSE jobs.run_at END,
-		pending = CASE WHEN jobs.state = 'queued' THEN jobs.pending ELSE true END, updated_at = now()`,
-		string(jobs.KindStatusLabelCleanup), fmt.Sprintf("repo:%d", repoID))
-	return err
+	return jobs.Enqueue(ctx, tx, jobs.KindStatusLabelCleanup, fmt.Sprintf("repo:%d", repoID), time.Now())
 }
 
 // CleanupStatusLabels is the jobs.KindStatusLabelCleanup handler (Key "repo:<repositories.id>"): the one RepoOrbit
