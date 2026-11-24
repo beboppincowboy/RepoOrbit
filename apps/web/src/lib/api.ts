@@ -243,7 +243,8 @@ export async function fetchWorkspacePullRequests(id: string, after: string | nul
 export type AttentionKind = "pr_awaiting_review" | "issue_no_response" | "stale_issue";
 // since: when the item was opened, or for stale_issue when it was last updated (RFC 3339).
 export type AttentionItem = { kind: AttentionKind; repositoryId: string; fullName: string; number: number; title: string; url: string; since: string };
-export type AssignedIssue = { repositoryId: string; fullName: string; number: number; title: string; url: string; updatedAt: string };
+// status is null when the repository's status labels are off.
+export type AssignedIssue = { repositoryId: string; fullName: string; number: number; title: string; url: string; updatedAt: string; status: BoardStatus | null };
 // Totals, the trend and Needs attention cover counted repositories. Assigned issues require issue coverage.
 // Withheld counts unverified repositories without naming them. Lists hold at most 25 rows.
 export type CrossRepositoryOverview = {
@@ -271,7 +272,7 @@ export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: A
       openIssues { value coverage { ${coverage} } }
       reviewBacklog { value coverage { ${coverage} } }
       needsAttention { kind repositoryId fullName number title url since }
-      assignedToMe { repositoryId fullName number title url updatedAt }
+      assignedToMe { repositoryId fullName number title url updatedAt status }
       daily { day issuesOpened pullRequestsMerged }
     }
   }`, { days }, signal);
@@ -281,6 +282,31 @@ export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: A
   if (selectionLimit?.message) throw new Error(selectionLimit.message);
   if (!data?.crossRepositoryOverview || errors?.length) throw new Error("Could not load the overview. Check that the local services are running.");
   return data.crossRepositoryOverview;
+}
+
+// The five Board states (R15): an open issue's furthest-along status label, none for backlog; done for any closed issue.
+export type BoardStatus = "backlog" | "todo" | "in_progress" | "in_review" | "done";
+// status is null when the repository's status labels are off. multipleStatus flags an open issue carrying more than one
+// status label. updatedAt is RFC 3339.
+export type BoardIssue = { number: number; title: string; url: string; state: "open" | "closed"; updatedAt: string; authorLogin: string | null; labels: string[]; assignees: string[]; status: BoardStatus | null; multipleStatus: boolean };
+// The open issues (500 most recently updated), closed issues (50 most recently closed) and the included numbers, each once.
+// truncated is true when a cap left issues out.
+export type RepositoryBoard = { statusLabels: boolean; truncated: boolean; issues: BoardIssue[] };
+
+// Fetches the Board snapshot, adding the issues numbered in include (at most 100, for staged cards and an opened issue).
+// Null means the repo is missing, unselected, or denied. Unverified access and temporary transport failures reject
+// with their typed errors.
+export async function fetchRepositoryBoard(id: string, include: number[], signal?: AbortSignal): Promise<RepositoryBoard | null> {
+  const { data, errors } = await graphqlQuery<{ repositoryBoard: RepositoryBoard | null }>(`query RepositoryBoard($id: ID!, $include: [Int!]) {
+    repositoryBoard(id: $id, include: $include) {
+      statusLabels truncated
+      issues { number title url state updatedAt authorLogin labels assignees status multipleStatus }
+    }
+  }`, { id, include }, signal);
+  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
+  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
+  if (!data || errors?.length) throw new Error("Could not load the board");
+  return data.repositoryBoard;
 }
 
 // --- Issues and audited issue writes (U6a/U6b) ----------------------------------------------------
@@ -316,10 +342,16 @@ export type IssueDelta = {
   remove?: string[];
 };
 
+// An issue's Board-relevant state: a staged card's snapshot, and the `current` of a 409 "changed on GitHub".
+export type BoardSnapshot = { state: "open" | "closed"; labels: string[]; assignees: string[]; status: BoardStatus; updatedAt: string };
+
 export type IssueUpdateDraft = {
   labels?: IssueDelta;
   assignees?: IssueDelta;
   state?: "open" | "closed";
+  // Board changes only: the state the change was staged over. When GitHub's Board status, assignee set or (while open)
+  // status-label set differs, the update answers 409 changed_on_github and nothing is recorded or sent.
+  expect?: { status: BoardStatus; assignees: string[]; statusLabels: string[] };
 };
 
 export type WriteOperationIssue = {
@@ -373,7 +405,8 @@ export type IssueWriteErrorKind =
   | "unprocessable"
   | "unverified"
   | "transport"
-  | "server";
+  | "server"
+  | "changed_on_github"; // a Board update's expect no longer matches GitHub; current holds the live state
 
 export class IssueWriteError extends Error {
   readonly status: number;
@@ -381,6 +414,7 @@ export class IssueWriteError extends Error {
   readonly retryAfter: string | null;
   readonly operationId: number | null;
   readonly operation: WriteOperation | null;
+  readonly current: BoardSnapshot | null;
 
   constructor(
     message: string,
@@ -390,6 +424,7 @@ export class IssueWriteError extends Error {
       retryAfter?: string | null;
       operationId?: number | null;
       operation?: WriteOperation | null;
+      current?: BoardSnapshot | null;
     },
   ) {
     super(message);
@@ -398,7 +433,17 @@ export class IssueWriteError extends Error {
     this.retryAfter = opts.retryAfter ?? null;
     this.operationId = opts.operationId ?? null;
     this.operation = opts.operation ?? null;
+    this.current = opts.current ?? null;
   }
+}
+
+// Whether a failed issue write may have been recorded, and so sent: a lost response (transport, 502, 504), a 500, a
+// 503 whose operation was already recorded, or any answer this module does not recognize. Such a write is resolved only
+// by resending the identical body under the same Idempotency-Key, which replays the recorded operation and sends nothing
+// new. Any other error is a definite rejection: nothing was recorded, and a retry takes a new key.
+export function mayHaveBeenRecorded(error: unknown): boolean {
+  if (!(error instanceof IssueWriteError)) return true;
+  return error.kind === "transport" || error.kind === "server" || (error.status === 503 && /same Idempotency-Key/i.test(error.message));
 }
 
 function parseRetryAfter(header: string | null): string | null {
@@ -421,6 +466,9 @@ async function toIssueWriteError(response: Response): Promise<IssueWriteError> {
     } catch { /* plain text error */ }
   }
   if (response.status === 409) {
+    if (parsed && parsed.current && typeof parsed.current === "object") {
+      return new IssueWriteError("This issue changed on GitHub after the change was staged.", { status: 409, kind: "changed_on_github", current: parsed.current as BoardSnapshot });
+    }
     if (parsed && typeof parsed.operationId === "number") {
       const msg = typeof parsed.error === "string" && parsed.error ? parsed.error : "An earlier create of this issue is still unresolved; recheck it instead of resubmitting.";
       return new IssueWriteError(msg, { status: 409, kind: "duplicate_create", operationId: parsed.operationId });

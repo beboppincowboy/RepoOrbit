@@ -55,19 +55,26 @@ const workspaceIssuesQuery = `query WorkspaceIssues($id: ID!, $after: ID) {
     issues(repositoryIds: [$id], first: 20, after: $after) { nodes { id repositoryId number title state url authorLogin updatedAt labels assignees } withheld retryAt hasNextPage endCursor }
   }`
 
+const repositoryBoardQuery = `query RepositoryBoard($id: ID!, $include: [Int!]) {
+    repositoryBoard(id: $id, include: $include) {
+      statusLabels truncated
+      issues { number title url state updatedAt authorLogin labels assignees status multipleStatus }
+    }
+  }`
+
 const crossOverviewQuery = `query CrossRepositoryOverview($days: Int! = 30) {
     crossRepositoryOverview(days: $days) {
       days windowStart now repositoriesCounted repositoriesSyncing withheld retryAt
       openIssues { value coverage { covered reason through } }
       reviewBacklog { value coverage { covered reason through } }
       needsAttention { kind repositoryId fullName number title url since }
-      assignedToMe { repositoryId fullName number title url updatedAt }
+      assignedToMe { repositoryId fullName number title url updatedAt status }
       daily { day issuesOpened pullRequestsMerged }
     }
   }`
 
 func TestFrontendOperationsFitLimits(t *testing.T) {
-	for name, query := range map[string]string{"overview": repositoryOverviewQuery, "pulls": workspacePullRequestsQuery, "issues": workspaceIssuesQuery, "cross": crossOverviewQuery} {
+	for name, query := range map[string]string{"overview": repositoryOverviewQuery, "pulls": workspacePullRequestsQuery, "issues": workspaceIssuesQuery, "cross": crossOverviewQuery, "board": repositoryBoardQuery} {
 		body, _ := json.Marshal(map[string]any{"query": query, "variables": map[string]any{"id": "1", "days": 90}})
 		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
