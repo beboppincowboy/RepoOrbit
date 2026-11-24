@@ -8,6 +8,7 @@ import { segGroupClass, segItemClass, warnNoteClass } from "@/components/reposit
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { RepositoryAccessUnverifiedError, fetchCrossRepositoryOverview, type CrossRepositoryOverview, type MetricWindow } from "@/lib/api";
 import {
+  crossRepositoryOverviewKey,
   currentAccessSeq,
   filterAggregateByVisibility,
   selectVisibleRows,
@@ -48,7 +49,7 @@ function Overview() {
   const { withheldCount: selectionWithheld, retryAt: selectionRetryAt } = selectWithheldSummary(metadata, selection, rows, visibility);
   const [fold, toggleFold] = useFold(`repoorbit:overview-fold:${viewerKeyOf(session)}`);
   const query = useQuery({
-    queryKey: ["crossRepositoryOverview", session.mode, session.user?.login, days],
+    queryKey: [...crossRepositoryOverviewKey(session), days],
     queryFn: async ({ signal }) => {
       const startedAtSeq = currentAccessSeq();
       const overview = await fetchCrossRepositoryOverview(days, signal);
