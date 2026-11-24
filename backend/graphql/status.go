@@ -41,12 +41,8 @@ type statusFields struct {
 	activity bool
 }
 
-func repositoryStatusSelection(ctx context.Context) statusFields {
-	if !graphql.HasOperationContext(ctx) {
-		return statusFields{metadata: true, activity: true}
-	}
-	var want statusFields
-	for _, f := range graphql.CollectFieldsCtx(ctx, []string{"Repository"}) {
+func collectRepositoryStatusFields(fields []graphql.CollectedField, want *statusFields) {
+	for _, f := range fields {
 		switch f.Name {
 		case "metadataStatus":
 			want.metadata = true
@@ -54,6 +50,14 @@ func repositoryStatusSelection(ctx context.Context) statusFields {
 			want.activity = true
 		}
 	}
+}
+
+func repositoryStatusSelection(ctx context.Context) statusFields {
+	if !graphql.HasOperationContext(ctx) {
+		return statusFields{metadata: true, activity: true}
+	}
+	var want statusFields
+	collectRepositoryStatusFields(graphql.CollectFieldsCtx(ctx, []string{"Repository"}), &want)
 	return want
 }
 
@@ -67,14 +71,7 @@ func selectedRepositoryStatusSelection(ctx context.Context) statusFields {
 		if f.Name != "nodes" {
 			continue
 		}
-		for _, child := range graphql.CollectFields(op, f.Selections, []string{"Repository"}) {
-			switch child.Name {
-			case "metadataStatus":
-				want.metadata = true
-			case "activity":
-				want.activity = true
-			}
-		}
+		collectRepositoryStatusFields(graphql.CollectFields(op, f.Selections, []string{"Repository"}), &want)
 	}
 	return want
 }
@@ -118,7 +115,6 @@ func (r *Resolver) loadSelectedStatuses(ctx context.Context, userID int64, nodes
 	return nil
 }
 
-// loadMetadataStatus sets MetadataStatus on every node the user has selected. Reads the database only.
 func (r *Resolver) loadMetadataStatus(ctx context.Context, userID int64, nodes []*model.Repository) error {
 	if len(nodes) == 0 {
 		return nil
@@ -137,7 +133,6 @@ func (r *Resolver) loadMetadataStatus(ctx context.Context, userID int64, nodes [
 	return nil
 }
 
-// loadActivityStatus sets Activity stream and evidence coverage on every node with an Activity struct. Reads the database only.
 func (r *Resolver) loadActivityStatus(ctx context.Context, nodes []*model.Repository) error {
 	if len(nodes) == 0 {
 		return nil

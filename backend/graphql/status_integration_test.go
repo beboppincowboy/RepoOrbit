@@ -10,11 +10,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
@@ -107,53 +105,35 @@ func TestEvidenceCoverageRequiresParentsAndChildren(t *testing.T) {
 }
 func ptr(s string) *string { return &s }
 
-type sqlRecorder struct {
-	mu      sync.Mutex
-	enabled bool
-	queries []string
-}
-
-func (r *sqlRecorder) start() {
-	r.mu.Lock()
-	r.queries = nil
-	r.enabled = true
-	r.mu.Unlock()
-}
-
-func (r *sqlRecorder) stop() []string {
-	r.mu.Lock()
-	r.enabled = false
-	out := append([]string(nil), r.queries...)
-	r.mu.Unlock()
-	return out
-}
-
-func (r *sqlRecorder) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	r.mu.Lock()
-	if r.enabled {
-		r.queries = append(r.queries, data.SQL)
-	}
-	r.mu.Unlock()
-	return ctx
-}
-
-func (*sqlRecorder) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-func countSQL(queries []string, substr string) int {
+func countMetadataStatusSQL(queries []string) int {
 	n := 0
 	for _, q := range queries {
-		if strings.Contains(q, substr) {
+		if strings.Contains(q, "repository_sync") || strings.Contains(q, "repo_metadata_refresh") {
 			n++
 		}
 	}
 	return n
 }
 
+func countActivityStatusSQL(queries []string) int {
+	n := 0
+	for _, q := range queries {
+		if strings.Contains(q, "FROM activity_resources") || strings.Contains(q, "FROM activity_children") ||
+			(strings.Contains(q, "archived") && strings.Contains(q, "FROM repositories")) {
+			n++
+		}
+	}
+	return n
+}
+
+func isRepoAccessBoundarySQL(q string) bool {
+	return strings.Contains(q, "access_fences") || strings.Contains(q, "PruneInstallations")
+}
+
 func countNonBoundaryWriteSQL(queries []string) int {
 	n := 0
 	for _, q := range queries {
-		// RepoAccess.Check owns installation pruning and access_fences initialization at the security boundary.
-		if strings.Contains(q, "access_fences") || strings.Contains(q, "PruneInstallations") {
+		if isRepoAccessBoundarySQL(q) {
 			continue
 		}
 		upper := strings.ToUpper(q)
@@ -171,11 +151,16 @@ func countNonBoundaryWriteSQL(queries []string) int {
 	return n
 }
 
-func newTracedGraphQLHarness(t *testing.T) (*evidenceHarness, *sqlRecorder, func(c *http.Client, query string, vars map[string]any) string) {
+func warmAccessCache(runVars func(c *http.Client, query string, vars map[string]any) string, rec *testutil.SQLRecorder, c *http.Client, query string, vars map[string]any) {
+	_ = runVars(c, query, vars)
+	_ = rec.Stop()
+}
+
+func newTracedGraphQLHarness(t *testing.T) (*evidenceHarness, *testutil.SQLRecorder, func(c *http.Client, query string, vars map[string]any) string) {
 	t.Helper()
 	ctx := context.Background()
 	h := newEvidenceHarness(t)
-	rec := &sqlRecorder{}
+	rec := &testutil.SQLRecorder{}
 	cfg, err := pgxpool.ParseConfig(h.dbURL)
 	if err != nil {
 		t.Fatal(err)
@@ -220,16 +205,16 @@ func newTracedGraphQLHarness(t *testing.T) (*evidenceHarness, *sqlRecorder, func
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Origin", "http://app.test")
 		req.Header.Set("X-CSRF-Token", session.CSRFToken)
-		rec.start()
+		rec.Start()
 		resp, err := c.Do(req)
 		if err != nil {
-			rec.stop()
+			rec.Stop()
 			t.Fatal(err)
 		}
 		defer resp.Body.Close()
 		b, err := io.ReadAll(resp.Body)
 		if err != nil {
-			rec.stop()
+			rec.Stop()
 			t.Fatal(err)
 		}
 		if resp.StatusCode != 200 {
@@ -240,7 +225,6 @@ func newTracedGraphQLHarness(t *testing.T) (*evidenceHarness, *sqlRecorder, func
 	return h, rec, runVars
 }
 
-// The 20-row metadata-only Selection request executes zero activity-status SQL queries and zero database writes.
 func TestSelectedRepositoriesMetadataOnlySkipsActivitySQL(t *testing.T) {
 	ctx := context.Background()
 	h, rec, runVars := newTracedGraphQLHarness(t)
@@ -271,12 +255,10 @@ func TestSelectedRepositoriesMetadataOnlySkipsActivitySQL(t *testing.T) {
 			endCursor hasNextPage withheld retryAt
 		}
 	}`
-	// Warm the per-viewer access cache so the traced run observes steady-state query execution.
-	_ = runVars(alice, metadataPageQuery, map[string]any{"after": nil})
-	_ = rec.stop()
+	warmAccessCache(runVars, rec, alice, metadataPageQuery, map[string]any{"after": nil})
 
 	raw := runVars(alice, metadataPageQuery, map[string]any{"after": nil})
-	queries := rec.stop()
+	queries := rec.Stop()
 
 	var resp struct {
 		Data struct {
@@ -306,28 +288,17 @@ func TestSelectedRepositoriesMetadataOnlySkipsActivitySQL(t *testing.T) {
 	if sr.Nodes[0].MetadataStatus == nil || sr.Nodes[0].MetadataStatus.LastSuccessAt == nil {
 		t.Fatalf("missing metadataStatus on first node: %+v", sr.Nodes[0])
 	}
-	if got := countSQL(queries, "ListActivityStatuses"); got != 0 {
-		t.Fatalf("expected 0 ListActivityStatuses queries, got %d", got)
+	if got := countActivityStatusSQL(queries); got != 0 {
+		t.Fatalf("expected 0 activity-status queries, got %d: %v", got, queries)
 	}
-	if got := countSQL(queries, "FROM activity_resources"); got != 0 {
-		t.Fatalf("expected 0 activity_resources queries, got %d", got)
-	}
-	if got := countSQL(queries, "FROM activity_children"); got != 0 {
-		t.Fatalf("expected 0 activity_children queries, got %d", got)
-	}
-	if got := countSQL(queries, "SELECT archived FROM repositories"); got != 0 {
-		t.Fatalf("expected 0 archived queries, got %d", got)
-	}
-	if got := countSQL(queries, "ListMetadataStatuses"); got != 1 {
-		t.Fatalf("expected 1 ListMetadataStatuses query, got %d", got)
+	if got := countMetadataStatusSQL(queries); got != 1 {
+		t.Fatalf("expected 1 metadata-status query, got %d: %v", got, queries)
 	}
 	if got := countNonBoundaryWriteSQL(queries); got != 0 {
 		t.Fatalf("expected 0 DB write statements outside RepoAccess boundary during GraphQL query, got %d: %v", got, queries)
 	}
 }
 
-// Demand-driven GraphQL loading covers metadata-only, activity-only, both, neither, aliases, fragments,
-// directives, and repositoryOverview without running unselected status queries.
 func TestGraphQLStatusDemandDrivenSelection(t *testing.T) {
 	ctx := context.Background()
 	h, rec, runVars := newTracedGraphQLHarness(t)
@@ -353,57 +324,55 @@ func TestGraphQLStatusDemandDrivenSelection(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Warm access cache.
-	_ = runVars(alice, `{ selectedRepositories(first: 1) { nodes { id } } }`, nil)
-	_ = rec.stop()
+	warmAccessCache(runVars, rec, alice, `{ selectedRepositories(first: 1) { nodes { id } } }`, nil)
 
 	idStr := fmt.Sprintf("%d", repoID)
 
 	t.Run("selectedRepositories_neither", func(t *testing.T) {
 		raw := runVars(alice, `{ selectedRepositories(first: 1) { nodes { id fullName } } }`, nil)
-		qs := rec.stop()
+		qs := rec.Stop()
 		if !strings.Contains(raw, `"fullName":"alice/demand"`) || strings.Contains(raw, `"errors"`) {
 			t.Fatalf("unexpected response: %s", raw)
 		}
-		if countSQL(qs, "ListMetadataStatuses") != 0 || countSQL(qs, "ListActivityStatuses") != 0 || countSQL(qs, "FROM activity_resources") != 0 {
+		if countMetadataStatusSQL(qs) != 0 || countActivityStatusSQL(qs) != 0 {
 			t.Fatalf("unexpected status queries for neither: %v", qs)
 		}
 	})
 
 	t.Run("selectedRepositories_activity_only", func(t *testing.T) {
 		raw := runVars(alice, `{ selectedRepositories(first: 1) { nodes { id activity { archived pullRequests { phase } reviews { complete pendingChildren } comments { complete failureCode } } } } }`, nil)
-		qs := rec.stop()
+		qs := rec.Stop()
 		for _, want := range []string{`"archived":true`, `"pullRequests":{"phase":"disabled"}`, `"pendingChildren":1`, `"comments":{"complete":false,"failureCode":"rate_limited"}`} {
 			if !strings.Contains(raw, want) {
 				t.Fatalf("activity-only missing %s: %s", want, raw)
 			}
 		}
-		if countSQL(qs, "ListMetadataStatuses") != 0 {
-			t.Fatalf("expected 0 ListMetadataStatuses for activity-only, got %d", countSQL(qs, "ListMetadataStatuses"))
+		if got := countMetadataStatusSQL(qs); got != 0 {
+			t.Fatalf("expected 0 metadata-status queries for activity-only, got %d", got)
 		}
-		if countSQL(qs, "ListActivityStatuses") == 0 {
-			t.Fatalf("expected ListActivityStatuses for activity-only")
+		if countActivityStatusSQL(qs) == 0 {
+			t.Fatalf("expected activity-status SQL for activity-only")
 		}
 	})
 
 	t.Run("selectedRepositories_aliased_nodes_union", func(t *testing.T) {
 		raw := runVars(alice, `{ selectedRepositories(first: 1) { a: nodes { metadataStatus { state } } b: nodes { activity { archived } } } }`, nil)
-		qs := rec.stop()
+		qs := rec.Stop()
 		if !strings.Contains(raw, `"metadataStatus":{"state":"not-scheduled"}`) || !strings.Contains(raw, `"archived":true`) {
 			t.Fatalf("aliased nodes missing fields: %s", raw)
 		}
-		if countSQL(qs, "ListMetadataStatuses") == 0 || countSQL(qs, "ListActivityStatuses") == 0 {
+		if countMetadataStatusSQL(qs) == 0 || countActivityStatusSQL(qs) == 0 {
 			t.Fatalf("expected both status loaders for aliased nodes union")
 		}
 	})
 
 	t.Run("selectedRepositories_merged_fragment_on_nodes", func(t *testing.T) {
 		raw := runVars(alice, `{ selectedRepositories(first: 1) { nodes { id } ... on RepositoryConnection { nodes { activity { archived } } } } }`, nil)
-		qs := rec.stop()
+		qs := rec.Stop()
 		if !strings.Contains(raw, `"archived":true`) {
 			t.Fatalf("merged fragment nodes missing activity: %s", raw)
 		}
-		if countSQL(qs, "ListMetadataStatuses") != 0 || countSQL(qs, "ListActivityStatuses") == 0 {
+		if countMetadataStatusSQL(qs) != 0 || countActivityStatusSQL(qs) == 0 {
 			t.Fatalf("expected activity only for merged fragment on nodes")
 		}
 	})
@@ -420,44 +389,44 @@ func TestGraphQLStatusDemandDrivenSelection(t *testing.T) {
 		fragment RepoMeta on Repository { metadataStatus { state } }`
 
 		rawSkipped := runVars(alice, q, map[string]any{"id": idStr, "skipActivity": true})
-		qsSkipped := rec.stop()
+		qsSkipped := rec.Stop()
 		if !strings.Contains(rawSkipped, `"metadataStatus":{"state":"not-scheduled"}`) || strings.Contains(rawSkipped, `"archived"`) {
 			t.Fatalf("skipped activity response: %s", rawSkipped)
 		}
-		if countSQL(qsSkipped, "ListMetadataStatuses") == 0 || countSQL(qsSkipped, "ListActivityStatuses") != 0 || countSQL(qsSkipped, "FROM activity_resources") != 0 {
+		if countMetadataStatusSQL(qsSkipped) == 0 || countActivityStatusSQL(qsSkipped) != 0 {
 			t.Fatalf("expected metadata only when activity skipped: %v", qsSkipped)
 		}
 
 		rawIncluded := runVars(alice, q, map[string]any{"id": idStr, "skipActivity": false})
-		qsIncluded := rec.stop()
+		qsIncluded := rec.Stop()
 		if !strings.Contains(rawIncluded, `"metadataStatus":{"state":"not-scheduled"}`) || !strings.Contains(rawIncluded, `"archived":true`) {
 			t.Fatalf("included activity response: %s", rawIncluded)
 		}
-		if countSQL(qsIncluded, "ListMetadataStatuses") == 0 || countSQL(qsIncluded, "ListActivityStatuses") == 0 {
+		if countMetadataStatusSQL(qsIncluded) == 0 || countActivityStatusSQL(qsIncluded) == 0 {
 			t.Fatalf("expected both loaders when activity included")
 		}
 	})
 
 	t.Run("repositoryOverview_never_loads_metadata_and_gates_activity", func(t *testing.T) {
 		rawNoActivity := runVars(alice, fmt.Sprintf(`{ repositoryOverview(id: "%s", days: 7) { fullName } }`, idStr), nil)
-		qsNoActivity := rec.stop()
+		qsNoActivity := rec.Stop()
 		if !strings.Contains(rawNoActivity, `"fullName":"alice/demand"`) {
 			t.Fatalf("overview without activity: %s", rawNoActivity)
 		}
-		if countSQL(qsNoActivity, "ListMetadataStatuses") != 0 || countSQL(qsNoActivity, "ListActivityStatuses") != 0 || countSQL(qsNoActivity, "FROM activity_resources") != 0 {
+		if countMetadataStatusSQL(qsNoActivity) != 0 || countActivityStatusSQL(qsNoActivity) != 0 {
 			t.Fatalf("overview without activity ran unexpected status SQL: %v", qsNoActivity)
 		}
 
 		rawWithActivity := runVars(alice, fmt.Sprintf(`{ repositoryOverview(id: "%s", days: 7) { fullName activity { archived pullRequests { phase } } } }`, idStr), nil)
-		qsWithActivity := rec.stop()
+		qsWithActivity := rec.Stop()
 		if !strings.Contains(rawWithActivity, `"archived":true`) || !strings.Contains(rawWithActivity, `"phase":"disabled"`) {
 			t.Fatalf("overview with activity: %s", rawWithActivity)
 		}
-		if countSQL(qsWithActivity, "ListMetadataStatuses") != 0 {
-			t.Fatalf("overview with activity must never run ListMetadataStatuses, got %d", countSQL(qsWithActivity, "ListMetadataStatuses"))
+		if got := countMetadataStatusSQL(qsWithActivity); got != 0 {
+			t.Fatalf("overview with activity must never run metadata-status SQL, got %d", got)
 		}
-		if countSQL(qsWithActivity, "ListActivityStatuses") == 0 {
-			t.Fatalf("overview with activity did not run ListActivityStatuses")
+		if countActivityStatusSQL(qsWithActivity) == 0 {
+			t.Fatalf("overview with activity did not run activity-status SQL")
 		}
 	})
 }
