@@ -125,9 +125,13 @@ func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (
 	}
 	return guardedRead(ctx, r.RepoAccess.Pool, auth, true, nil,
 		func() (*model.CrossRepositoryOverview, error) {
-			assignee, err := r.Queries.GetUserGithubID(ctx, user)
-			if err != nil {
-				return nil, fmt.Errorf("database unavailable")
+			var assignee int64
+			if len(auth.ids) > 0 {
+				var err error
+				assignee, err = r.Queries.GetUserGithubID(ctx, user)
+				if err != nil {
+					return nil, fmt.Errorf("database unavailable")
+				}
 			}
 			out, err := analytics.LoadCrossRepositoryOverview(ctx, r.RepoAccess.Pool, auth.ids, assignee, days, now)
 			if err != nil {

@@ -164,23 +164,12 @@ func (r *queryResolver) pullRequests(ctx context.Context, ids []string, first in
 		}
 		return &model.PullRequestEvidenceConnection{Nodes: page.nodes, EndCursor: page.endCursor, HasNextPage: page.hasNextPage}, nil
 	}
-	auth, err := r.authorizeSelected(ctx, args.ids)
-	if err != nil {
-		return nil, err
-	}
-	withhold := func() (*model.PullRequestEvidenceConnection, error) {
-		return &model.PullRequestEvidenceConnection{Nodes: []*model.PullRequestEvidence{}, Withheld: auth.withheld + len(auth.ids), RetryAt: auth.retryAtString()}, nil
-	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth, false, withhold, func() (*model.PullRequestEvidenceConnection, error) {
-		page, err := queryEvidencePage(ctx, r.RepoAccess.Pool, args.limit, sql, []any{auth.ids, args.after, args.limit + 1}, scan)
-		if err != nil {
-			return nil, err
-		}
+	return readGuardedEvidencePage(r, ctx, args, sql, scan, func(page pageData[model.PullRequestEvidence], withheld int, retryAt *string) *model.PullRequestEvidenceConnection {
 		return &model.PullRequestEvidenceConnection{
 			Nodes: page.nodes, EndCursor: page.endCursor, HasNextPage: page.hasNextPage,
-			Withheld: auth.withheld, RetryAt: auth.retryAtString(),
-		}, nil
-	}, withhold)
+			Withheld: withheld, RetryAt: retryAt,
+		}
+	})
 }
 
 func (r *queryResolver) reviews(ctx context.Context, ids []string, first int, after *string) (*model.ReviewEvidenceConnection, error) {
