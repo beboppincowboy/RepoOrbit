@@ -149,6 +149,7 @@ function RepositoryWorkspace() {
       if (display !== "partial") return false;
       const streams = [activity.issues, activity.pullRequests, activity.releases, activity.issueEvents?.traversal];
       const children = [activity.reviews, activity.comments];
+      if (streams.some(stream => stream?.jobState === "running" && stream.phase !== "current")) return 3000;
       const queued = streams.some(stream => stream?.jobState === "queued" && stream.phase !== "current")
         || children.some(child => child && !child.complete && child.nextAttemptAt);
       return queued ? 10000 : false;
@@ -285,7 +286,7 @@ function RepositoryWorkspace() {
   if (unavailable || !overview || !sync) return <div className="flex h-full min-h-0 flex-col gap-3">
     <section className={`${card} flex flex-none flex-wrap items-center gap-3 p-4`}>
       <Ico>{icons.repo}</Ico>
-      <h1 className="text-[19px] leading-[1.2]">{row?.repo.fullName || "Repository"}</h1>
+      <h1 className="text-[19px] leading-[1.2]">{unavailable ? "Repository" : row?.repo.fullName || "Repository"}</h1>
       {unavailable && <SyncStatus compact syncState="awaiting-sync" withheld={1} retryAt={retryAt} />}
     </section>
     <section aria-label="Repository overview" className={`${card} p-4`}>
