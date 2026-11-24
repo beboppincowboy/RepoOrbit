@@ -144,7 +144,7 @@ function RepositoryWorkspace() {
         return data;
       } catch (error) {
         if (!signal.aborted) {
-          recordOverviewUnavailable(queryClient, session, repositoryId, error);
+          recordOverviewUnavailable(queryClient, session, repositoryId, error, startedAtSeq);
         }
         throw error;
       }

@@ -90,6 +90,11 @@ function newerRejection(
   return outcome && outcome.status !== "verified" && outcome.seq > sinceSeq ? outcome : null;
 }
 
+// A denial recorded after a read started outranks that read's "unverified" answer: the older read cannot relist it.
+function newerDenial(outcome: RepositoryAccessOutcome | undefined, sinceSeq: number): boolean {
+  return newerRejection(outcome, sinceSeq)?.status === "denied";
+}
+
 function bumpViewerGeneration(viewerKey: string): number {
   const next = (generationByViewer.get(viewerKey) ?? 0) + 1;
   generationByViewer.set(viewerKey, next);
@@ -383,6 +388,7 @@ function applyDetailOutcomes(
       queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
       clearRepositoryIssueDrafts(viewerKey, repositoryId);
     } else if (detail.state === "access-unverified") {
+      if (newerDenial(existing, startedAtSeq)) continue;
       ensureNext().set(repositoryId, { status: "unverified", retryAt: detail.retryAt, seq: nextAccessSeq() });
       if (!detail.retryAt) {
         queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
@@ -409,9 +415,10 @@ export function recordAccessUnverified(
   session: ViewerSession,
   repositoryId: string,
   retryAt: string | null,
-  opts: { preserveSnapshot?: boolean } = {},
+  opts: { preserveSnapshot?: boolean; startedAtSeq?: number } = {},
 ): void {
   const viewerKey = viewerKeyOf(session);
+  if (opts.startedAtSeq !== undefined && newerDenial(getViewerVisibility(viewerKey).get(repositoryId), opts.startedAtSeq)) return;
   setViewerOutcome(viewerKey, repositoryId, { status: "unverified", retryAt, seq: nextAccessSeq() });
   if (!opts.preserveSnapshot) {
     queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
@@ -448,9 +455,10 @@ export function recordOverviewUnavailable(
   session: ViewerSession,
   repositoryId: string,
   error: unknown,
+  startedAtSeq: number,
 ): void {
   if (error instanceof RepositoryAccessUnverifiedError) {
-    recordAccessUnverified(queryClient, session, repositoryId, error.retryAt, { preserveSnapshot: Boolean(error.retryAt) });
+    recordAccessUnverified(queryClient, session, repositoryId, error.retryAt, { preserveSnapshot: Boolean(error.retryAt), startedAtSeq });
     return;
   }
   if (error instanceof GraphQLUnavailableError) {

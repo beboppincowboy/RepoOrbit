@@ -369,3 +369,39 @@ test('all-withheld metadata page still advances its cursor to load the next page
   await expect(sidebar(page).getByRole('link', { name: 'repo-11', exact: true })).toBeVisible();
   expect(cursors).toContain('10');
 });
+
+test('a rate-limited detail check that started before a workspace denial cannot list the denied repository again', async ({ page }) => {
+  await mockSession(page, signedIn);
+  const retryAt = new Date(Date.now() + 600_000).toISOString();
+  let releaseDetails!: () => void;
+  const details = new Promise<void>(resolve => { releaseDetails = resolve; });
+
+  await page.route('**/graphql', async route => {
+    const { query, variables } = route.request().postDataJSON();
+    if (String(query).startsWith('query SelectedRepositories')) {
+      return route.fulfill({
+        json: { data: { selectedRepositories: { nodes: [selectedRepo('1'), selectedRepo('2')], endCursor: '2', hasNextPage: false, withheld: 0, retryAt: null } } },
+      });
+    }
+    if (String(query).startsWith('query RepositoryDetails')) {
+      await details;
+      return route.fulfill({
+        json: {
+          data: { a0: null, r0: { nodes: [], hasNextPage: false, withheld: 1, retryAt }, a1: { activity: fullActivity }, r1: issuePage('2') },
+          errors: [{ message: 'Rate limited', path: ['a0'], extensions: { code: 'ACCESS_UNVERIFIED', retryAt } }],
+        },
+      });
+    }
+    if (String(query).startsWith('query RepositoryOverview')) {
+      return route.fulfill({ json: { data: { repositoryOverview: variables.id === '1' ? null : repoOverview(variables.id) } } });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/workspace/1');
+  await expect(page.getByRole('heading', { name: 'Repository', exact: true })).toBeVisible();
+  releaseDetails();
+  await expect(sidebar(page).locator('a[href*="/workspace/2"]')).toHaveAttribute('title', 'repo-2 · Synced');
+  await expect(sidebar(page).locator('a[href*="/workspace/1"]')).toHaveCount(0);
+  await expect(sidebar(page).getByText('Waiting for GitHub')).toHaveCount(0);
+});

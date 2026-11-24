@@ -77,7 +77,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
         return result;
       } catch (error) {
         if (!signal.aborted && error instanceof RepositoryAccessUnverifiedError) {
-          recordAccessUnverified(queryClient, session, repositoryId, error.retryAt, { preserveSnapshot: Boolean(error.retryAt) });
+          recordAccessUnverified(queryClient, session, repositoryId, error.retryAt, { preserveSnapshot: Boolean(error.retryAt), startedAtSeq });
         }
         throw error;
       }
