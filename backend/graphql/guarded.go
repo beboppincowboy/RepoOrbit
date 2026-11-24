@@ -55,7 +55,7 @@ func (a guardedAuth) retryAtString() *string {
 	if a.retryAt.IsZero() {
 		return nil
 	}
-	s := a.retryAt.UTC().Format(time.RFC3339)
+	s := stamp(a.retryAt)
 	return &s
 }
 
@@ -65,11 +65,17 @@ func (r *Resolver) authorizeSelected(ctx context.Context, rawIDs []int64) (guard
 	if err != nil {
 		return a, err
 	}
-	snap, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, user)
+	if len(rawIDs) == 0 {
+		return guardedAuth{userID: user}, nil
+	}
+	selected, err := r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: user, RepositoryIds: rawIDs})
 	if err != nil {
 		return a, fmt.Errorf("database unavailable")
 	}
-	selected, err := r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: user, RepositoryIds: rawIDs})
+	if len(selected) == 0 {
+		return guardedAuth{userID: user}, nil
+	}
+	snap, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, user)
 	if err != nil {
 		return a, fmt.Errorf("database unavailable")
 	}
@@ -112,8 +118,6 @@ func (r *Resolver) finishAuth(ctx context.Context, user int64, selected []int64,
 	}
 }
 
-// guardedRead runs a database read inside a pre/post access-fence bracket so callers never observe
-// rows if the access fence moved or could not be verified.
 func guardedRead[T any](
 	ctx context.Context,
 	pool *pgxpool.Pool,
@@ -157,15 +161,15 @@ func queryEvidencePage[N any](
 		return pageData[N]{}, fmt.Errorf("database unavailable")
 	}
 	defer rows.Close()
-	out := pageData[N]{nodes: []*N{}}
+	out := pageData[N]{nodes: make([]*N, 0, limit)}
 	for rows.Next() {
-		id, node, err := scanRow(rows)
-		if err != nil {
-			return pageData[N]{}, fmt.Errorf("database unavailable")
-		}
 		if len(out.nodes) == limit {
 			out.hasNextPage = true
 			break
+		}
+		id, node, err := scanRow(rows)
+		if err != nil {
+			return pageData[N]{}, fmt.Errorf("database unavailable")
 		}
 		cursor := strconv.FormatInt(id, 10)
 		out.endCursor = &cursor
@@ -175,6 +179,31 @@ func queryEvidencePage[N any](
 		return pageData[N]{}, fmt.Errorf("database unavailable")
 	}
 	return out, nil
+}
+
+func readGuardedEvidencePage[N any, C any](
+	r *queryResolver,
+	ctx context.Context,
+	args listQueryArgs,
+	sql string,
+	scanRow func(pgx.Rows) (int64, *N, error),
+	buildConn func(page pageData[N], withheld int, retryAt *string) C,
+) (C, error) {
+	var zero C
+	auth, err := r.authorizeSelected(ctx, args.ids)
+	if err != nil {
+		return zero, err
+	}
+	withhold := func() (C, error) {
+		return buildConn(pageData[N]{nodes: []*N{}}, auth.withheld+len(auth.ids), auth.retryAtString()), nil
+	}
+	return guardedRead(ctx, r.RepoAccess.Pool, auth, false, withhold, func() (C, error) {
+		page, err := queryEvidencePage(ctx, r.RepoAccess.Pool, args.limit, sql, []any{auth.ids, args.after, args.limit + 1}, scanRow)
+		if err != nil {
+			return zero, err
+		}
+		return buildConn(page, auth.withheld, auth.retryAtString()), nil
+	}, withhold)
 }
 
 func readEvidenceList[N any, C any](
@@ -197,18 +226,5 @@ func readEvidenceList[N any, C any](
 	if r.Demo {
 		return buildConn(pageData[N]{nodes: []*N{}}, 0, nil), nil
 	}
-	auth, err := r.authorizeSelected(ctx, args.ids)
-	if err != nil {
-		return zero, err
-	}
-	withhold := func() (C, error) {
-		return buildConn(pageData[N]{nodes: []*N{}}, auth.withheld+len(auth.ids), auth.retryAtString()), nil
-	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth, false, withhold, func() (C, error) {
-		page, err := queryEvidencePage(ctx, r.RepoAccess.Pool, args.limit, sql, []any{auth.ids, args.after, args.limit + 1}, scanRow)
-		if err != nil {
-			return zero, err
-		}
-		return buildConn(page, auth.withheld, auth.retryAtString()), nil
-	}, withhold)
+	return readGuardedEvidencePage(r, ctx, args, sql, scanRow, buildConn)
 }
