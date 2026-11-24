@@ -33,6 +33,7 @@ type ActivityChild struct {
 type ActivityCleanup struct {
 	RepositoryID int64
 	Version      int64
+	WipeUsers    []int64
 }
 
 type ActivityComment struct {
@@ -262,4 +263,22 @@ type WebhookDelivery struct {
 	DeliveryID string
 	Event      string
 	ReceivedAt pgtype.Timestamptz
+}
+
+type WriteOperation struct {
+	ID                   int64
+	UserID               int64
+	RepositoryID         int64
+	IdempotencyKey       string
+	Kind                 string
+	IssueNumber          pgtype.Int8
+	RequestHash          []byte
+	ContentHash          []byte
+	HasRequestedMetadata bool
+	Draft                []byte
+	State                string
+	Outcome              []byte
+	SentAt               pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
 }

@@ -222,39 +222,8 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 				if err := registerChild(ctx, tx, repoID, "comments", issue.Number, issue.Number, firstPass, now); err != nil {
 					return err
 				}
-				actorID, actorLogin, actorType, err := evidenceActor(issue.User)
-				if err != nil {
+				if err := ProjectIssue(ctx, tx, repoID, issue); err != nil {
 					return err
-				}
-				var inserted int64
-				err = tx.QueryRow(ctx, `INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, closed_at, author_id, author_login, author_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (source_id) DO UPDATE SET title=EXCLUDED.title,state=EXCLUDED.state,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,closed_at=EXCLUDED.closed_at,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_issues.repository_id=EXCLUDED.repository_id AND activity_issues.updated_at < EXCLUDED.updated_at RETURNING source_id`, issue.ID, repoID, issue.Number, issue.Title, issue.State, issue.HTMLURL, issue.CreatedAt, issue.UpdatedAt, issue.ClosedAt, actorID, actorLogin, actorType).Scan(&inserted)
-				if errors.Is(err, pgx.ErrNoRows) {
-					continue
-				}
-				if err != nil {
-					return err
-				}
-				if _, err = tx.Exec(ctx, `DELETE FROM activity_issue_labels WHERE issue_id=$1`, issue.ID); err != nil {
-					return err
-				}
-				for _, label := range issue.Labels {
-					if label.ID <= 0 {
-						return errors.New("invalid issue label")
-					}
-					if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_labels(issue_id,source_id,name) VALUES($1,$2,$3)`, issue.ID, label.ID, label.Name); err != nil {
-						return err
-					}
-				}
-				if _, err = tx.Exec(ctx, `DELETE FROM activity_issue_assignees WHERE issue_id=$1`, issue.ID); err != nil {
-					return err
-				}
-				for _, assignee := range issue.Assignees {
-					if assignee.ID <= 0 {
-						return errors.New("invalid issue assignee")
-					}
-					if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_assignees(issue_id,source_id,login,type) VALUES($1,$2,$3,$4)`, issue.ID, assignee.ID, assignee.Login, assignee.Type); err != nil {
-						return err
-					}
 				}
 			}
 			_, err := tx.Exec(ctx, `UPDATE activity_resources SET scan_started_at=COALESCE(scan_started_at,$3), current_scan=ARRAY(SELECT DISTINCT x FROM unnest(current_scan || $4::bigint[]) AS x ORDER BY x), last_error_code=NULL WHERE repository_id=$1 AND resource=$2`, repoID, "issues", scanTime, ids)
@@ -287,4 +256,67 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 		return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeUnverified}
 	}
 	return &jobs.Pause{Reason: CodeNoCredential}
+}
+
+// ProjectIssue upserts one GitHub issue (from a sync page or a create response) with its labels and assignees into the
+// activity projection, inside tx. The caller must already have checked its access fence in tx (a sync: claim fence
+// and accessfence StillCurrent; a write: StillCurrent); ProjectIssue does not check it. The caller must skip pull requests (issue.PullRequest).
+// A stored copy that is as new or newer, or a tombstoned issue, is left alone and nil returned: a sync page may have
+// been fetched before the stored copy. An invalid author, label or assignee is an error.
+func ProjectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue) error {
+	return projectIssue(ctx, tx, repoID, issue, false)
+}
+
+// LockIssue takes the per-issue write lock for the rest of tx: issue-write readbacks hold it while they project
+// GitHub's confirmed copy, and a signed issue deletion takes it before its tombstone, so neither misses the other's
+// uncommitted write. It is reentrant within one transaction.
+func LockIssue(ctx context.Context, tx pgx.Tx, repoID, number int64) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('issue-write:%s:%s', $1::bigint, $2::bigint), 0))`, repoID, number)
+	return err
+}
+
+// ProjectConfirmedIssue is ProjectIssue for an issue read back right after a confirmed write, by a caller that
+// serializes readbacks of that issue (so the later readback is projected last). It also replaces a stored copy with
+// the same updated_at: GitHub's timestamps have one-second resolution, so an edit in the same second
+// as the stored copy would otherwise be lost.
+func ProjectConfirmedIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue) error {
+	return projectIssue(ctx, tx, repoID, issue, true)
+}
+
+func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue, sameSecond bool) error {
+	actorID, actorLogin, actorType, err := evidenceActor(issue.User)
+	if err != nil {
+		return err
+	}
+	var inserted int64
+	err = tx.QueryRow(ctx, `INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, closed_at, author_id, author_login, author_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (source_id) DO UPDATE SET title=EXCLUDED.title,state=EXCLUDED.state,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,closed_at=EXCLUDED.closed_at,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_issues.repository_id=EXCLUDED.repository_id AND (activity_issues.updated_at < EXCLUDED.updated_at OR ($13 AND activity_issues.updated_at = EXCLUDED.updated_at)) RETURNING source_id`, issue.ID, repoID, issue.Number, issue.Title, issue.State, issue.HTMLURL, issue.CreatedAt, issue.UpdatedAt, issue.ClosedAt, actorID, actorLogin, actorType, sameSecond).Scan(&inserted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // the stored copy is as new or newer, or the issue is tombstoned
+	}
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM activity_issue_labels WHERE issue_id=$1`, issue.ID); err != nil {
+		return err
+	}
+	for _, label := range issue.Labels {
+		if label.ID <= 0 {
+			return errors.New("invalid issue label")
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_labels(issue_id,source_id,name) VALUES($1,$2,$3)`, issue.ID, label.ID, label.Name); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM activity_issue_assignees WHERE issue_id=$1`, issue.ID); err != nil {
+		return err
+	}
+	for _, assignee := range issue.Assignees {
+		if assignee.ID <= 0 {
+			return errors.New("invalid issue assignee")
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_assignees(issue_id,source_id,login,type) VALUES($1,$2,$3,$4)`, issue.ID, assignee.ID, assignee.Login, assignee.Type); err != nil {
+			return err
+		}
+	}
+	return nil
 }

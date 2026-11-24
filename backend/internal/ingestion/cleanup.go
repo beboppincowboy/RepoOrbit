@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rsa"
 	"errors"
+	"log"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -24,7 +26,32 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 	if err != nil {
 		return jobs.Permanent(err)
 	}
+	// Every deferral first wipes the drafts this cleanup was told to (a revoked installation's holders), so they never
+	// wait on a complete inventory: one suspended installation anywhere fails every inventory. The shared projection
+	// still waits. A covered holder loses drafts too; that is the fail-closed side. wipe_users is cleared only if no
+	// invalidation arrived meanwhile (version unchanged). The wipe commits through the claim fence like every other
+	// cleanup effect: a worker that lost its claim wipes nothing and returns ErrLostClaim.
 	retry := func(at time.Time) error {
+		if err := fence.Commit(ctx, func(tx pgx.Tx) error {
+			var version int64
+			err := tx.QueryRow(ctx, `WITH c AS (SELECT c.version, c.wipe_users FROM activity_cleanup c JOIN repositories r ON r.id = c.repository_id
+				WHERE c.repository_id = $1 AND r.is_private AND c.wipe_users <> '{}'), w AS (
+				UPDATE write_operations o SET draft = NULL, outcome = redacted_write_outcome(o.outcome) FROM c
+				WHERE o.repository_id = $1 AND o.draft IS NOT NULL AND o.user_id = ANY(c.wipe_users))
+				SELECT version FROM c`, repoID).Scan(&version)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, `UPDATE activity_cleanup SET wipe_users = '{}' WHERE repository_id = $1 AND version = $2`, repoID, version)
+			return err
+		}); errors.Is(err, jobs.ErrLostClaim) {
+			return err
+		} else if err != nil {
+			log.Printf("ingestion: cleanup draft wipe for repository %d: %v", repoID, err)
+		}
 		if at.IsZero() {
 			at = d.Clock.Now().Add(time.Minute)
 		}
@@ -65,11 +92,36 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 	if !reflect.DeepEqual(first, second) {
 		return retry(time.Time{})
 	}
-	present := false
-	for _, ids := range second {
-		for _, id := range ids {
-			if id == repoID {
-				present = true
+	covering := []int64{} // installations whose inventory includes the repository
+	for inst, ids := range second {
+		if slices.Contains(ids, repoID) {
+			covering = append(covering, inst)
+		}
+	}
+	present := len(covering) > 0
+	// Holding a covering installation is not access: GitHub grants a member only the covered repositories they can
+	// see themselves. Of the actors a covering installation names, keep the drafts of exactly those a fresh check
+	// still allows; an unverifiable check defers the whole cleanup, as an incomplete inventory does.
+	keep := []int64{}
+	if private && present {
+		rows, err := d.Pool.Query(ctx, `SELECT DISTINCT o.user_id FROM write_operations o JOIN installations i ON i.user_id = o.user_id
+			WHERE o.repository_id = $1 AND o.draft IS NOT NULL AND i.installation_id = ANY($2) ORDER BY o.user_id`, repoID, covering)
+		if err != nil {
+			return retry(time.Time{})
+		}
+		actors, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			return retry(time.Time{})
+		}
+		for _, uid := range actors {
+			if d.Access == nil {
+				return retry(time.Time{})
+			}
+			switch dec := d.Access.CheckOne(ctx, uid, repoID, true); {
+			case dec.Unverified:
+				return retry(dec.RetryAt)
+			case dec.Allowed:
+				keep = append(keep, uid)
 			}
 		}
 	}
@@ -92,6 +144,14 @@ func (d *Deps) CleanupPrivate(ctx context.Context, job jobs.Job, fence jobs.Clai
 		}
 		if liveVersion != version || livePrivate != private {
 			return errRace
+		}
+		// Every actor not confirmed above lost private access: their issue-write drafts go and their outcomes are
+		// redacted (everyone's when no installation covers). An access change since the check bumps the version.
+		if private {
+			if _, err = tx.Exec(ctx, `UPDATE write_operations SET draft=NULL, outcome=redacted_write_outcome(outcome) WHERE repository_id=$1 AND draft IS NOT NULL
+				AND NOT (user_id = ANY($2))`, repoID, keep); err != nil {
+				return err
+			}
 		}
 		if private && !present {
 			if _, err = tx.Exec(ctx, `DELETE FROM activity_children WHERE repository_id=$1`, repoID); err != nil {

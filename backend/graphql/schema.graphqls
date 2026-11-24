@@ -9,7 +9,7 @@ type MetadataStatus { state: String!, lastSuccessAt: String, nextAttemptAt: Stri
 # Activity (issues, pull requests, history) is synchronized separately from metadata; until activity ingestion exists synchronized is false for real repositories whatever the metadata state.
 type ActivityStatus { synchronized: Boolean!, message: String!, issues: ActivityResourceStatus, futureResources: [String!]! }
 type ActivityResourceStatus { phase: String!, boundary: String!, catchupThrough: String, lastSuccessAt: String, failureCode: String, jobState: String!, nextAttemptAt: String }
-type Issue { id: ID!, repositoryId: ID!, title: String!, state: String! }
+type Issue { id: ID!, repositoryId: ID!, number: Int!, title: String!, state: String!, url: String!, authorLogin: String, updatedAt: String!, labels: [String!]!, assignees: [String!]! }
 # endCursor is the id of the last stored row scanned (even if access filtering hid it), so pass it as `after` to continue; null when the page held no rows.
 # withheld counts items hidden because access could not be verified; retryAt (RFC 3339) is set when that is a rate limit.
 type RepositoryConnection { nodes: [Repository!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }

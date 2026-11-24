@@ -203,7 +203,8 @@ func runDuties(ctx context.Context, clock jobs.Clock, sleep func(context.Context
 
 // StartScheduler registers the star reconcile handler on the worker and starts the periodic reconciliation loop:
 // at startup and then every 15 minutes it schedules refreshes of every followed repository and resumes paused ones;
-// hourly it schedules star reconciliation for users who follow starred repositories. Due times are spread by jitter.
+// hourly it schedules star reconciliation for users who follow starred repositories and deletes issue-write operations
+// past writeOperationRetention. Due times are spread by jitter.
 // It only writes job rows (Enqueue never revives dead work); the jobs worker executes them, two at a time. The
 // returned channel closes when the loop has stopped (ctx done).
 func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
@@ -230,6 +231,7 @@ func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
 			{name: "metadata poll", every: MetadataPollInterval, run: d.pollMetadata},
 			{name: "activity poll", every: MetadataPollInterval, run: d.pollActivity},
 			{name: "star", every: StarReconcileInterval, run: d.scheduleStars},
+			{name: "write operation retention", every: StarReconcileInterval, run: d.expireWriteOperations},
 		})
 	}()
 	return done
@@ -300,5 +302,24 @@ func (d SchedulerDeps) pollActivity(ctx context.Context, now time.Time) error {
 			}
 		}
 		return nil
+	})
+}
+
+// writeOperationRetention is the age, measured from write_operations.created_at, after which a succeeded or failed
+// issue-write operation is deleted and an unresolved one is wiped and redacted (and then kept indefinitely).
+const writeOperationRetention = 30 * 24 * time.Hour
+
+// expireWriteOperations deletes succeeded and failed issue-write operations older than writeOperationRetention, and
+// wipes and redacts the rest of that age. Those are unresolved (pending or unknown), and an unknown create must stay: its
+// content hash is what stops a retry of the same content from creating a second issue.
+func (d SchedulerDeps) expireWriteOperations(ctx context.Context, now time.Time) error {
+	cutoff := now.Add(-writeOperationRetention)
+	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `DELETE FROM write_operations WHERE created_at < $1 AND state IN ('succeeded', 'failed')`, cutoff); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE write_operations SET draft = NULL, outcome = redacted_write_outcome(outcome)
+			WHERE created_at < $1 AND (draft IS NOT NULL OR NOT outcome ? 'redacted')`, cutoff)
+		return err
 	})
 }

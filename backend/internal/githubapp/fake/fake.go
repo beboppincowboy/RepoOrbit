@@ -43,6 +43,9 @@ type Server struct {
 	comments     map[int64]map[int64][]CommentFixture
 	releases     map[int64][]ReleaseFixture
 	issueEvents  map[int64][]IssueEventFixture
+	perms        map[int64]map[string]string // repository -> login -> granted level (read, triage, write, maintain, admin)
+	writeFault   IssueWriteFault
+	writeTokens  []string
 	limitedUntil time.Time // API calls fail with a rate limit until this time
 	failing      bool      // API calls fail with 502
 	hits         map[string]int
@@ -61,6 +64,7 @@ type IssueFixture struct {
 	Title       string       `json:"title"`
 	State       string       `json:"state"`
 	HTMLURL     string       `json:"html_url"`
+	Body        string       `json:"body"`
 	CreatedAt   time.Time    `json:"created_at"`
 	UpdatedAt   time.Time    `json:"updated_at"`
 	ClosedAt    *time.Time   `json:"closed_at"`
@@ -91,7 +95,7 @@ type install struct {
 type grant struct{ challenge, login string }
 
 func New(clientID, clientSecret string) *Server {
-	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, stars: map[string]map[int64]bool{}, issues: map[int64][]IssueFixture{}, pulls: map[int64][]PullRequestFixture{}, reviews: map[int64]map[int64][]ReviewFixture{}, comments: map[int64]map[int64][]CommentFixture{}, releases: map[int64][]ReleaseFixture{}, issueEvents: map[int64][]IssueEventFixture{}, hits: map[string]int{}}
+	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, stars: map[string]map[int64]bool{}, issues: map[int64][]IssueFixture{}, pulls: map[int64][]PullRequestFixture{}, reviews: map[int64]map[int64][]ReviewFixture{}, comments: map[int64]map[int64][]CommentFixture{}, releases: map[int64][]ReleaseFixture{}, issueEvents: map[int64][]IssueEventFixture{}, perms: map[int64]map[string]string{}, hits: map[string]int{}}
 }
 
 // Refreshes reports how many refresh-token exchanges were accepted.
@@ -119,6 +123,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/user/installations/{id}/repositories", s.api(s.installationRepos))
 	mux.HandleFunc("/repositories/{id}", s.api(s.repoByID))
 	mux.HandleFunc("/repos/{owner}/{repo}/issues", s.api(s.repoIssues))
+	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}", s.api(s.issueByNumber))
+	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/labels", s.api(s.issueLabels))
+	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/labels/{name}", s.api(s.issueLabels))
+	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/assignees", s.api(s.issueAssignees))
+	mux.HandleFunc("/repos/{owner}/{repo}/assignees/{login}", s.api(s.assignable))
 	mux.HandleFunc("/repos/{owner}/{repo}/releases", s.api(s.repoActivity))
 	mux.HandleFunc("/repos/{owner}/{repo}/issues/events", s.api(s.repoActivity))
 	mux.HandleFunc("/repos/{owner}/{repo}/pulls", s.api(s.repoActivity))
@@ -361,9 +370,12 @@ func (s *Server) canRead(login string, r *repo) bool {
 	return false
 }
 
-func (s *Server) json(r *repo) map[string]any {
-	return map[string]any{"id": r.id, "name": r.name, "full_name": r.owner + "/" + r.name, "description": r.desc, "private": r.private,
-		"owner": map[string]any{"id": idFor(r.owner), "login": r.owner, "type": "User"}}
+// json renders a repository as login sees it, including that login's permissions (none for an installation token).
+func (s *Server) json(r *repo, login string) map[string]any {
+	level := s.level(login, r)
+	return map[string]any{"id": r.id, "name": r.name, "full_name": r.owner + "/" + r.name, "description": r.desc, "private": r.private, "has_issues": true,
+		"owner":       map[string]any{"id": idFor(r.owner), "login": r.owner, "type": "User"},
+		"permissions": map[string]bool{"pull": level != "", "triage": atLeast(level, "triage"), "push": atLeast(level, "write"), "maintain": atLeast(level, "maintain"), "admin": level == "admin"}}
 }
 
 // page slices items for ?page&per_page and sets a Link header when more remain.
@@ -387,7 +399,7 @@ func page[T any](w http.ResponseWriter, r *http.Request, items []T) []T {
 	return items[lo:hi]
 }
 
-func (s *Server) sortedRepos(keep func(*repo) bool) []map[string]any {
+func (s *Server) sortedRepos(login string, keep func(*repo) bool) []map[string]any {
 	var ids []int64
 	for id, r := range s.repos {
 		if keep(r) {
@@ -397,14 +409,14 @@ func (s *Server) sortedRepos(keep func(*repo) bool) []map[string]any {
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	out := []map[string]any{}
 	for _, id := range ids {
-		out = append(out, s.json(s.repos[id]))
+		out = append(out, s.json(s.repos[id], login))
 	}
 	return out
 }
 
 func (s *Server) userRepos(w http.ResponseWriter, r *http.Request, login string) {
 	s.mu.Lock()
-	items := s.sortedRepos(func(x *repo) bool { return x.owner == login && s.canRead(login, x) })
+	items := s.sortedRepos(login, func(x *repo) bool { return x.owner == login && s.canRead(login, x) })
 	s.mu.Unlock()
 	writeJSON(w, page(w, r, items))
 }
@@ -412,7 +424,7 @@ func (s *Server) userRepos(w http.ResponseWriter, r *http.Request, login string)
 // userStarred lists the stars the token can read: public ones, and private ones only where it can read them.
 func (s *Server) userStarred(w http.ResponseWriter, r *http.Request, login string) {
 	s.mu.Lock()
-	items := s.sortedRepos(func(x *repo) bool { return s.stars[login][x.id] && s.canRead(login, x) })
+	items := s.sortedRepos(login, func(x *repo) bool { return s.stars[login][x.id] && s.canRead(login, x) })
 	s.mu.Unlock()
 	writeJSON(w, page(w, r, items))
 }
@@ -443,7 +455,7 @@ func (s *Server) installationRepos(w http.ResponseWriter, r *http.Request, login
 		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 		return
 	}
-	items := s.sortedRepos(func(x *repo) bool { return in.repos[x.id] && s.canRead(login, x) })
+	items := s.sortedRepos(login, func(x *repo) bool { return in.repos[x.id] && s.canRead(login, x) })
 	s.mu.Unlock()
 	writeJSON(w, map[string]any{"total_count": len(items), "repositories": page(w, r, items)})
 }
@@ -453,7 +465,7 @@ func (s *Server) repoByID(w http.ResponseWriter, r *http.Request, login string) 
 	s.mu.Lock()
 	x, ok := s.repos[id]
 	if ok && s.canRead(login, x) {
-		out := s.json(x)
+		out := s.json(x, login)
 		s.mu.Unlock()
 		writeJSON(w, out)
 		return
@@ -463,6 +475,10 @@ func (s *Server) repoByID(w http.ResponseWriter, r *http.Request, login string) 
 }
 
 func (s *Server) repoIssues(w http.ResponseWriter, r *http.Request, login string) {
+	if r.Method == http.MethodPost {
+		s.createIssue(w, r, login)
+		return
+	}
 	if r.URL.Query().Get("state") != "all" {
 		http.Error(w, `{"message":"Bad Request"}`, http.StatusBadRequest)
 		return
@@ -502,13 +518,7 @@ func (s *Server) repoIssues(w http.ResponseWriter, r *http.Request, login string
 	}
 	out := make([]map[string]any, 0, hi-lo)
 	for _, issue := range items[lo:hi] {
-		entry := map[string]any{"id": issue.ID, "number": issue.Number, "title": issue.Title, "state": issue.State,
-			"html_url": issue.HTMLURL, "created_at": issue.CreatedAt, "updated_at": issue.UpdatedAt, "closed_at": issue.ClosedAt, "user": issue.User,
-			"labels": issue.Labels, "assignees": issue.Assignees}
-		if issue.PullRequest {
-			entry["pull_request"] = map[string]string{"url": fmt.Sprintf("%s://%s/repos/%s/%s/pulls/%d", scheme, r.Host, r.PathValue("owner"), r.PathValue("repo"), issue.Number)}
-		}
-		out = append(out, entry)
+		out = append(out, issueJSON(r, issue))
 	}
 	writeJSON(w, out)
 }
@@ -619,7 +629,7 @@ func (s *Server) appRepositories(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", 401)
 		return
 	}
-	items := s.sortedRepos(func(x *repo) bool { return in.repos[x.id] })
+	items := s.sortedRepos("", func(x *repo) bool { return in.repos[x.id] })
 	s.mu.Unlock()
 	writeJSON(w, map[string]any{"total_count": len(items), "repositories": page(w, r, items)})
 }

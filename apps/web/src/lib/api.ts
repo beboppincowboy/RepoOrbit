@@ -39,6 +39,13 @@ export const sessionQuery = { queryKey: ["session"], queryFn: fetchViewerSession
 export async function logout() {
   const response = await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
   if (!response.ok) throw new Error("Could not sign out. Try again.");
+  if (typeof window !== "undefined") {
+    try {
+      for (const key of Object.keys(window.localStorage)) {
+        if (key.startsWith("repoorbit:issue-draft:")) window.localStorage.removeItem(key);
+      }
+    } catch { /* ignore storage access errors */ }
+  }
 }
 type GraphQLResponse<Data> = {
   data?: Data | null;
@@ -274,4 +281,233 @@ export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: A
   if (selectionLimit?.message) throw new Error(selectionLimit.message);
   if (!data?.crossRepositoryOverview || errors?.length) throw new Error("Could not load the overview. Check that the local services are running.");
   return data.crossRepositoryOverview;
+}
+
+// --- Issues and audited issue writes (U6a/U6b) ----------------------------------------------------
+
+export type WorkspaceIssue = {
+  id: string;
+  repositoryId: string;
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  authorLogin: string | null;
+  updatedAt: string;
+  labels: string[];
+  assignees: string[];
+};
+
+export type IssueCapabilities = {
+  canCreateIssue: boolean;
+  canCreateIssueWithMetadata: boolean;
+  canManageIssues: boolean;
+};
+
+export type IssueCreateDraft = {
+  title: string;
+  body?: string;
+  labels?: string[];
+  assignees?: string[];
+};
+
+export type IssueDelta = {
+  add?: string[];
+  remove?: string[];
+};
+
+export type IssueUpdateDraft = {
+  labels?: IssueDelta;
+  assignees?: IssueDelta;
+  state?: "open" | "closed";
+};
+
+export type WriteOperationIssue = {
+  number: number;
+  url: string;
+  title?: string;
+  state: string;
+  labels?: string[];
+  assignees?: string[];
+};
+
+export type WriteOperationOutcome = {
+  issue?: WriteOperationIssue;
+  unapplied?: string[];
+  unappliedCount?: number;
+  error?: string;
+  allStepsAnswered?: boolean;
+  redacted?: boolean;
+};
+
+export type WriteOperation = {
+  id: number;
+  repositoryId: number;
+  kind: "create" | "update";
+  state: "pending" | "unknown" | "succeeded" | "failed";
+  issueNumber: number | null;
+  draft: IssueCreateDraft | IssueUpdateDraft | null;
+  outcome: WriteOperationOutcome | null;
+  actor: string;
+  searchUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type IssueWriteErrorKind =
+  | "validation"
+  | "unauthenticated"
+  | "forbidden"
+  | "not_found"
+  | "duplicate_create"
+  | "recheck_unresolved"
+  | "unprocessable"
+  | "unverified"
+  | "transport"
+  | "server";
+
+export class IssueWriteError extends Error {
+  readonly status: number;
+  readonly kind: IssueWriteErrorKind;
+  readonly retryAfter: string | null;
+  readonly operationId: number | null;
+  readonly operation: WriteOperation | null;
+
+  constructor(
+    message: string,
+    opts: {
+      status: number;
+      kind: IssueWriteErrorKind;
+      retryAfter?: string | null;
+      operationId?: number | null;
+      operation?: WriteOperation | null;
+    },
+  ) {
+    super(message);
+    this.status = opts.status;
+    this.kind = opts.kind;
+    this.retryAfter = opts.retryAfter ?? null;
+    this.operationId = opts.operationId ?? null;
+    this.operation = opts.operation ?? null;
+  }
+}
+
+function parseRetryAfter(header: string | null): string | null {
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return new Date(Date.now() + seconds * 1000).toISOString();
+  }
+  const parsed = Date.parse(header);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+async function toIssueWriteError(response: Response): Promise<IssueWriteError> {
+  const retryAfter = parseRetryAfter(response.headers.get("Retry-After"));
+  const text = (await response.text().catch(() => "")).trim();
+  let parsed: Record<string, unknown> | null = null;
+  if (text.startsWith("{")) {
+    try {
+      parsed = JSON.parse(text) as Record<string, unknown>;
+    } catch { /* plain text error */ }
+  }
+  if (response.status === 409) {
+    if (parsed && typeof parsed.operationId === "number") {
+      const msg = typeof parsed.error === "string" && parsed.error ? parsed.error : "An earlier create of this issue is still unresolved; recheck it instead of resubmitting.";
+      return new IssueWriteError(msg, { status: 409, kind: "duplicate_create", operationId: parsed.operationId });
+    }
+    if (parsed && typeof parsed.id === "number" && typeof parsed.state === "string") {
+      return new IssueWriteError("The issue on GitHub could not be confirmed as matching this operation yet.", {
+        status: 409,
+        kind: "recheck_unresolved",
+        operation: parsed as unknown as WriteOperation,
+      });
+    }
+  }
+  const fallback: Record<number, [IssueWriteErrorKind, string]> = {
+    400: ["validation", "Check the issue fields and try again."],
+    401: ["unauthenticated", "Your GitHub session expired. Sign in again to write to GitHub."],
+    403: ["forbidden", "Your current GitHub permission does not allow this action."],
+    404: ["not_found", "This repository or issue is not available for writing."],
+    422: ["unprocessable", "GitHub could not accept this request."],
+    502: ["transport", "No reliable answer from the server. Your draft is preserved; check Write history before retrying."],
+    503: ["unverified", "GitHub access could not be verified right now. Try again shortly."],
+    504: ["transport", "The request timed out before a reliable answer arrived. Your draft is preserved; check Write history before retrying."],
+  };
+  const [kind, defaultMessage] = fallback[response.status] ?? ["server", "Could not complete the issue request."];
+  return new IssueWriteError(text || defaultMessage, { status: response.status, kind, retryAfter });
+}
+
+// Fetches imported issues for one repository, including number, labels, assignees, author and URL.
+export async function fetchWorkspaceIssues(id: string, after: string | null, signal: AbortSignal) {
+  const { data, errors } = await graphqlQuery<{
+    issues: { nodes: WorkspaceIssue[]; withheld: number; retryAt: string | null; hasNextPage: boolean; endCursor: string | null };
+  }>(`query WorkspaceIssues($id: ID!, $after: ID) {
+    issues(repositoryIds: [$id], first: 20, after: $after) {
+      nodes { id repositoryId number title state url authorLogin updatedAt labels assignees }
+      withheld retryAt hasNextPage endCursor
+    }
+  }`, { id, after }, signal);
+  if (!data || errors?.length) throw new Error("Could not load issues");
+  if (data.issues.withheld) throw new RepositoryAccessUnverifiedError(data.issues.retryAt ?? null);
+  return data.issues;
+}
+
+export async function fetchIssueCapabilities(id: string, signal?: AbortSignal): Promise<IssueCapabilities> {
+  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/issue-capabilities`, { cache: "no-store", signal });
+  if (!response.ok) throw await toIssueWriteError(response);
+  return response.json();
+}
+
+export async function fetchWriteOperations(id: string, signal?: AbortSignal): Promise<WriteOperation[]> {
+  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/write-operations`, { cache: "no-store", signal });
+  if (!response.ok) throw await toIssueWriteError(response);
+  const body: { operations: WriteOperation[] } = await response.json();
+  return body.operations ?? [];
+}
+
+export async function fetchWriteOperation(operationId: number, signal?: AbortSignal): Promise<WriteOperation> {
+  const response = await fetch(`/api/write-operations/${encodeURIComponent(String(operationId))}`, { cache: "no-store", signal });
+  if (!response.ok) throw await toIssueWriteError(response);
+  return response.json();
+}
+
+export async function submitIssueCreate(repositoryId: string, idempotencyKey: string, draft: IssueCreateDraft): Promise<WriteOperation> {
+  const response = await fetch(`/api/repositories/${encodeURIComponent(repositoryId)}/issues`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "", "Idempotency-Key": idempotencyKey },
+    cache: "no-store",
+    body: JSON.stringify(draft),
+  }).catch(() => {
+    throw new IssueWriteError("No reliable answer from the server. Your draft is preserved; check Write history before retrying.", { status: 0, kind: "transport" });
+  });
+  if (!response.ok) throw await toIssueWriteError(response);
+  return response.json();
+}
+
+export async function submitIssueUpdate(repositoryId: string, issueNumber: number, idempotencyKey: string, draft: IssueUpdateDraft): Promise<WriteOperation> {
+  const response = await fetch(`/api/repositories/${encodeURIComponent(repositoryId)}/issues/${encodeURIComponent(String(issueNumber))}/updates`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "", "Idempotency-Key": idempotencyKey },
+    cache: "no-store",
+    body: JSON.stringify(draft),
+  }).catch(() => {
+    throw new IssueWriteError("No reliable answer from the server. Your draft is preserved; check Write history before retrying.", { status: 0, kind: "transport" });
+  });
+  if (!response.ok) throw await toIssueWriteError(response);
+  return response.json();
+}
+
+export async function recheckWriteOperation(operationId: number, issueNumber?: number): Promise<WriteOperation> {
+  const payload = issueNumber !== undefined ? { issueNumber } : {};
+  const response = await fetch(`/api/write-operations/${encodeURIComponent(String(operationId))}/recheck`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "" },
+    cache: "no-store",
+    body: JSON.stringify(payload),
+  }).catch(() => {
+    throw new IssueWriteError("Could not reach the server to recheck this operation. Try again shortly.", { status: 0, kind: "transport" });
+  });
+  if (!response.ok) throw await toIssueWriteError(response);
+  return response.json();
 }

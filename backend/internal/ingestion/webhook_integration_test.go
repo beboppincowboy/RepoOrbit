@@ -5,6 +5,7 @@ package ingestion
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 type bumped struct {
 	scope accessfence.Scope
 	id    int64
+	grant bool // InvalidateInstallationGrant rather than InvalidateAccess
 }
 
 type recorder struct {
@@ -39,7 +41,11 @@ func (r *recorder) deps(pool *pgxpool.Pool) WebhookDeps {
 			return true, nil
 		},
 		bump: func(_ context.Context, _ pgx.Tx, s accessfence.Scope, id int64) error {
-			r.bumps = append(r.bumps, bumped{s, id})
+			r.bumps = append(r.bumps, bumped{scope: s, id: id})
+			return nil
+		},
+		grant: func(_ context.Context, _ pgx.Tx, id int64) error {
+			r.bumps = append(r.bumps, bumped{scope: accessfence.ScopeInstallation, id: id, grant: true})
 			return nil
 		},
 	}
@@ -147,9 +153,9 @@ func TestSecurityEventsBumpWithoutSelectionsOrGrantingAccess(t *testing.T) {
 		}
 	}
 	want := []bumped{
-		{accessfence.ScopeInstallation, 7}, {accessfence.ScopeInstallation, 8}, {accessfence.ScopeInstallation, 9},
-		{accessfence.ScopeUser, uid},
-		{accessfence.ScopeRepository, 42}, {accessfence.ScopeRepository, 43}, {accessfence.ScopeRepository, 44},
+		{accessfence.ScopeInstallation, 7, true}, {accessfence.ScopeInstallation, 8, false}, {accessfence.ScopeInstallation, 9, false},
+		{accessfence.ScopeUser, uid, false},
+		{accessfence.ScopeRepository, 42, false}, {accessfence.ScopeRepository, 43, false}, {accessfence.ScopeRepository, 44, false},
 	}
 	if len(rec.bumps) != len(want) {
 		t.Fatalf("bumps %v, want %v", rec.bumps, want)
@@ -169,9 +175,12 @@ func TestSecurityBumpFailureIsNotAcknowledged(t *testing.T) {
 	_, pool := testutil.Database(t)
 	d := (&recorder{}).deps(pool)
 	d.bump = func(context.Context, pgx.Tx, accessfence.Scope, int64) error { return errors.New("db down") }
+	d.grant = func(context.Context, pgx.Tx, int64) error { return errors.New("db down") }
 	h := WebhookHandler(d)
-	if w := post(h, testSecret, "installation", "bf-1", `{"action":"deleted","installation":{"id":7}}`, ""); w.Code < 500 {
-		t.Fatalf("status %d, want 5xx", w.Code)
+	for i, action := range []string{"deleted", "created"} {
+		if w := post(h, testSecret, "installation", fmt.Sprintf("bf-%d", i), `{"action":"`+action+`","installation":{"id":7}}`, ""); w.Code < 500 {
+			t.Fatalf("%s: status %d, want 5xx", action, w.Code)
+		}
 	}
 	if n := count(t, pool, "webhook_deliveries"); n != 0 {
 		t.Fatalf("%d delivery rows", n)
@@ -401,6 +410,56 @@ func TestRepositoryWebhookAndRefreshCommitNeverDeadlock(t *testing.T) {
 		}
 		if err := <-refresh; err != nil {
 			t.Fatalf("round %d: refresh commit: %v", i, err)
+		}
+	}
+}
+
+// Only an installation event that can end access records the installation's holders as fallback draft-wipe targets;
+// one that can only grant access (created, unsuspend, repositories added) still bumps the fence but records nobody.
+func TestOnlyRevokingInstallationEventsRecordWipeTargets(t *testing.T) {
+	_, pool := testutil.Database(t)
+	ctx := context.Background()
+	var uid int64
+	if err := pool.QueryRow(ctx, `INSERT INTO users (github_id, login, access_token_enc) VALUES (557, 'octo', '\x') RETURNING id`).Scan(&uid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO repositories (id, name, description, is_private) VALUES (42, 'o/r', '', true)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO installations (user_id, installation_id, account_login) VALUES ($1, 7, 'octo')`, uid); err != nil {
+		t.Fatal(err)
+	}
+	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
+	for i, tc := range []struct {
+		event, body string
+		records     bool
+	}{
+		{"installation", `{"action":"created","installation":{"id":7}}`, false},
+		{"installation", `{"action":"unsuspend","installation":{"id":7}}`, false},
+		{"installation_repositories", `{"action":"added","installation":{"id":7},"repositories_removed":[]}`, false},
+		{"installation_repositories", `{"action":"added","installation":{"id":7},"repositories_removed":[{"id":42}]}`, true},
+		{"installation", `{"action":"new_permissions_accepted","installation":{"id":7}}`, true},
+		{"installation_repositories", `{"action":"removed","installation":{"id":7}}`, true},
+		{"installation", `{"action":"deleted","installation":{"id":7}}`, true},
+	} {
+		if _, err := pool.Exec(ctx, `DELETE FROM activity_cleanup`); err != nil {
+			t.Fatal(err)
+		}
+		var before int64
+		_ = pool.QueryRow(ctx, `SELECT COALESCE((SELECT epoch FROM access_fences WHERE scope = 'installation' AND subject_id = 7), 0)`).Scan(&before)
+		if w := post(h, testSecret, tc.event, fmt.Sprintf("grant-%d", i), tc.body, ""); w.Code != 200 {
+			t.Fatalf("case %d: status %d %s", i, w.Code, w.Body.String())
+		}
+		var epoch int64
+		var wipe []int64
+		if err := pool.QueryRow(ctx, `SELECT (SELECT epoch FROM access_fences WHERE scope = 'installation' AND subject_id = 7), wipe_users FROM activity_cleanup WHERE repository_id = 42`).Scan(&epoch, &wipe); err != nil {
+			t.Fatalf("case %d: %v", i, err)
+		}
+		if epoch != before+1 {
+			t.Fatalf("case %d: fence epoch %d, want %d", i, epoch, before+1)
+		}
+		if got := len(wipe) > 0; got != tc.records || tc.records && wipe[0] != uid {
+			t.Fatalf("case %d %s %s: wipe_users %v", i, tc.event, tc.body, wipe)
 		}
 	}
 }
