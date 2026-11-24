@@ -171,7 +171,8 @@ func (e *env) proxy() string {
 
 func (e *env) addIssue(repoID int64, title string) {
 	e.t.Helper()
-	if _, err := e.pool.Exec(context.Background(), "INSERT INTO issues (id, repository_id, title, state) VALUES ($1, $2, $3, 'open')", repoID*10, repoID, title); err != nil {
+	if _, err := e.pool.Exec(context.Background(), `INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, author_type)
+		VALUES ($1, $2, 1, $3, 'open', 'url', now(), now(), 'User')`, repoID*10, repoID, title); err != nil {
 		e.t.Fatal(err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
 
@@ -233,5 +234,44 @@ func TestSignedDeletionSerializesWithInFlightSyncCommit(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// An issue-write readback projects GitHub's confirmed copy under the per-issue lock (LockIssue), with no checkpoint
+// lock. A signed deletion must serialize with it too, or each misses the other's uncommitted write and the deleted
+// issue is stored again next to its tombstone.
+func TestSignedDeletionSerializesWithInFlightConfirmedProjection(t *testing.T) {
+	_, pool := testutil.Database(t)
+	ctx := context.Background()
+	selectedRepo(t, pool, 42)
+	write, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer write.Rollback(ctx)
+	now := time.Now()
+	if err = LockIssue(ctx, write, 42, 3); err != nil {
+		t.Fatal(err)
+	}
+	if err = ProjectConfirmedIssue(ctx, write, 42, githubapp.Issue{ID: 5, Number: 3, Title: "t", State: "open", HTMLURL: "u", CreatedAt: now, UpdatedAt: now,
+		User: &githubapp.IssueUser{ID: 1, Login: "a", Type: "User"}}); err != nil {
+		t.Fatal(err)
+	}
+	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
+	done := make(chan int, 1)
+	go func() {
+		done <- post(h, testSecret, "issues", "del-write", `{"action":"deleted","repository":{"id":42},"issue":{"id":5,"number":3}}`, "").Code
+	}()
+	if !waitForLockWait(t, pool, 3*time.Second) {
+		t.Log("deletion did not wait for the in-flight readback projection")
+	}
+	if err = write.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-done; code != 200 {
+		t.Fatalf("status %d", code)
+	}
+	if n := count(t, pool, "activity_issues"); n != 0 {
+		t.Fatalf("%d issues stored next to the tombstone", n)
 	}
 }

@@ -227,7 +227,31 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 	rows = rows[:min(len(rows), n)]
 	for _, row := range rows {
 		id := strconv.FormatInt(row.ID, 10)
-		result.Nodes = append(result.Nodes, &model.Issue{ID: id, RepositoryID: strconv.FormatInt(row.RepositoryID, 10), Title: row.Title, State: row.State})
+		var authorLogin *string
+		if row.AuthorLogin.Valid {
+			v := row.AuthorLogin.String
+			authorLogin = &v
+		}
+		labels := row.Labels
+		if labels == nil {
+			labels = []string{}
+		}
+		assignees := row.Assignees
+		if assignees == nil {
+			assignees = []string{}
+		}
+		result.Nodes = append(result.Nodes, &model.Issue{
+			ID:           id,
+			RepositoryID: strconv.FormatInt(row.RepositoryID, 10),
+			Number:       int(row.Number),
+			Title:        row.Title,
+			State:        row.State,
+			URL:          row.HtmlUrl,
+			AuthorLogin:  authorLogin,
+			UpdatedAt:    stamp(row.UpdatedAt.Time),
+			Labels:       labels,
+			Assignees:    assignees,
+		})
 		result.EndCursor = &id
 	}
 	return result, nil

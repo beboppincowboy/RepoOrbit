@@ -15,11 +15,13 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 )
 
+// Scope names what an access fence epoch covers; the subject ID is a users.id (user), an installation ID
+// (installation), a repository's GitHub ID (repository) or 0 (global).
 type Scope string
 
 const (
 	ScopeUser         Scope = "user"         // GitHub authorization revoked / signed out of GitHub
-	ScopeInstallation Scope = "installation" // installation deleted/suspended, repos removed
+	ScopeInstallation Scope = "installation" // any installation change: deleted/suspended, repos removed or added, created
 	ScopeRepository   Scope = "repository"   // repository deleted/privatized/transferred
 	// ScopeGlobal is one monotonic permissions version (subject 0) bumped by every InvalidateAccess and tracked by every
 	// TakeSnapshot. It is the one row a bump and a private commit always contend on, so they serialize even when the
@@ -38,10 +40,9 @@ type DB interface {
 const bumpSQL = `INSERT INTO access_fences (scope, subject_id, epoch) VALUES ($1, $2, 1)
 	ON CONFLICT (scope, subject_id) DO UPDATE SET epoch = access_fences.epoch + 1`
 
-// InvalidateAccess durably invalidates access for a subject by incrementing its epoch, and the global permissions
-// version, inside the caller's transaction (before any slower cleanup). The global row is locked first, then the
-// subject row, the same order StillCurrent takes them. Never grants access.
-// BumpAccess fences observed authorization restoration without scheduling cleanup.
+// BumpAccess increments the subject's epoch and the global permissions version inside the caller's transaction, so
+// every Snapshot taken before it stops being current. The global row is locked first, then the subject row, the same
+// order StillCurrent takes them. It schedules no cleanup: use it alone for observed authorization restoration.
 func BumpAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) error {
 	if _, err := tx.Exec(ctx, bumpSQL, string(ScopeGlobal), int64(0)); err != nil {
 		return err
@@ -53,23 +54,56 @@ func BumpAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) er
 	return err
 }
 
+// InvalidateAccess durably records lost access inside the caller's transaction, before any slower cleanup: it bumps
+// the fences (BumpAccess), wipes issue-write drafts and redacts their outcomes now for ScopeUser (that user's, on
+// private repositories) and ScopeRepository (everyone's, on that repository), and queues an activity_cleanup row plus
+// job for that repository (ScopeRepository) or every non-demo private repository (other scopes). ScopeInstallation
+// also records the installation's current holders in activity_cleanup.wipe_users, so their private drafts are wiped
+// even if the cleanup cannot get a complete inventory (use InvalidateInstallationGrant for a change that can only add
+// access). ScopeInstallation and ScopeGlobal wipe nothing themselves; the
+// queued cleanups wipe the drafts of actors no installation covers any more. Never grants access.
 func InvalidateAccess(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64) error {
+	return invalidate(ctx, tx, scope, subjectID, scope == ScopeInstallation)
+}
+
+// InvalidateInstallationGrant is InvalidateAccess(ScopeInstallation) for an installation change that can only add
+// access (installation created or unsuspended, repositories added): the same fence bumps and queued cleanups, but the
+// installation's holders are not recorded in wipe_users, since nobody's access ended.
+func InvalidateInstallationGrant(ctx context.Context, tx pgx.Tx, installationID int64) error {
+	return invalidate(ctx, tx, ScopeInstallation, installationID, false)
+}
+
+// invalidate is InvalidateAccess; recordHolders adds the installation's holders (ScopeInstallation only) to wipe_users.
+func invalidate(ctx context.Context, tx pgx.Tx, scope Scope, subjectID int64, recordHolders bool) error {
 	if err := BumpAccess(ctx, tx, scope, subjectID); err != nil {
+		return err
+	}
+	// Issue-write drafts of the actors who may have lost private access are wiped now, even where other users keep
+	// access, and their outcomes redacted; the hashes and redacted audit metadata stay. Global bumps (reconciliation)
+	// name no actor and wipe nothing. An installation bump does not say which repositories it covered (nothing local
+	// maps installations to repositories), so the private-repository cleanup queued below wipes, from the app
+	// inventory, the drafts of exactly the actors no installation covers any more. It records the installation's
+	// holders too: a cleanup that cannot obtain a complete inventory wipes theirs instead (fail closed).
+	if _, err := tx.Exec(ctx, `UPDATE write_operations o SET draft = NULL, outcome = redacted_write_outcome(o.outcome) FROM repositories r
+		WHERE r.id = o.repository_id AND o.draft IS NOT NULL AND (
+		 ($1::text = 'user' AND r.is_private AND o.user_id = $2) OR
+		 ($1::text = 'repository' AND r.id = $2))`, string(scope), subjectID); err != nil {
 		return err
 	}
 	// A durable row is independent of a worker claim and records concurrent invalidations.
 	_, err := tx.Exec(ctx, `WITH targets AS (
-		INSERT INTO activity_cleanup (repository_id)
-		SELECT id FROM repositories WHERE NOT is_demo AND
+		INSERT INTO activity_cleanup (repository_id, wipe_users)
+		SELECT id, CASE WHEN $3::bool THEN ARRAY(SELECT user_id FROM installations WHERE installation_id = $2) ELSE '{}' END
+		FROM repositories WHERE NOT is_demo AND
         (($1 = 'repository' AND id = $2) OR ($1 <> 'repository' AND is_private))
-		ON CONFLICT (repository_id) DO UPDATE SET version = activity_cleanup.version + 1
+		ON CONFLICT (repository_id) DO UPDATE SET version = activity_cleanup.version + 1, wipe_users = activity_cleanup.wipe_users || EXCLUDED.wipe_users
 		RETURNING repository_id
 	)
 	INSERT INTO jobs (kind, key, state, run_at)
 	SELECT 'activity_cleanup', 'repo:' || repository_id, 'queued', now() FROM targets
 	ON CONFLICT (kind, key) DO UPDATE SET
 	 run_at = CASE WHEN jobs.state = 'queued' THEN LEAST(jobs.run_at, EXCLUDED.run_at) ELSE jobs.run_at END,
-	 pending = CASE WHEN jobs.state = 'queued' THEN jobs.pending ELSE true END, updated_at = now()`, string(scope), subjectID)
+	 pending = CASE WHEN jobs.state = 'queued' THEN jobs.pending ELSE true END, updated_at = now()`, string(scope), subjectID, recordHolders)
 	return err
 }
 
