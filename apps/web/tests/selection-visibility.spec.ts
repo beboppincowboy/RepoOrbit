@@ -588,3 +588,43 @@ test('an error-free null repository alias is a denial even when its issues alias
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('repoorbit:issue-draft:real:ada:1:')))).toEqual([]);
   await expect(sidebar(page).locator('a[href*="/workspace/1"]')).toHaveCount(0);
 });
+
+test('an open workspace stops showing a verified repository once a complete selection refresh leaves it out', async ({ page }) => {
+  await mockSession(page, signedIn);
+  let dropped = false;
+  let releaseOverview!: () => void;
+  const heldOverview = new Promise<void>(resolve => { releaseOverview = resolve; });
+
+  await page.route('**/graphql', async route => {
+    const { query, variables } = route.request().postDataJSON();
+    if (String(query).startsWith('query SelectedRepositories')) {
+      const nodes = dropped ? [selectedRepo('1')] : [selectedRepo('1'), selectedRepo('2')];
+      return route.fulfill({ json: { data: { selectedRepositories: { nodes, endCursor: String(nodes.length), hasNextPage: false, withheld: 0, retryAt: null } } } });
+    }
+    if (String(query).startsWith('query RepositoryDetails')) {
+      const ids = Object.values(variables as Record<string, string>);
+      return route.fulfill({ json: { data: Object.fromEntries(ids.flatMap((id, i) => [[`a${i}`, { activity: quietActivity }], [`r${i}`, issuePage(id)]])) } });
+    }
+    if (String(query).startsWith('query RepositoryOverview')) {
+      if (dropped) await heldOverview; // an overview read that has not answered yet
+      return route.fulfill({ json: { data: { repositoryOverview: repoOverview(variables.id) } } }).catch(() => {});
+    }
+    return route.fallback();
+  });
+
+  try {
+    await page.goto('/workspace/2');
+    await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
+    dropped = true;
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('offline'));
+      window.dispatchEvent(new Event('online'));
+    });
+    await expect(sidebar(page).locator('a[href*="/workspace/2"]')).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toHaveCount(0);
+    releaseOverview();
+    await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toHaveCount(0);
+  } finally {
+    releaseOverview();
+  }
+});
