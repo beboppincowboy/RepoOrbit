@@ -61,6 +61,8 @@ const emptyVisibility: ViewerVisibility = new Map();
 const visibilityByViewer = new Map<string, Map<string, RepositoryAccessOutcome>>();
 const generationByViewer = new Map<string, number>();
 const retryControllersByViewer = new Map<string, Map<string, AbortController>>();
+// The repositories seen so far in the viewer's current pass over the selection pages; page 1 starts a new pass.
+const selectionPassByViewer = new Map<string, { ids: Set<string>; complete: boolean }>();
 const listeners = new Set<() => void>();
 
 function notifyVisibility() {
@@ -173,6 +175,7 @@ export function useSelectedRepositories(session: ViewerSession) {
         });
       }
       applyDetailOutcomes(queryClient, session, updates, startedAtSeq);
+      recordSelectionPage(queryClient, session, page, pageParam === null);
       return { ...page, startedAtSeq };
     },
     initialPageParam: null as string | null,
@@ -482,7 +485,50 @@ export function recordOverviewUnavailable(
 }
 
 export function recordRepositoryRemoved(queryClient: QueryClient, session: ViewerSession, repositoryId: string): void {
-  queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
+  recordOutOfSelection(queryClient, session, [repositoryId]);
+}
+
+// A repository that left the selection loses its saved snapshots, and an "unverified" outcome for it becomes a denial,
+// so it can neither keep the shell waiting on its retry time nor come back as a saved-data link.
+function recordOutOfSelection(queryClient: QueryClient, session: ViewerSession, repositoryIds: Iterable<string>) {
+  const viewerKey = viewerKeyOf(session);
+  const current = getViewerVisibility(viewerKey);
+  let next: Map<string, RepositoryAccessOutcome> | null = null;
+  for (const repositoryId of repositoryIds) {
+    queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
+    if (current.get(repositoryId)?.status === "unverified") {
+      next ??= new Map(current);
+      next.set(repositoryId, { status: "denied", seq: nextAccessSeq() });
+    }
+  }
+  if (next) {
+    visibilityByViewer.set(viewerKey, next);
+    notifyVisibility();
+    refetchAggregateAfterRejection(queryClient, session);
+  }
+}
+
+// A pass that reaches the last selection page with nothing withheld lists every selected repository. The server leaves
+// out a repository the viewer deselected or lost access to without counting it as withheld, so any other repository
+// with a saved snapshot or an access outcome has left the selection.
+function recordSelectionPage(queryClient: QueryClient, session: ViewerSession, page: SelectedRepositoryPage, startsPass: boolean) {
+  const viewerKey = viewerKeyOf(session);
+  const pass = startsPass ? { ids: new Set<string>(), complete: true } : selectionPassByViewer.get(viewerKey);
+  if (!pass) return;
+  for (const batch of page.batches) for (const repo of batch.repositories) pass.ids.add(repo.id);
+  pass.complete &&= page.withheld === 0 && !page.retryAt;
+  selectionPassByViewer.set(viewerKey, pass);
+  if (page.hasNextPage) return;
+  selectionPassByViewer.delete(viewerKey);
+  if (!pass.complete) return;
+  const absent = new Set<string>();
+  for (const [key] of queryClient.getQueriesData({ queryKey: repositorySnapshotsKey(session) })) {
+    if (typeof key[3] === "string" && !pass.ids.has(key[3])) absent.add(key[3]);
+  }
+  for (const repositoryId of getViewerVisibility(viewerKey).keys()) {
+    if (!pass.ids.has(repositoryId)) absent.add(repositoryId);
+  }
+  recordOutOfSelection(queryClient, session, absent);
 }
 
 export async function retryDetailBatch(
@@ -556,6 +602,7 @@ export function resetViewerSelection(queryClient: QueryClient, session: ViewerSe
   bumpViewerGeneration(viewerKey);
   abortViewerRetries(viewerKey);
   visibilityByViewer.delete(viewerKey);
+  selectionPassByViewer.delete(viewerKey);
   queryClient.removeQueries({ queryKey: selectedRepositoriesKey(session) });
   queryClient.removeQueries({ queryKey: repositorySnapshotsKey(session) });
   notifyVisibility();
