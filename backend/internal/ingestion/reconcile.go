@@ -85,34 +85,16 @@ func RecheckEligibility(ctx context.Context, tx pgx.Tx, userID int64, now time.T
 				return err
 			}
 		}
-		rows, err := tx.Query(ctx, `SELECT resource, parent_id FROM activity_children WHERE repository_id=$1 AND NOT complete`, id)
+		rows, err := tx.Query(ctx, `SELECT parent_id FROM activity_children WHERE repository_id=$1 AND resource='reviews' AND NOT complete`, id)
 		if err != nil {
 			return err
 		}
-		type child struct {
-			resource string
-			id       int64
-		}
-		var children []child
-		for rows.Next() {
-			var c child
-			if err := rows.Scan(&c.resource, &c.id); err != nil {
-				rows.Close()
-				return err
-			}
-			children = append(children, c)
-		}
-		err = rows.Err()
-		rows.Close()
+		parents, err := pgx.CollectRows(rows, pgx.RowTo[int64])
 		if err != nil {
 			return err
 		}
-		for _, c := range children {
-			kind := jobs.KindActivityComments
-			if c.resource == "reviews" {
-				kind = jobs.KindActivityReviews
-			}
-			if err := jobs.Resume(ctx, tx, kind, childKey(id, c.id), now); err != nil {
+		for _, parent := range parents {
+			if err := jobs.Resume(ctx, tx, jobs.KindActivityReviews, childKey(id, parent), now); err != nil {
 				return err
 			}
 		}

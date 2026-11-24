@@ -219,9 +219,6 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 				if tombstoned {
 					continue
 				}
-				if err := registerChild(ctx, tx, repoID, "comments", issue.Number, issue.Number, firstPass, now); err != nil {
-					return err
-				}
 				if err := ProjectIssue(ctx, tx, repoID, issue); err != nil {
 					return err
 				}

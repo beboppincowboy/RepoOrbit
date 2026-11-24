@@ -101,10 +101,7 @@ func (d *Deps) SyncPullRequests(ctx context.Context, job jobs.Job, fence jobs.Cl
 			if err != nil {
 				return err
 			}
-			if err = registerChild(ctx, tx, repoID, "reviews", p.ID, p.Number, firstPass, started); err != nil {
-				return err
-			}
-			if err = registerChild(ctx, tx, repoID, "comments", p.Number, p.Number, firstPass, started); err != nil {
+			if err = registerReviewChild(ctx, tx, repoID, p.ID, p.Number, p.UpdatedAt, firstPass, started); err != nil {
 				return err
 			}
 		}

@@ -108,6 +108,10 @@ async function setupWorkspace(
         },
       });
     }
+    if (query.startsWith('query WorkspaceIssue(')) {
+      const number = route.request().postDataJSON().variables.number;
+      return route.fulfill({ json: { data: { issues: { nodes: issues.filter(i => i.number === number), withheld: 0, retryAt: null } } } });
+    }
     return route.fallback();
   });
 
@@ -115,6 +119,7 @@ async function setupWorkspace(
     const caps = opts.capabilities ?? { canCreateIssue: true, canCreateIssueWithMetadata: true, canManageIssues: true };
     await page.route('**/api/repositories/1/issue-capabilities', route => route.fulfill({ json: caps }));
     await page.route('**/api/repositories/1/write-operations', route => route.fulfill({ json: { operations } }));
+    await page.route('**/api/repositories/1/assignees', route => route.fulfill({ json: { assignees: ['ada', 'alex'] } }));
   }
 }
 
@@ -168,6 +173,10 @@ test('creates a new issue through Edit -> Review -> Submit -> Confirmed and show
   await dialog.getByLabel('Description').fill('Add shortcuts for workspace tabs.');
   await dialog.getByLabel('Labels (optional)').fill('enhancement');
   await dialog.getByRole('button', { name: 'Add label' }).click();
+  // Suggestions are the users GitHub accepts as assignees, not every recent contributor.
+  const suggestions = dialog.locator(`#${await dialog.getByLabel('Assignees (optional)').getAttribute('list')} option`);
+  await expect(suggestions).toHaveCount(2);
+  await expect(suggestions.nth(1)).toHaveAttribute('value', 'alex');
   await dialog.getByLabel('Assignees (optional)').fill('alex');
   await dialog.getByRole('button', { name: 'Add assignee' }).click();
 
@@ -457,6 +466,12 @@ test('disables disallowed actions with the GitHub permission reason', async ({ p
   await expect(dialog).toContainText('With Read access you can close or reopen issues you authored');
   await expect(dialog.getByLabel('Open / closed state')).toBeEnabled();
   await expect(dialog.getByLabel('Labels (add or remove)')).toBeDisabled();
+
+  // After a reload the editor knows only the number from the URL; it loads the issue so the author keeps close/reopen.
+  await page.reload();
+  dialog = page.getByRole('dialog', { name: 'Edit issue #15' });
+  await expect(dialog).toContainText('With Read access you can close or reopen issues you authored');
+  await expect(dialog.getByLabel('Open / closed state')).toBeEnabled();
 });
 
 test('demo mode shows the issue editor with writes disabled and labeled', async ({ page }) => {

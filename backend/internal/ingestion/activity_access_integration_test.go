@@ -18,7 +18,7 @@ import (
 )
 
 // Consecutive private sync pages each authorize directly and use an installation credential.
-func TestScratchSyncPagesShareAccessListing(t *testing.T) {
+func TestSyncIssuesChecksInstallationAccessAroundEachPage(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
 	uid := e.signIn("alice")

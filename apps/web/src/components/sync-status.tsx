@@ -25,6 +25,8 @@ function child(name: string, r: ChildResourceStatus): string {
   const fail = failNote(r.failureCode);
   const next = nextNote(r.nextAttemptAt);
   if (r.complete && !r.pendingChildren) return `${name}: complete${r.lastSuccessAt ? ` as of ${when(r.lastSuccessAt)}` : ""}.${fail}`;
+  // Comments are one stream with no per-PR children, so pendingChildren is always 0 for them.
+  if (!r.pendingChildren) return `${name}: importing.${fail}${next}`;
   return `${name}: incomplete, ${r.pendingChildren} pull request${r.pendingChildren === 1 ? "" : "s"} pending.${fail}${next}`;
 }
 

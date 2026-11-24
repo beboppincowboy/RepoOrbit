@@ -14,6 +14,8 @@ import {
   RepositoryAccessUnverifiedError,
   GraphQLUnavailableError,
   fetchIssueCapabilities,
+  fetchWorkspaceIssue,
+  fetchAssignableUsers,
   fetchSelectedRepositoryDetailsPage,
   fetchRepositoryOverview,
   fetchWorkspaceIssues,
@@ -211,6 +213,25 @@ function RepositoryWorkspace() {
     gcTime: 0,
     retry: false,
   });
+  // An editor restored from the URL (after a reload) knows only the issue number: load the imported issue so author-only
+  // actions such as close/reopen are offered again.
+  const restoredNumber = typeof search.editor === "number" && selectedEditIssue?.number !== search.editor ? search.editor : null;
+  const restoredIssueQuery = useQuery({
+    queryKey: ["workspaceIssue", viewerKey, repositoryId, restoredNumber],
+    queryFn: ({ signal }) => fetchWorkspaceIssue(repositoryId, restoredNumber!, signal),
+    enabled: !snapshot && restoredNumber !== null,
+    gcTime: 0,
+    retry: false,
+  });
+  const assigneesQuery = useQuery({
+    queryKey: ["assignableUsers", viewerKey, repositoryId],
+    queryFn: ({ signal }) => fetchAssignableUsers(repositoryId, signal),
+    enabled: !demo && !snapshot && Boolean(overview) && editorOpen,
+    // Each fetch is a live GitHub call on the viewer's token; the assignable list rarely changes.
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
   const savedCreateDraft = useMemo(() => {
     void draftRevision;
     return !demo && hasSavedCreateDraft(viewerKey, repositoryId);
@@ -282,9 +303,10 @@ function RepositoryWorkspace() {
 
   const [owner, name] = overview.fullName.split("/");
   const github = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-  const contributorSuggestions = overview.contributors.filter(c => !c.isBot).map(c => c.login);
+  // Suggest only users GitHub accepts as assignees; demo mode, which cannot write, suggests its sample contributors.
+  const assigneeSuggestions = demo ? overview.contributors.filter(c => !c.isBot).map(c => c.login) : assigneesQuery.data ?? [];
   const editingIssue: EditableIssue | undefined = typeof search.editor === "number"
-    ? (selectedEditIssue?.number === search.editor ? selectedEditIssue : { number: search.editor })
+    ? (selectedEditIssue?.number === search.editor ? selectedEditIssue : restoredIssueQuery.data ?? { number: search.editor })
     : undefined;
   const tabSearch = { days: search.days, tab: search.tab };
 
@@ -355,7 +377,7 @@ function RepositoryWorkspace() {
         capabilitiesLoading={capabilitiesQuery.isPending && !demo}
         capabilitiesError={capabilitiesQuery.isError ? capabilitiesQuery.error.message : null}
         onRetryCapabilities={() => void capabilitiesQuery.refetch()}
-        contributorSuggestions={contributorSuggestions}
+        assigneeSuggestions={assigneeSuggestions}
         onClose={closeEditor}
         onOperationRecorded={handleWriteRecorded}
         onSwitchToEditIssue={switchToEditIssue}

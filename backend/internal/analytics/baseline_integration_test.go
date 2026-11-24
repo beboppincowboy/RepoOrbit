@@ -50,9 +50,10 @@ func TestRepositoryOverviewBaseline(t *testing.T) {
 		INSERT INTO activity_reviews (source_id, repository_id, pull_request_id, state, body, html_url, submitted_at, author_id, author_login, author_type)
 		SELECT source_id + 12000*k, repository_id, source_id, 'APPROVED', '', '', created_at+k*interval '1 hour', k, 'reviewer-' || k, 'User'
 		FROM activity_pull_requests, generate_series(1, 2) k WHERE source_id >= 1001;
+		INSERT INTO activity_resources (repository_id, resource, boundary, phase, watermark)
+		SELECT DISTINCT repository_id, 'comments', '2026-08-18 00:00Z'::timestamptz, 'catchup', '2026-11-17 10:00Z'::timestamptz FROM activity_issues WHERE source_id >= 1001
+		ON CONFLICT DO NOTHING;
 		INSERT INTO activity_children (repository_id, resource, parent_id, parent_number, watermark)
-		SELECT repository_id, 'comments', number, number, '2026-11-17 10:00Z'::timestamptz FROM activity_issues WHERE source_id >= 1001
-		UNION ALL
 		SELECT repository_id, 'reviews', source_id, number, '2026-11-17 10:00Z'::timestamptz FROM activity_pull_requests WHERE source_id >= 1001;
 		ANALYZE;`); err != nil {
 		t.Fatal(err)

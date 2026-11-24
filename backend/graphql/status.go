@@ -133,24 +133,22 @@ func (r *Resolver) attachEvidenceStatus(ctx context.Context, id int64, a *model.
 	parentComplete := func(s *model.ActivityResourceStatus) bool {
 		return s != nil && s.Phase == "current" && s.CatchupThrough != nil
 	}
-	for _, resource := range []string{"reviews", "comments"} {
-		var pending int
-		var childSuccess, childNext *time.Time
-		var childCode *string
-		err = r.RepoAccess.Pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE NOT c.complete), CASE WHEN count(*) > 0 AND count(c.last_success_at) = count(*) THEN min(c.last_success_at) END, (array_agg(c.last_error_code ORDER BY c.parent_id) FILTER (WHERE c.last_error_code IS NOT NULL))[1], min(j.run_at) FILTER (WHERE j.state='queued') FROM activity_children c LEFT JOIN jobs j ON j.kind='activity_'||c.resource AND j.key='repo:'||c.repository_id::text||':parent:'||c.parent_id::text WHERE c.repository_id=$1 AND c.resource=$2`, id, resource).Scan(&pending, &childSuccess, &childCode, &childNext)
-		if err != nil {
-			return err
-		}
-		complete := (parentComplete(a.PullRequests) || (a.PullRequests != nil && a.PullRequests.Phase == "disabled")) && pending == 0
-		if resource == "comments" {
-			complete = complete && parentComplete(a.Issues)
-		}
-		s := &model.ChildResourceStatus{Complete: complete, PendingChildren: pending, LastSuccessAt: rfc3339(childSuccess), FailureCode: safeActivityCode(childCode), NextAttemptAt: rfc3339(childNext)}
-		if resource == "reviews" {
-			a.Reviews = s
-		} else {
-			a.Comments = s
-		}
+	var pending int
+	var childSuccess, childNext *time.Time
+	var childCode *string
+	err = r.RepoAccess.Pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE NOT c.complete), CASE WHEN count(*) > 0 AND count(c.last_success_at) = count(*) THEN min(c.last_success_at) END, (array_agg(c.last_error_code ORDER BY c.parent_id) FILTER (WHERE c.last_error_code IS NOT NULL))[1], min(j.run_at) FILTER (WHERE j.state='queued') FROM activity_children c LEFT JOIN jobs j ON j.kind='activity_reviews' AND j.key='repo:'||c.repository_id::text||':parent:'||c.parent_id::text WHERE c.repository_id=$1 AND c.resource='reviews'`, id).Scan(&pending, &childSuccess, &childCode, &childNext)
+	if err != nil {
+		return err
+	}
+	complete := (parentComplete(a.PullRequests) || (a.PullRequests != nil && a.PullRequests.Phase == "disabled")) && pending == 0
+	a.Reviews = &model.ChildResourceStatus{Complete: complete, PendingChildren: pending, LastSuccessAt: rfc3339(childSuccess), FailureCode: safeActivityCode(childCode), NextAttemptAt: rfc3339(childNext)}
+	// Comments are one repository-wide stream; the child shape is kept so clients need no change.
+	comments, err := resourceStatus("comments", "activity_comments")
+	if err != nil {
+		return err
+	}
+	if comments != nil {
+		a.Comments = &model.ChildResourceStatus{Complete: parentComplete(comments) && comments.JobState != "dead" && comments.JobState != "paused", LastSuccessAt: comments.LastSuccessAt, FailureCode: comments.FailureCode, NextAttemptAt: comments.NextAttemptAt}
 	}
 	if err = r.RepoAccess.Pool.QueryRow(ctx, `SELECT archived FROM repositories WHERE id=$1`, id).Scan(&a.Archived); err != nil {
 		return err
