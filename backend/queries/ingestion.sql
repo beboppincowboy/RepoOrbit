@@ -1,12 +1,12 @@
 -- name: HasEligibleSelection :one
 SELECT EXISTS (
  SELECT 1 FROM selections s JOIN repositories r ON r.id = s.repository_id
- WHERE s.repository_id = $1 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false
+ WHERE s.repository_id = $1 AND is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo)
 );
 
 -- name: ListEligibleSelectors :many
 SELECT s.user_id FROM selections s JOIN repositories r ON r.id = s.repository_id
-WHERE s.repository_id = $1 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false
+WHERE s.repository_id = $1 AND is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo)
 ORDER BY s.selected_at, s.user_id;
 
 -- name: LockEligibleSelection :one
@@ -14,7 +14,7 @@ ORDER BY s.selected_at, s.user_id;
 -- commit between this check and the metadata write. NOWAIT: a conflicting writer means "changed", never "wait" (lock
 -- order is job row, then selection row; the writers resume repo jobs after touching selections).
 SELECT s.user_id FROM selections s JOIN repositories r ON r.id = s.repository_id
-WHERE s.repository_id = $1 AND s.user_id = $2 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false
+WHERE s.repository_id = $1 AND s.user_id = $2 AND is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo)
 FOR SHARE OF s NOWAIT;
 
 -- name: GetSyncRepository :one
