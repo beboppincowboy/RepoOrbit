@@ -92,3 +92,45 @@ func TestCrossOverviewCountsAsOneOverview(t *testing.T) {
 		t.Fatalf("expected operation limit, got %s", w.Body.String())
 	}
 }
+
+func TestUnauthenticatedEmptyRepositoryIDsAndDemoEvidenceNilSafety(t *testing.T) {
+	run := func(r *Resolver, query string) string {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"query": query})
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		Server(r).ServeHTTP(w, req)
+		return w.Body.String()
+	}
+
+	for _, q := range []string{
+		`{ issues(repositoryIds: []) { nodes { id } } }`,
+		`{ pullRequestEvidence(repositoryIds: []) { nodes { id } } }`,
+		`{ reviewEvidence(repositoryIds: []) { nodes { id } } }`,
+		`{ commentEvidence(repositoryIds: []) { nodes { id } } }`,
+		`{ releaseEvidence(repositoryIds: []) { nodes { id } } }`,
+		`{ issueEventEvidence(repositoryIds: []) { nodes { id } } }`,
+	} {
+		if got := run(&Resolver{}, q); !strings.Contains(got, "UNAUTHENTICATED") {
+			t.Fatalf("empty real-mode query %s did not fail UNAUTHENTICATED: %s", q, got)
+		}
+	}
+
+	demo := &Resolver{Demo: true}
+	for _, tc := range []struct {
+		query, want string
+	}{
+		{`{ reviewEvidence(repositoryIds: ["1"]) { nodes { id } withheld retryAt } }`, `"reviewEvidence":{"nodes":[],"withheld":0,"retryAt":null}`},
+		{`{ commentEvidence(repositoryIds: ["1"]) { nodes { id } withheld retryAt } }`, `"commentEvidence":{"nodes":[],"withheld":0,"retryAt":null}`},
+		{`{ releaseEvidence(repositoryIds: ["1"]) { nodes { id } withheld retryAt } }`, `"releaseEvidence":{"nodes":[],"withheld":0,"retryAt":null}`},
+		{`{ issueEventEvidence(repositoryIds: ["1"]) { nodes { id } withheld retryAt } }`, `"issueEventEvidence":{"nodes":[],"withheld":0,"retryAt":null}`},
+	} {
+		if got := run(demo, tc.query); !strings.Contains(got, tc.want) || strings.Contains(got, `"errors"`) {
+			t.Fatalf("demo evidence %s: got %s, want %s", tc.query, got, tc.want)
+		}
+	}
+	if got := run(demo, `{ reviewEvidence(repositoryIds: ["1"], first: 0) { nodes { id } } }`); !strings.Contains(got, `"errors"`) {
+		t.Fatalf("demo evidence accepted invalid page size: %s", got)
+	}
+}

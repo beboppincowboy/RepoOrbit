@@ -12,10 +12,13 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
@@ -346,4 +349,267 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 	if strings.Contains(got, "private ") {
 		t.Fatalf("revoked installation saw evidence: %s", got)
 	}
+}
+
+func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
+	ctx := context.Background()
+	dbURL, pool := testutil.Database(t)
+	gh := fake.New("cid", "secret")
+	var limitRepo atomic.Int64
+	resetUnix := time.Now().Add(time.Hour).UTC().Unix()
+	ghHandler := gh.Handler()
+	gs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id := limitRepo.Load(); id != 0 && r.URL.Path == fmt.Sprintf("/repositories/%d", id) {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetUnix, 10))
+			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+			return
+		}
+		ghHandler.ServeHTTP(w, r)
+	}))
+	defer gs.Close()
+
+	client := githubapp.New("cid", "secret", gs.URL, gs.URL, "http://app.test/auth/github/callback")
+	q := db.New(pool)
+	authSvc := &auth.Service{Pool: pool, Queries: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
+	repos := &repositories.Service{Pool: pool, Queries: q, GitHub: client, TokenSource: authSvc, TTL: time.Nanosecond}
+	ah := &auth.Handler{Service: authSvc, AppURL: "http://app.test"}
+	mux := http.NewServeMux()
+	mux.Handle("/auth/", ah.Routes())
+	gqlHandler := ah.Protect(Server(&Resolver{Queries: q, RepoAccess: repos}))
+	mux.Handle("/graphql", gqlHandler)
+	mux.Handle("/graphql-short", ah.Protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		shortCtx, cancel := context.WithTimeout(r.Context(), 150*time.Millisecond)
+		defer cancel()
+		Server(&Resolver{Queries: q, RepoAccess: repos}).ServeHTTP(w, r.WithContext(shortCtx))
+	})))
+
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxConns = 1
+	singlePool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer singlePool.Close()
+	singleRepos := &repositories.Service{Pool: singlePool, Queries: db.New(singlePool), GitHub: client, TokenSource: authSvc, TTL: time.Minute}
+	mux.Handle("/graphql-single", ah.Protect(Server(&Resolver{Queries: db.New(singlePool), RepoAccess: singleRepos})))
+
+	api := httptest.NewServer(mux)
+	defer api.Close()
+
+	signIn := func(login string) *http.Client {
+		t.Helper()
+		jar, _ := cookiejar.New(nil)
+		c := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		resp, err := c.Get(api.URL + "/auth/github/login")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		loc, _ := url.Parse(resp.Header.Get("Location"))
+		v := loc.Query()
+		v.Set("as", login)
+		loc.RawQuery = v.Encode()
+		resp, err = c.Get(loc.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		cb, _ := url.Parse(resp.Header.Get("Location"))
+		resp, err = c.Get(api.URL + cb.RequestURI())
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return c
+	}
+	alice := signIn("alice")
+	var aliceID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE login='alice'`).Scan(&aliceID); err != nil {
+		t.Fatal(err)
+	}
+	repo := gh.AddRepo("alice", "secret", true)
+	gh.Install("alice", 9, repo)
+	if err := repos.Connect(ctx, aliceID, repo); err != nil {
+		t.Fatal(err)
+	}
+	pub := gh.AddRepo("carol", "public-star", false)
+	for _, step := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES ($1, 'carol/public-star', '', false, false)`, []any{pub}},
+		{`INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES ($2, $1, 'starred', now())`, []any{pub, aliceID}},
+		{`INSERT INTO activity_issues(source_id,repository_id,number,title,state,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES
+		 (10,$1,1,'issue 1','open','url',now(),now(),1,'alice','User'),
+		 (11,$1,2,'issue 2','open','url',now(),now(),1,'alice','User')`, []any{repo}},
+		{`INSERT INTO activity_pull_requests(source_id,repository_id,number,title,state,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES
+		 (100,$1,1,'pr 1','open','url',now(),now(),1,'alice','User'),
+		 (101,$1,2,'pr 2','open','url',now(),now(),1,'alice','User')`, []any{repo}},
+		{`INSERT INTO activity_reviews(source_id,repository_id,pull_request_id,state,body,html_url,submitted_at,author_id,author_login,author_type) VALUES
+		 (200,$1,100,'APPROVED','rev 1','url',now(),2,'bob','User'),
+		 (201,$1,100,'COMMENTED','rev 2','url',now(),2,'bob','User')`, []any{repo}},
+		{`INSERT INTO activity_comments(source_id,repository_id,issue_number,body,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES
+		 (300,$1,1,'c 1','url',now(),now(),1,'alice','User'),
+		 (301,$1,1,'c 2','url',now(),now(),1,'alice','User')`, []any{repo}},
+		{`INSERT INTO activity_releases(source_id,repository_id,name,tag_name,body,html_url,created_at,updated_at,published_at,observed_at,prerelease,author_id,author_login,author_type) VALUES
+		 (400,$1,'rel 1','v1','','url',now(),now(),now(),now(),false,1,'alice','User'),
+		 (401,$1,'rel 2','v2','','url',now(),now(),now(),now(),false,1,'alice','User')`, []any{repo}},
+		{`INSERT INTO activity_issue_events(source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at,actor_id,actor_login,actor_type) VALUES
+		 (500,$1,10,1,'closed','url',now(),now(),1,'alice','User'),
+		 (501,$1,10,1,'reopened','url',now(),now(),1,'alice','User')`, []any{repo}},
+	} {
+		if _, err := pool.Exec(ctx, step.sql, step.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runAt := func(c *http.Client, path, query string) string {
+		t.Helper()
+		me, err := c.Get(api.URL + "/auth/me")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var session struct {
+			CSRFToken string `json:"csrfToken"`
+		}
+		if err := json.NewDecoder(me.Body).Decode(&session); err != nil {
+			t.Fatal(err)
+		}
+		me.Body.Close()
+		body, _ := json.Marshal(map[string]string{"query": query})
+		req, _ := http.NewRequest("POST", api.URL+path, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "http://app.test")
+		req.Header.Set("X-CSRF-Token", session.CSRFToken)
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 {
+			t.Fatalf("status %d: %s", resp.StatusCode, b)
+		}
+		return string(b)
+	}
+	run := func(c *http.Client, query string) string {
+		t.Helper()
+		return runAt(c, "/graphql", query)
+	}
+
+	// Duplicate repositoryIds deduplicates withheld to 1.
+	limitRepo.Store(pub)
+	wantRetry := time.Unix(resetUnix, 0).UTC().Format(time.RFC3339)
+	if got := run(alice, fmt.Sprintf(`{ issues(repositoryIds: ["%d","%d"], first: 1) { nodes { title } withheld retryAt } }`, pub, pub)); !strings.Contains(got, fmt.Sprintf(`"nodes":[],"withheld":1,"retryAt":"%s"`, wantRetry)) {
+		t.Fatalf("duplicate repositoryIds withheld count wrong: %s", got)
+	}
+
+	// Mid-read revocation across issues and all four remaining evidence list readers resets cursors and preserves pre-read retryAt.
+	for _, tc := range []struct {
+		name, field, table, blockedSQL string
+	}{
+		{"issues", "issues", "activity_issues", "%FROM activity_issues i%"},
+		{"reviewEvidence", "reviewEvidence", "activity_reviews", "%FROM activity_reviews%"},
+		{"commentEvidence", "commentEvidence", "activity_comments", "%FROM activity_comments%"},
+		{"releaseEvidence", "releaseEvidence", "activity_releases", "%FROM activity_releases%"},
+		{"issueEventEvidence", "issueEventEvidence", "activity_issue_events", "%FROM activity_issue_events%"},
+	} {
+		t.Run("mid_read_"+tc.name, func(t *testing.T) {
+			qStr := fmt.Sprintf(`{ %s(repositoryIds:["%d","%d"], first: 1) { nodes { id } endCursor hasNextPage withheld retryAt } }`, tc.field, repo, pub)
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(ctx)
+			if _, err = tx.Exec(ctx, "LOCK TABLE "+tc.table+" IN ACCESS EXCLUSIVE MODE"); err != nil {
+				t.Fatal(err)
+			}
+			resCh := make(chan string, 1)
+			go func() {
+				resCh <- run(alice, qStr)
+			}()
+			deadline := time.Now().Add(2 * time.Second)
+			blocked := false
+			for time.Now().Before(deadline) {
+				if err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE $1)`, tc.blockedSQL).Scan(&blocked); err != nil {
+					t.Fatal(err)
+				}
+				if blocked {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !blocked {
+				t.Fatalf("%s query did not block on %s", tc.name, tc.table)
+			}
+			fenceTx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = accessfence.InvalidateAccess(ctx, fenceTx, accessfence.ScopeUser, aliceID); err != nil {
+				t.Fatal(err)
+			}
+			if err = fenceTx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err = tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			got := <-resCh
+			want := fmt.Sprintf(`{"nodes":[],"endCursor":null,"hasNextPage":false,"withheld":2,"retryAt":"%s"}`, wantRetry)
+			if !strings.Contains(got, want) || strings.Contains(got, `"errors"`) {
+				t.Fatalf("%s mid-read revocation got %s, want %s", tc.name, got, want)
+			}
+		})
+	}
+	limitRepo.Store(0)
+
+	// 1-connection pool test: pullRequestEvidence(first: 1) with HasNextPage == true must close rows before fence.Current.
+	t.Run("single_conn_pool_releases_before_fence_check", func(t *testing.T) {
+		got := runAt(alice, "/graphql-single", fmt.Sprintf(`{ pullRequestEvidence(repositoryIds:["%d"], first: 1) { nodes { number } hasNextPage endCursor } }`, repo))
+		if !strings.Contains(got, `"hasNextPage":true`) || strings.Contains(got, `"errors"`) {
+			t.Fatalf("1-conn pullRequestEvidence failed: %s", got)
+		}
+	})
+
+	// Read-phase DB error directly against Server handler with short ctx while activity_issues is locked.
+	t.Run("read_phase_db_error_returns_database_unavailable", func(t *testing.T) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err = tx.Exec(ctx, "LOCK TABLE activity_issues IN ACCESS EXCLUSIVE MODE"); err != nil {
+			t.Fatal(err)
+		}
+		got := runAt(alice, "/graphql-short", fmt.Sprintf(`{ issues(repositoryIds:["%d"], first: 1) { nodes { id } withheld } }`, repo))
+		if !strings.Contains(got, "database unavailable") {
+			t.Fatalf("expected database unavailable on read error, got %s", got)
+		}
+	})
+
+	// Demo-mode pullRequestEvidence with mixed demo + real repo IDs returns only demo PRs with RepoAccess: nil.
+	t.Run("demo_pull_request_evidence_mixed_ids", func(t *testing.T) {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO repositories(id, name, description, is_private, is_demo) VALUES (1, 'orbit/example', 'demo', false, true) ON CONFLICT DO NOTHING;
+			INSERT INTO activity_pull_requests(source_id,repository_id,number,title,state,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES
+			 (9001,1,1,'demo PR','open','url',now(),now(),1,'sam','User') ON CONFLICT DO NOTHING;
+		`); err != nil {
+			t.Fatal(err)
+		}
+		demoH := Server(&Resolver{Queries: q, Demo: true, DemoPool: pool})
+		body, _ := json.Marshal(map[string]string{"query": fmt.Sprintf(`{ pullRequestEvidence(repositoryIds:["1","%d"]) { nodes { title } withheld } }`, repo)})
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		demoH.ServeHTTP(w, req)
+		got := w.Body.String()
+		if !strings.Contains(got, "demo PR") || strings.Contains(got, "pr 1") || strings.Contains(got, `"errors"`) {
+			t.Fatalf("demo pullRequestEvidence mixed IDs: %s", got)
+		}
+	})
 }
