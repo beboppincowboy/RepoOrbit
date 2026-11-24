@@ -771,7 +771,6 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 	}
 	limitRepo.Store(0)
 
-	// Mid-read revocation inside loadActivityStatus (after LoadRepositoryOverview finishes) returns ACCESS_UNVERIFIED without retryAt.
 	t.Run("mid_read_load_activity_status", func(t *testing.T) {
 		tx, err := pool.Begin(ctx)
 		if err != nil {
