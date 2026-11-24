@@ -8,6 +8,7 @@ import {
   resetViewerSelection,
   retryDetailBatch,
   selectFailedDetailBatches,
+  selectRowVisibility,
   selectVisibleRows,
   selectWithheldSummary,
   useSelectedRepositories,
@@ -76,14 +77,15 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
   }, [login, mode, queryClient, retryTime]);
   const saved = new Map<string, { fullName: string; days: MetricWindow }>();
   if (!demo && (limited || metadata.error instanceof GraphQLUnavailableError)) {
+    const navigableIds = new Set(navigableRows.map(row => row.repo.id));
     for (const [key, snapshot] of queryClient.getQueriesData<{ fullName: string }>({ queryKey: repositorySnapshotsKey(session) })) {
       const [, , , id, days] = key;
       if (
         snapshot
         && typeof id === "string"
         && (days === 7 || days === 30 || days === 90)
-        && visibility.get(id)?.status !== "denied"
-        && !navigableRows.some(row => row.repo.id === id)
+        && selectRowVisibility(rows, visibility, id).availability !== "denied"
+        && !navigableIds.has(id)
       ) {
         saved.set(id, { fullName: snapshot.fullName, days });
       }

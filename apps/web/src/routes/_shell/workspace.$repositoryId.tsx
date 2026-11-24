@@ -16,12 +16,12 @@ import {
   recordAccessDenied,
   recordOverviewSnapshot,
   recordOverviewUnavailable,
-  selectRowVisibility,
-  selectVisibleRows,
+  selectRepositoryVisibility,
   selectedRepositoriesKey,
   useSelectedRepositories,
   useSelectedRepositoryMetadata,
   useSelectionVisibility,
+  viewerKeyOf,
 } from "@/lib/selected-repositories";
 import {
   RepositoryAccessUnverifiedError,
@@ -127,7 +127,7 @@ function RepositoryWorkspace() {
   const navigate = useNavigate({ from: "/workspace/$repositoryId" });
   const { session } = Route.useRouteContext();
   const queryClient = useQueryClient();
-  const viewerKey = `${session.mode}:${session.user?.login ?? ""}`;
+  const viewerKey = viewerKeyOf(session);
   const [selectedEditIssue, setSelectedEditIssue] = useState<EditableIssue | null>(null);
   const [draftRevision, setDraftRevision] = useState(0);
   const overviewKey = ["repositoryOverview", session.mode, session.user?.login, repositoryId, search.days] as const;
@@ -176,12 +176,10 @@ function RepositoryWorkspace() {
   const snapshot = snapshotReason ? queryClient.getQueryState<Overview>(snapshotKey) : undefined;
   const overview = query.isError ? snapshot?.data : query.data;
   const demo = session.mode === "demo";
-  // Metadata refresh state and live visibility come from Selection selectors.
   const selection = useSelectedRepositories(session);
   const metadata = useSelectedRepositoryMetadata(session);
   const visibility = useSelectionVisibility(session);
-  const visibleRows = selectVisibleRows(metadata, selection, visibility);
-  const rowVisibility = selectRowVisibility(visibleRows, visibility, repositoryId);
+  const rowVisibility = selectRepositoryVisibility(metadata, selection, visibility, repositoryId);
   const row = rowVisibility.row;
   const accessLost = query.isSuccess && overview === null;
   const accessRejected = query.error instanceof RepositoryAccessUnverifiedError || accessLost;
@@ -358,9 +356,6 @@ function RepositoryWorkspace() {
         key={repositoryId}
         session={session}
         repositoryId={repositoryId}
-        viewerKey={viewerKey}
-        viewerLogin={session.user?.login ?? null}
-        demo={demo}
         github={github}
         capabilities={capabilitiesQuery.data ?? null}
         capabilitiesError={capabilitiesQuery.isError ? capabilitiesQuery.error.message : null}

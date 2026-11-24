@@ -10,7 +10,6 @@ export type MetadataStatus = { state: "not-scheduled" | "queued" | "running" | "
 export type ActivityResourceStatus = { phase: string; boundary: string; catchupThrough: string | null; lastSuccessAt: string | null; failureCode: string | null; jobState: string; nextAttemptAt: string | null };
 export type ChildResourceStatus = { complete: boolean; pendingChildren: number; lastSuccessAt: string | null; failureCode: string | null; nextAttemptAt: string | null };
 export type ActivityStatus = { synchronized: boolean; message: string; issues: ActivityResourceStatus | null; pullRequests: ActivityResourceStatus | null; releases: ActivityResourceStatus | null; reviews: ChildResourceStatus | null; comments: ChildResourceStatus | null; issueEvents: { traversal: ActivityResourceStatus | null; historicalGap: boolean } | null; futureResources: string[] };
-// --- Pure queries & shared types -----------------------------------------------------------------
 
 // fullName is "owner/name".
 export type SelectedRepository = { id: string; fullName: string; description: string; syncState: SyncState; metadataStatus: MetadataStatus | null };
@@ -77,11 +76,6 @@ const detailChunk = 8;
 type DetailResponse = Partial<Record<`a${number}`, { activity: ActivityStatus | null } | null>>
   & Partial<Record<`r${number}`, IssueConnection | null>>;
 
-// Rechecks access and fetches activity and up to five issues per ID, in input order.
-// Accepts one to eight IDs. Preserves per-alias evidence:
-// - ACCESS_UNVERIFIED error or withheld issues -> "access-unverified" (temporary uncertainty)
-// - Present, error-free null on repository alias -> "access-denied" (definitive unavailability)
-// - Omitted or malformed alias -> rejects the batch so callers take the batch failure path
 export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal): Promise<RepositoryDetail[]> {
   if (ids.length === 0 || ids.length > detailChunk) throw new RangeError("Expected one to eight repository IDs");
   const declarations = ids.map((_, i) => `$id${i}: ID!`).join(", ");
@@ -93,8 +87,8 @@ export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal
   return ids.map((_, i) => {
     const repoAlias = `a${i}` as const;
     const issuesAlias = `r${i}` as const;
-    const hasRepoAlias = Object.prototype.hasOwnProperty.call(data, repoAlias);
-    const hasIssuesAlias = Object.prototype.hasOwnProperty.call(data, issuesAlias);
+    const hasRepoAlias = Object.hasOwn(data, repoAlias);
+    const hasIssuesAlias = Object.hasOwn(data, issuesAlias);
     const repository = data[repoAlias];
     const issues = data[issuesAlias];
     const accessError = errors.find(error => error.path?.[0] === repoAlias || error.path?.[0] === issuesAlias);

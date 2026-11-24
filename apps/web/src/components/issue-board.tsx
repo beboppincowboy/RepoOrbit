@@ -7,7 +7,7 @@ import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
 import { BOARD_STATUSES, deriveChange, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type IssueCapabilities, type ViewerSession } from "@/lib/api";
-import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, selectRowVisibility, useSelectionVisibility } from "@/lib/selected-repositories";
+import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/lib/selected-repositories";
 
 // The workspace route's class strings.
 const panel = "rounded-xl border border-border bg-card min-w-0 min-h-0";
@@ -28,9 +28,6 @@ const locked = (card?: BoardCard) => card?.phase === "pending" || card?.phase ==
 type IssueBoardProps = {
   session: ViewerSession;
   repositoryId: string;
-  viewerKey: string;
-  viewerLogin: string | null;
-  demo: boolean;
   github: string;
   capabilities: IssueCapabilities | null;
   capabilitiesError: string | null;
@@ -41,12 +38,12 @@ type IssueBoardProps = {
   onOpenIssue: (issueNumber: number | undefined) => void;
 };
 
-// The repository's issues by status in Board and List views, with shared filters and the task drawer. Moves, assignee
-// edits and close/reopen are only staged on the card, in this browser; nothing reaches GitHub until Save.
-export function IssueBoard({ session, repositoryId, viewerKey, viewerLogin, demo, github, capabilities, capabilitiesError, assignable, openIssue, onOpenIssue }: IssueBoardProps) {
+export function IssueBoard({ session, repositoryId, github, capabilities, capabilitiesError, assignable, openIssue, onOpenIssue }: IssueBoardProps) {
+  const viewerKey = viewerKeyOf(session);
+  const viewerLogin = session.user?.login ?? null;
+  const demo = session.mode === "demo";
   const queryClient = useQueryClient();
-  const visibility = useSelectionVisibility(session);
-  const rowVisibility = selectRowVisibility([], visibility, repositoryId);
+  const repoVisibility = useRepositoryVisibility(session, repositoryId);
   const [cards, setCards] = useState(() => loadBoardCards(viewerKey, repositoryId));
   const [view, setView] = useState<"board" | "list">("board");
   const [assignee, setAssignee] = useState("");
@@ -88,9 +85,7 @@ export function IssueBoard({ session, repositoryId, viewerKey, viewerLogin, demo
     gcTime: 0,
     retry: (count, error) => !(error instanceof RepositoryAccessUnverifiedError || error instanceof GraphQLUnavailableError) && count < 1,
   });
-  const accessBlocked = rowVisibility.availability === "denied" || rowVisibility.availability === "unverified";
-  // Immediately hide stale Board rows, filter options, staging controls, and any open TaskDrawer on refetch error,
-  // authoritative null, or a newer Selection access rejection.
+  const accessBlocked = repoVisibility?.status === "denied" || repoVisibility?.status === "unverified";
   const board = query.isError || query.isPending || accessBlocked ? null : (query.data ?? null);
   const rows = board?.issues ?? noRows;
   // StatusSourceSetup shares this query; once it turns labels on or off, read the Board again.

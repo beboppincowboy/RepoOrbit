@@ -39,7 +39,7 @@ test('per-alias denial removes A snapshots and drafts while temporary uncertaint
   await mockSession(page, signedIn);
   const retryAt = new Date(Date.now() + 600_000).toISOString();
   let detailsPhase: 'ok' | 'split' = 'ok';
-  let overviewPhase: 'ok' | 'split' = 'ok';
+  let overviewPhase: 'ok' | 'split' | 'outage' = 'ok';
 
   await page.route('**/graphql', async route => {
     const { query, variables } = route.request().postDataJSON();
@@ -64,7 +64,6 @@ test('per-alias denial removes A snapshots and drafts while temporary uncertaint
           json: { data: { a0: { activity: quietActivity }, r0: issuePage('1'), a1: { activity: quietActivity }, r1: issuePage('2') } },
         });
       }
-      // Alias a0 is present error-free null (definitive denial for repo 1); a1 has ACCESS_UNVERIFIED with retryAt (temporary for repo 2).
       return route.fulfill({
         json: {
           data: { a0: null, r0: issuePage('1'), a1: null, r1: { nodes: [], hasNextPage: false, withheld: 1, retryAt } },
@@ -73,6 +72,9 @@ test('per-alias denial removes A snapshots and drafts while temporary uncertaint
       });
     }
     if (String(query).startsWith('query RepositoryOverview')) {
+      if (overviewPhase === 'outage') {
+        return route.fulfill({ status: 503, body: 'Service Unavailable' });
+      }
       if (overviewPhase === 'ok') {
         return route.fulfill({ json: { data: { repositoryOverview: repoOverview(variables.id) } } });
       }
@@ -104,7 +106,6 @@ test('per-alias denial removes A snapshots and drafts while temporary uncertaint
     return route.fallback();
   });
 
-  // Prime snapshots for repo 1 (7d and 30d) and repo 2 (30d), plus browser drafts for both.
   await page.goto('/workspace/1?days=30');
   await expect(page.getByRole('heading', { name: 'repo-1', exact: true })).toBeVisible();
   await page.getByRole('link', { name: '7d', exact: true }).click();
@@ -117,12 +118,10 @@ test('per-alias denial removes A snapshots and drafts while temporary uncertaint
     localStorage.setItem('repoorbit:issue-draft:real:ada:2:create', JSON.stringify({ version: 1, title: 'Keep B draft' }));
   });
 
-  // Now navigate to Overview while A is denied and B is rate-limited unverified.
   detailsPhase = 'split';
   overviewPhase = 'split';
   await sidebar(page).getByRole('link', { name: 'Overview', exact: true }).click();
 
-  // Repo 1's drafts are cleared and its sidebar link is removed; Repo 2's drafts stay and its link is anonymous.
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('repoorbit:issue-draft:real:ada:')))).toEqual([
     'repoorbit:issue-draft:real:ada:2:create',
   ]);
@@ -130,19 +129,37 @@ test('per-alias denial removes A snapshots and drafts while temporary uncertaint
   await expect(sidebar(page).locator('a[href*="/workspace/1"]')).toHaveCount(0);
   await expect(sidebar(page).getByRole('link', { name: 'Repository', exact: true })).toHaveAttribute('href', /\/workspace\/2/);
 
-  // Opening Repo 2 still shows its read-only frozen snapshot for 30d; Repo 1 has no snapshot left even for 7d.
   await sidebar(page).getByRole('link', { name: 'Repository', exact: true }).click();
   await expect(page.getByText(/Showing saved data from/)).toBeVisible();
   await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
+
+  overviewPhase = 'outage';
+  await page.evaluate(() => {
+    window.history.pushState({}, '', '/workspace/1?days=7');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
+  await expect(page.getByRole('heading', { name: 'Repository', exact: true })).toBeVisible();
+  await expect(page.getByText(/Showing saved data from/)).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'repo-1', exact: true })).toHaveCount(0);
+
+  await page.evaluate(() => {
+    window.history.pushState({}, '', '/workspace/1?days=30');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  });
+  await expect(page.getByRole('heading', { name: 'Repository', exact: true })).toBeVisible();
+  await expect(page.getByText(/Showing saved data from/)).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'repo-1', exact: true })).toHaveCount(0);
 });
 
 test('delayed manual detail retry completing after a workspace rejection cannot restore private data', async ({ page }) => {
   await mockSession(page, signedIn);
   const repositories = Array.from({ length: 10 }, (_, i) => selectedRepo(String(i + 1)));
   let failChunk2 = true;
+  let denyRepo9Overview = false;
   let releaseDelayedRetry!: () => void;
   const delayedRetry = new Promise<void>(resolve => { releaseDelayedRetry = resolve; });
   let chunk2Calls = 0;
+  let retryFulfilled = false;
 
   await page.route('**/graphql', async route => {
     const { query, variables } = route.request().postDataJSON();
@@ -160,12 +177,13 @@ test('delayed manual detail retry completing after a workspace rejection cannot 
           return route.fulfill({ status: 502 });
         }
         await delayedRetry;
+        retryFulfilled = true;
       }
       const data = Object.fromEntries(ids.flatMap((id, i) => [[`a${i}`, { activity: quietActivity }], [`r${i}`, issuePage(id)]]));
-      return route.fulfill({ json: { data } }).catch(() => {});
+      return route.fulfill({ json: { data } });
     }
     if (String(query).startsWith('query RepositoryOverview')) {
-      if (variables.id === '9') {
+      if (variables.id === '9' && denyRepo9Overview) {
         return route.fulfill({ json: { data: { repositoryOverview: null } } });
       }
       return route.fulfill({ json: { data: { repositoryOverview: repoOverview(variables.id) } } });
@@ -173,20 +191,25 @@ test('delayed manual detail retry completing after a workspace rejection cannot 
     return route.fallback();
   });
 
-  await page.goto('/workspace/1');
+  await page.goto('/workspace/9');
+  await expect(page.getByRole('heading', { name: 'repo-9', exact: true })).toBeVisible();
   const retryBtn = sidebar(page).getByRole('button', { name: 'Retry details' });
   await expect(retryBtn).toBeVisible();
 
-  // Start the manual detail retry for chunk 2 (repos 9 and 10), then reject repo 9 via workspace before it completes.
   await retryBtn.click();
   await expect.poll(() => chunk2Calls).toBe(2);
-  await sidebar(page).getByRole('link', { name: 'repo-9', exact: true }).click();
+
+  denyRepo9Overview = true;
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('offline'));
+    window.dispatchEvent(new Event('online'));
+  });
   await expect(page.getByRole('heading', { name: 'Repository', exact: true })).toBeVisible();
   await expect(sidebar(page).getByRole('link', { name: 'repo-9', exact: true })).toHaveCount(0);
 
-  // Even after the delayed retry resolves claiming repo 9 is available, repo 9 stays hidden.
   releaseDelayedRetry();
-  await page.waitForTimeout(200);
+  await expect.poll(() => retryFulfilled).toBe(true);
+  await expect(sidebar(page).getByRole('link', { name: 'repo-10', exact: true })).toBeVisible();
   await expect(sidebar(page).getByRole('link', { name: 'repo-9', exact: true })).toHaveCount(0);
   await expect(page.locator('#repolist option[value="ada/repo-9"]')).toHaveCount(0);
 });
@@ -275,14 +298,12 @@ test('aggregate overview hides rejected repository rows and totals immediately w
     await expect(mine).toContainText('Unloaded assigned 25');
     await expect(totals).toContainText('9');
 
-    // Trigger a revalidation where repo 1 is denied while the aggregate refresh is delayed.
     detailMode = 'reject-1';
     await page.evaluate(() => {
       window.dispatchEvent(new Event('offline'));
       window.dispatchEvent(new Event('online'));
     });
 
-    // Immediately: repo-1 disappears from Needs attention, Assigned to me, and shell; totals are withheld; repo-2 and repo-25 stay visible!
     await expect(attn).not.toContainText('Secret issue 1');
     await expect(mine).not.toContainText('Secret assigned 1');
     await expect(sidebar(page).getByRole('link', { name: 'repo-1', exact: true })).toHaveCount(0);
