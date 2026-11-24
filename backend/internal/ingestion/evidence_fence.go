@@ -135,7 +135,7 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 			}
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
 		}
-		if job.Kind == "activity_pull_requests" && pullRequestsDisabled(before.Repo) != pullRequestsDisabled(after.Repo) {
+		if job.Kind == jobs.KindActivityPullRequests && pullRequestsDisabled(before.Repo) != pullRequestsDisabled(after.Repo) {
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
 		}
 		err = fence.Commit(ctx, func(tx pgx.Tx) error {
