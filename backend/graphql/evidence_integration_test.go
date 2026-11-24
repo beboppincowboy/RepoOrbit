@@ -474,10 +474,12 @@ func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 		 (301,$1,1,'c 2','url',now(),now(),1,'alice','User')`, []any{repo}},
 		{`INSERT INTO activity_releases(source_id,repository_id,name,tag_name,body,html_url,created_at,updated_at,published_at,observed_at,prerelease,author_id,author_login,author_type) VALUES
 		 (400,$1,'rel 1','v1','release notes','url',now(),now(),now(),now(),false,1,'alice','User'),
-		 (401,$1,'rel 2','v2','','url',now(),now(),now(),now(),false,1,'alice','User')`, []any{repo}},
+		 (401,$1,'rel 2','v2','','url',now(),now(),now(),now(),false,1,'alice','User'),
+		 (402,$2,'pub rel','v3','','url',now(),now(),now(),now(),false,1,'carol','User')`, []any{repo, pub}},
 		{`INSERT INTO activity_issue_events(source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at,actor_id,actor_login,actor_type,assignee_id,assignee_login,assignee_type,label) VALUES
 		 (500,$1,10,1,'assigned','url',now(),now(),1,'alice','User',2,'bob','User','bug'),
-		 (501,$1,10,1,'reopened','url',now(),now(),1,'alice','User',NULL,NULL,NULL,NULL)`, []any{repo}},
+		 (501,$1,10,1,'reopened','url',now(),now(),1,'alice','User',NULL,NULL,NULL,NULL),
+		 (502,$2,20,1,'closed','url',now(),now(),1,'carol','User',NULL,NULL,NULL,NULL)`, []any{repo, pub}},
 	} {
 		if _, err := pool.Exec(ctx, step.sql, step.args...); err != nil {
 			t.Fatal(err)
@@ -492,8 +494,13 @@ func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 				t.Fatalf("authorized releaseEvidence missing %s: %s", want, gotRel)
 			}
 		}
-		if strings.Contains(gotRel, `"errors"`) || !strings.Contains(h.run(bob, relQ), `"nodes":[],"endCursor":null,"hasNextPage":false,"withheld":0`) {
-			t.Fatalf("unauthorized releaseEvidence leak or error: %s", gotRel)
+		if strings.Contains(gotRel, `"errors"`) {
+			t.Fatalf("authorized releaseEvidence unexpected error: %s", gotRel)
+		}
+		bobRelQ := fmt.Sprintf(`{ releaseEvidence(repositoryIds:["%d"], first: 1) { nodes { id } endCursor hasNextPage withheld retryAt } }`, pub)
+		gotBobRel := h.run(bob, bobRelQ)
+		if strings.Contains(gotBobRel, `"errors"`) || !strings.Contains(gotBobRel, `"nodes":[],"endCursor":null,"hasNextPage":false,"withheld":0,"retryAt":null`) {
+			t.Fatalf("unselected accessible releaseEvidence leak or error: %s", gotBobRel)
 		}
 
 		evQ := fmt.Sprintf(`{ issueEventEvidence(repositoryIds:["%d"], first: 1) { nodes { id repositoryId issueId issueNumber event url actor { login } assignee { id login type } label } endCursor hasNextPage withheld retryAt } }`, repo)
@@ -503,8 +510,61 @@ func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 				t.Fatalf("authorized issueEventEvidence missing %s: %s", want, gotEv)
 			}
 		}
-		if strings.Contains(gotEv, `"errors"`) || !strings.Contains(h.run(bob, evQ), `"nodes":[],"endCursor":null,"hasNextPage":false,"withheld":0`) {
-			t.Fatalf("unauthorized issueEventEvidence leak or error: %s", gotEv)
+		if strings.Contains(gotEv, `"errors"`) {
+			t.Fatalf("authorized issueEventEvidence unexpected error: %s", gotEv)
+		}
+		bobEvQ := fmt.Sprintf(`{ issueEventEvidence(repositoryIds:["%d"], first: 1) { nodes { id } endCursor hasNextPage withheld retryAt } }`, pub)
+		gotBobEv := h.run(bob, bobEvQ)
+		if strings.Contains(gotBobEv, `"errors"`) || !strings.Contains(gotBobEv, `"nodes":[],"endCursor":null,"hasNextPage":false,"withheld":0,"retryAt":null`) {
+			t.Fatalf("unselected accessible issueEventEvidence leak or error: %s", gotBobEv)
+		}
+	})
+
+	t.Run("fence_advance_during_selection_lookup", func(t *testing.T) {
+		qStr := fmt.Sprintf(`{ issues(repositoryIds:["%d"], first: 1) { nodes { id } endCursor hasNextPage withheld retryAt } }`, repo)
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err = tx.Exec(ctx, "LOCK TABLE selections IN ACCESS EXCLUSIVE MODE"); err != nil {
+			t.Fatal(err)
+		}
+		resCh := make(chan string, 1)
+		go func() {
+			resCh <- h.run(alice, qStr)
+		}()
+		deadline := time.Now().Add(2 * time.Second)
+		blocked := false
+		for time.Now().Before(deadline) {
+			if err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%name: ListSelectedIDs%')`).Scan(&blocked); err != nil {
+				t.Fatal(err)
+			}
+			if blocked {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !blocked {
+			t.Fatal("issues query did not block in ListSelectedIDs on selections")
+		}
+		fenceTx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = accessfence.InvalidateAccess(ctx, fenceTx, accessfence.ScopeUser, aliceID); err != nil {
+			t.Fatal(err)
+		}
+		if err = fenceTx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got := <-resCh
+		want := `{"nodes":[],"endCursor":null,"hasNextPage":false,"withheld":1,"retryAt":null}`
+		if !strings.Contains(got, want) || strings.Contains(got, `"errors"`) {
+			t.Fatalf("fence advance during ListSelectedIDs got %s, want %s", got, want)
 		}
 	})
 

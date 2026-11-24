@@ -8,7 +8,7 @@ Before running the Down step of `00015_write_operations.sql`, roll back the API 
 
 Migration `00016_repo_wide_comments.sql` changes the `activity_comments` job key from `repo:N:parent:M` to `repo:N`. Stop every worker before running it, in either direction, and start only the matching build afterwards. A worker from before 00016 marks the new `repo:N` comment jobs dead, and `SignalActivity` never revives dead work, so a rolling deploy needs an operator requeue afterwards. (Newer workers finish leftover `repo:N:parent:M` comment jobs as no-ops.) The Down step does not restore per-issue comment progress: older code rescans comments only on issues and pull requests that change again.
 
-Migration `00017_eligible_selection.sql` defines `is_eligible_selection`, which the background-sync eligibility queries call directly. Apply migrations (or start the updated API binary) before starting updated worker binaries, and roll back API and worker binaries before running the Down step of `00017_eligible_selection.sql`.
+Migration `00017_eligible_selection.sql` defines `is_eligible_selection`, which the background-sync eligibility queries call directly. Wait for migration `00017_eligible_selection.sql` to complete (or for the updated API instance's `/ready` response) before starting updated worker binaries, and roll back API and worker binaries before running the Down step of `00017_eligible_selection.sql`.
 
 ## Job queue
 

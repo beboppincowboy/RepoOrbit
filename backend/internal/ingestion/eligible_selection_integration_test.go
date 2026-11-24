@@ -197,7 +197,9 @@ func TestLockEligibleSelectionScope(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx1.Exec(ctx, `UPDATE repositories SET description = description WHERE id = $1`, int64(100)); err != nil {
+		defer tx1.Rollback(ctx)
+		var lockedID int64
+		if err := tx1.QueryRow(ctx, `SELECT id FROM repositories WHERE id = $1 FOR UPDATE`, int64(100)).Scan(&lockedID); err != nil {
 			t.Fatal(err)
 		}
 
@@ -205,12 +207,13 @@ func TestLockEligibleSelectionScope(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		uid, err := f.q.WithTx(tx2).LockEligibleSelection(ctx, db.LockEligibleSelectionParams{RepositoryID: 100, UserID: 1})
+		defer tx2.Rollback(ctx)
+		lockCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		uid, err := f.q.WithTx(tx2).LockEligibleSelection(lockCtx, db.LockEligibleSelectionParams{RepositoryID: 100, UserID: 1})
 		if err != nil || uid != 1 {
-			t.Fatalf("LockEligibleSelection while repositories row locked = (%d, %v), want (1, nil)", uid, err)
+			t.Fatalf("LockEligibleSelection while repositories row FOR UPDATE locked = (%d, %v), want (1, nil)", uid, err)
 		}
-		_ = tx2.Rollback(ctx)
-		_ = tx1.Rollback(ctx)
 	})
 
 	for _, col := range []string{"deselected_at", "follow_suspended_at"} {
@@ -219,6 +222,7 @@ func TestLockEligibleSelectionScope(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer tx1.Rollback(ctx)
 			if _, err := tx1.Exec(ctx, `UPDATE selections SET `+col+` = now() WHERE user_id = $1 AND repository_id = $2`, int64(1), int64(100)); err != nil {
 				t.Fatal(err)
 			}
@@ -227,12 +231,13 @@ func TestLockEligibleSelectionScope(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = f.q.WithTx(tx2).LockEligibleSelection(ctx, db.LockEligibleSelectionParams{RepositoryID: 100, UserID: 1})
+			defer tx2.Rollback(ctx)
+			lockCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			_, err = f.q.WithTx(tx2).LockEligibleSelection(lockCtx, db.LockEligibleSelectionParams{RepositoryID: 100, UserID: 1})
 			if !isLockNotAvailable(err) {
 				t.Fatalf("LockEligibleSelection during uncommitted %s update err = %v, want SQLSTATE 55P03", col, err)
 			}
-			_ = tx2.Rollback(ctx)
-			_ = tx1.Rollback(ctx)
 		})
 	}
 }
@@ -313,6 +318,14 @@ func TestLockEligibleSelectionPostCommitAndExplainInlining(t *testing.T) {
 		return strings.Join(lines, "\n")
 	}
 
+	var proparallel string
+	if err := f.pool.QueryRow(ctx, `SELECT proparallel::text FROM pg_proc WHERE oid = 'is_eligible_selection(timestamptz, timestamptz, boolean)'::regprocedure`).Scan(&proparallel); err != nil {
+		t.Fatalf("query pg_proc proparallel: %v", err)
+	}
+	if proparallel != "s" {
+		t.Fatalf("is_eligible_selection proparallel = %q, want \"s\" (PARALLEL SAFE)", proparallel)
+	}
+
 	var lockPlan string
 	for _, tc := range []struct {
 		name, file, args string
@@ -324,6 +337,9 @@ func TestLockEligibleSelectionPostCommitAndExplainInlining(t *testing.T) {
 		{"ListEligibleRepositoryIDsForUser", "status.sql", "1"},
 	} {
 		sqlText := loadSQL(tc.file, tc.name)
+		if !strings.Contains(sqlText, "is_eligible_selection(") {
+			t.Fatalf("%s source query does not call is_eligible_selection:\n%s", tc.name, sqlText)
+		}
 		plan := explainPrepared("plan_"+strings.ToLower(tc.name), sqlText, tc.args)
 		if strings.Contains(plan, "is_eligible_selection") {
 			t.Fatalf("%s plan did not inline is_eligible_selection:\n%s", tc.name, plan)
