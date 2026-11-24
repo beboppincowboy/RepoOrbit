@@ -771,24 +771,24 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 	}
 	limitRepo.Store(0)
 
-	// Mid-read revocation inside attachMetadataStatus (after LoadRepositoryOverview finishes) returns ACCESS_UNVERIFIED without retryAt.
-	t.Run("mid_read_attach_metadata_status", func(t *testing.T) {
+	// Mid-read revocation inside loadActivityStatus (after LoadRepositoryOverview finishes) returns ACCESS_UNVERIFIED without retryAt.
+	t.Run("mid_read_load_activity_status", func(t *testing.T) {
 		tx, err := pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		if _, err = tx.Exec(ctx, `LOCK TABLE repository_sync IN ACCESS EXCLUSIVE MODE`); err != nil {
+		if _, err = tx.Exec(ctx, `LOCK TABLE jobs IN ACCESS EXCLUSIVE MODE`); err != nil {
 			t.Fatal(err)
 		}
 		resCh := make(chan string, 1)
 		go func() {
-			resCh <- run(alice, fmt.Sprintf(`{ repositoryOverview(id: "%d", days: 7) { fullName } }`, priv))
+			resCh <- run(alice, fmt.Sprintf(`{ repositoryOverview(id: "%d", days: 7) { fullName activity { synchronized issues { phase } } } }`, priv))
 		}()
 		deadline := time.Now().Add(2 * time.Second)
 		blocked := false
 		for time.Now().Before(deadline) {
-			if err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%name: ListMetadataStatuses%')`).Scan(&blocked); err != nil {
+			if err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%name: ListActivityStatuses%')`).Scan(&blocked); err != nil {
 				t.Fatal(err)
 			}
 			if blocked {
@@ -797,13 +797,13 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		if !blocked {
-			t.Fatal("repositoryOverview did not block in attachMetadataStatus on repository_sync")
+			t.Fatal("repositoryOverview did not block in loadActivityStatus on jobs")
 		}
 		fenceTx, err := pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = accessfence.InvalidateAccess(ctx, fenceTx, accessfence.ScopeUser, aliceID); err != nil {
+		if err = accessfence.BumpAccess(ctx, fenceTx, accessfence.ScopeUser, aliceID); err != nil {
 			t.Fatal(err)
 		}
 		if err = fenceTx.Commit(ctx); err != nil {
@@ -814,7 +814,7 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 		}
 		got := <-resCh
 		if !strings.Contains(got, `"repositoryOverview":null`) || !strings.Contains(got, "ACCESS_UNVERIFIED") || strings.Contains(got, `"retryAt"`) {
-			t.Fatalf("fenced attachMetadataStatus leaked or wrong error: %s", got)
+			t.Fatalf("fenced loadActivityStatus leaked or wrong error: %s", got)
 		}
 	})
 
