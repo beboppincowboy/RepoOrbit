@@ -546,3 +546,45 @@ test('navigating away during a manual detail retry cancels it without reporting 
     releaseRetry();
   }
 });
+
+test('an error-free null repository alias is a denial even when its issues alias is rate-limited', async ({ page }) => {
+  await mockSession(page, signedIn);
+  const retryAt = new Date(Date.now() + 600_000).toISOString();
+  let mixed = false;
+
+  await page.route('**/graphql', async route => {
+    const { query, variables } = route.request().postDataJSON();
+    if (String(query).startsWith('query SelectedRepositories')) {
+      return route.fulfill({
+        json: { data: { selectedRepositories: { nodes: [selectedRepo('1'), selectedRepo('2')], endCursor: '2', hasNextPage: false, withheld: 0, retryAt: null } } },
+      });
+    }
+    if (String(query).startsWith('query RepositoryDetails')) {
+      if (!mixed) {
+        return route.fulfill({ json: { data: { a0: { activity: quietActivity }, r0: issuePage('1'), a1: { activity: quietActivity }, r1: issuePage('2') } } });
+      }
+      return route.fulfill({
+        json: {
+          data: { a0: null, r0: { nodes: [], hasNextPage: false, withheld: 1, retryAt }, a1: { activity: quietActivity }, r1: issuePage('2') },
+          errors: [{ message: 'Rate limited', path: ['r0'], extensions: { code: 'ACCESS_UNVERIFIED', retryAt } }],
+        },
+      });
+    }
+    if (String(query).startsWith('query RepositoryOverview')) {
+      return route.fulfill({ json: { data: { repositoryOverview: repoOverview(variables.id) } } });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/workspace/2');
+  await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
+  await page.evaluate(() => localStorage.setItem('repoorbit:issue-draft:real:ada:1:create', JSON.stringify({ version: 1, title: 'Private draft' })));
+
+  mixed = true;
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('offline'));
+    window.dispatchEvent(new Event('online'));
+  });
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('repoorbit:issue-draft:real:ada:1:')))).toEqual([]);
+  await expect(sidebar(page).locator('a[href*="/workspace/1"]')).toHaveCount(0);
+});
