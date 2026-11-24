@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp/fake"
 )
@@ -87,6 +89,34 @@ func TestStatusLabelsNeedAdminOrMaintain(t *testing.T) {
 		t.Fatalf("Admin could not turn labels off: %d", resp.StatusCode)
 	}
 	e.noInstallationAuthority()
+}
+
+// A 401 on a later label check revokes the viewer's GitHub authorization and answers 401, even while the first check
+// is still waiting on GitHub.
+func TestStatusLabelStateUnauthorizedRevokes(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/labels/status:review"):
+			http.Error(w, "bad credentials", http.StatusUnauthorized)
+			return
+		case strings.HasSuffix(r.URL.Path, "/labels/status:todo"):
+			select { // a check canceled by the 401 ends here; a check made before it waits, then answers
+			case <-r.Context().Done():
+				return
+			case <-time.After(300 * time.Millisecond):
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+	if resp := alice.do("GET", statusLabelsPath(repo), "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status %d %s", resp.StatusCode, alice.body(resp))
+	}
+	if n := e.count(`SELECT count(*) FROM sessions WHERE user_id = $1`, alice.id); n != 0 {
+		t.Fatalf("a 401 label check must revoke the viewer: %d sessions left", n)
+	}
 }
 
 // Turning labels on creates exactly the missing labels through review and reuses an existing one, whatever its case.
