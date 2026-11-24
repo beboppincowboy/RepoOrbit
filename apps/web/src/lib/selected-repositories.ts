@@ -488,15 +488,16 @@ export function recordRepositoryRemoved(queryClient: QueryClient, session: Viewe
   recordOutOfSelection(queryClient, session, [repositoryId]);
 }
 
-// A repository that left the selection loses its saved snapshots, and an "unverified" outcome for it becomes a denial,
-// so it can neither keep the shell waiting on its retry time nor come back as a saved-data link.
+// A repository that left the selection loses its saved snapshots and is recorded as denied (drafts stay: it may only
+// have been deselected). The new sequence stops an older read from showing it or saving a snapshot again, and the
+// shell stops waiting on its retry time; only a read that starts afterwards can verify it again.
 function recordOutOfSelection(queryClient: QueryClient, session: ViewerSession, repositoryIds: Iterable<string>) {
   const viewerKey = viewerKeyOf(session);
   const current = getViewerVisibility(viewerKey);
   let next: Map<string, RepositoryAccessOutcome> | null = null;
   for (const repositoryId of repositoryIds) {
     queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
-    if (current.get(repositoryId)?.status === "unverified") {
+    if (current.get(repositoryId)?.status !== "denied") {
       next ??= new Map(current);
       next.set(repositoryId, { status: "denied", seq: nextAccessSeq() });
     }
