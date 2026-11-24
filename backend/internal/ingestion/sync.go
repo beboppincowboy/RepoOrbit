@@ -315,5 +315,5 @@ func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.
 			return err
 		}
 	}
-	return nil
+	return enqueueStatusCleanup(ctx, tx, repoID, issue)
 }

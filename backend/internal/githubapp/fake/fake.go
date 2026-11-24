@@ -43,6 +43,7 @@ type Server struct {
 	comments     map[int64]map[int64][]CommentFixture
 	releases     map[int64][]ReleaseFixture
 	issueEvents  map[int64][]IssueEventFixture
+	labels       map[int64][]string          // repository -> label names, in creation order
 	perms        map[int64]map[string]string // repository -> login -> granted level (read, triage, write, maintain, admin)
 	writeFault   IssueWriteFault
 	writeTokens  []string
@@ -87,15 +88,16 @@ type IssueLabel struct {
 
 // install is a GitHub App installation visible to one user, covering a fixed set of repositories.
 type install struct {
-	id    int64
-	owner string
-	repos map[int64]bool
+	id     int64
+	owner  string
+	repos  map[int64]bool
+	issues string // the installation's Issues permission: "write" (the default) or "read"
 }
 
 type grant struct{ challenge, login string }
 
 func New(clientID, clientSecret string) *Server {
-	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, stars: map[string]map[int64]bool{}, issues: map[int64][]IssueFixture{}, pulls: map[int64][]PullRequestFixture{}, reviews: map[int64]map[int64][]ReviewFixture{}, comments: map[int64]map[int64][]CommentFixture{}, releases: map[int64][]ReleaseFixture{}, issueEvents: map[int64][]IssueEventFixture{}, perms: map[int64]map[string]string{}, hits: map[string]int{}}
+	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, stars: map[string]map[int64]bool{}, issues: map[int64][]IssueFixture{}, pulls: map[int64][]PullRequestFixture{}, reviews: map[int64]map[int64][]ReviewFixture{}, comments: map[int64]map[int64][]CommentFixture{}, releases: map[int64][]ReleaseFixture{}, issueEvents: map[int64][]IssueEventFixture{}, labels: map[int64][]string{}, perms: map[int64]map[string]string{}, hits: map[string]int{}}
 }
 
 // Refreshes reports how many refresh-token exchanges were accepted.
@@ -127,6 +129,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/labels", s.api(s.issueLabels))
 	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/labels/{name}", s.api(s.issueLabels))
 	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/assignees", s.api(s.issueAssignees))
+	mux.HandleFunc("/repos/{owner}/{repo}/labels", s.api(s.repoLabels))
+	mux.HandleFunc("/repos/{owner}/{repo}/labels/{name}", s.api(s.repoLabels))
 	mux.HandleFunc("/repos/{owner}/{repo}/assignees", s.api(s.assignees))
 	mux.HandleFunc("/repos/{owner}/{repo}/assignees/{login}", s.api(s.assignable))
 	mux.HandleFunc("/repos/{owner}/{repo}/releases", s.api(s.repoActivity))
@@ -319,7 +323,7 @@ func (s *Server) SetPrivate(id int64, private bool) {
 func (s *Server) Install(owner string, id int64, repoIDs ...int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	in := &install{id: id, owner: owner, repos: map[int64]bool{}}
+	in := &install{id: id, owner: owner, repos: map[int64]bool{}, issues: "write"}
 	for _, r := range repoIDs {
 		in.repos[r] = true
 	}
@@ -666,7 +670,7 @@ func (s *Server) repositoryInstallation(w http.ResponseWriter, r *http.Request) 
 		for repoID := range in.repos {
 			repo := s.repos[repoID]
 			if repo != nil && repo.owner == r.PathValue("owner") && repo.name == r.PathValue("repo") {
-				writeJSON(w, map[string]any{"id": id, "suspended_at": nil})
+				writeJSON(w, map[string]any{"id": id, "suspended_at": nil, "permissions": map[string]string{"metadata": "read", "issues": in.issues}})
 				return
 			}
 		}

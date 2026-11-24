@@ -291,13 +291,17 @@ func (d SchedulerDeps) pollActivity(ctx context.Context, now time.Time) error {
 // issue-write operation is deleted and an unresolved one is wiped and redacted (and then kept indefinitely).
 const writeOperationRetention = 30 * 24 * time.Hour
 
-// expireWriteOperations deletes succeeded and failed issue-write operations older than writeOperationRetention, and
+// expireWriteOperations deletes the app's own operations and succeeded and failed issue-write operations older than
+// writeOperationRetention, and
 // wipes and redacts the rest of that age. Those are unresolved (pending or unknown), and an unknown create must stay: its
 // content hash is what stops a retry of the same content from creating a second issue.
 func (d SchedulerDeps) expireWriteOperations(ctx context.Context, now time.Time) error {
 	cutoff := now.Add(-writeOperationRetention)
 	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `DELETE FROM write_operations WHERE created_at < $1 AND state IN ('succeeded', 'failed')`, cutoff); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM app_operations WHERE created_at < $1`, cutoff); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `UPDATE write_operations SET draft = NULL, outcome = redacted_write_outcome(outcome)

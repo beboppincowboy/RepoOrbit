@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -271,7 +272,7 @@ func (s *Server) issueLabels(w http.ResponseWriter, r *http.Request, login strin
 	if issue == nil {
 		return
 	}
-	if !atLeast(level, "triage") {
+	if !atLeast(level, "triage") || r.Method != http.MethodGet && s.readOnlyInstallation(r) {
 		http.Error(w, `{"message":"Must have triage rights to Repository."}`, http.StatusForbidden)
 		return
 	}
@@ -283,7 +284,7 @@ func (s *Server) issueLabels(w http.ResponseWriter, r *http.Request, login strin
 			}
 		}
 	case http.MethodDelete:
-		i := slices.IndexFunc(issue.Labels, func(l IssueLabel) bool { return l.Name == r.PathValue("name") })
+		i := slices.IndexFunc(issue.Labels, func(l IssueLabel) bool { return strings.EqualFold(l.Name, r.PathValue("name")) })
 		if i < 0 {
 			http.Error(w, `{"message":"Label does not exist"}`, http.StatusNotFound)
 			return
@@ -374,4 +375,81 @@ func (s *Server) assignable(w http.ResponseWriter, r *http.Request, login string
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// SetInstallationIssues sets an installation's Issues permission: "write" (the default) or "read". A "read"
+// installation's token is refused issue label writes.
+func (s *Server) SetInstallationIssues(id int64, level string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.installs[id].issues = level
+}
+
+// readOnlyInstallation reports whether r carries the token of an installation without Issues write. Caller holds mu.
+func (s *Server) readOnlyInstallation(r *http.Request) bool {
+	raw, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer installation_")
+	if !ok {
+		return false
+	}
+	id, _ := strconv.ParseInt(raw, 10, 64)
+	in := s.installs[id]
+	return in == nil || in.issues != "write"
+}
+
+// AddLabel creates a repository label, as someone did on GitHub.
+func (s *Server) AddLabel(repoID int64, name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.labels[repoID] = append(s.labels[repoID], name)
+}
+
+// Labels returns a copy of a repository's label names in creation order.
+func (s *Server) Labels(repoID int64) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.labels[repoID]...)
+}
+
+// repoLabels serves GET of one repository label (names match case-insensitively) and POST to create one, which needs
+// write access and answers 422 for a name that already exists.
+func (s *Server) repoLabels(w http.ResponseWriter, r *http.Request, login string) {
+	var in struct {
+		Name  string `json:"name"`
+		Color string `json:"color"`
+	}
+	if r.Method == http.MethodPost && !decode(w, r, &in) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	x, level, ok := s.writeTarget(w, r, login)
+	if !ok {
+		return
+	}
+	find := func(name string) int {
+		return slices.IndexFunc(s.labels[x.id], func(l string) bool { return strings.EqualFold(l, name) })
+	}
+	switch {
+	case r.Method == http.MethodGet && r.PathValue("name") != "":
+		i := find(r.PathValue("name"))
+		if i < 0 {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		}
+		writeJSON(w, map[string]any{"id": labelFor(s.labels[x.id][i]).ID, "name": s.labels[x.id][i]})
+	case r.Method == http.MethodPost && r.PathValue("name") == "":
+		if !atLeast(level, "write") {
+			http.Error(w, `{"message":"Must have admin rights to Repository."}`, http.StatusForbidden)
+			return
+		}
+		if in.Name == "" || find(in.Name) >= 0 {
+			http.Error(w, `{"message":"Validation Failed","errors":[{"resource":"Label","code":"already_exists","field":"name"}]}`, http.StatusUnprocessableEntity)
+			return
+		}
+		s.labels[x.id] = append(s.labels[x.id], in.Name)
+		w.WriteHeader(http.StatusCreated)
+		writeJSON(w, map[string]any{"id": labelFor(in.Name).ID, "name": in.Name})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }

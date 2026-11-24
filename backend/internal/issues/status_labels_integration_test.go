@@ -1,0 +1,180 @@
+//go:build integration
+
+package issues_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"slices"
+	"testing"
+)
+
+func statusLabelsPath(repoID int64) string {
+	return fmt.Sprintf("/api/repositories/%d/status-labels", repoID)
+}
+
+func (e *env) statusLabelsOn(repoID int64) bool {
+	e.t.Helper()
+	var on bool
+	if err := e.pool.QueryRow(context.Background(), `SELECT status_labels FROM repositories WHERE id = $1`, repoID).Scan(&on); err != nil {
+		e.t.Fatal(err)
+	}
+	return on
+}
+
+func (u *user) disableStatusLabels(repoID int64) *http.Response {
+	u.e.t.Helper()
+	return u.do("DELETE", statusLabelsPath(repoID), "", map[string]string{"Origin": appURL, "X-CSRF-Token": u.csrf})
+}
+
+type statusLabelState struct {
+	Enabled   bool `json:"enabled"`
+	CanChange bool `json:"canChange"`
+	Labels    []struct {
+		Name   string `json:"name"`
+		Exists bool   `json:"exists"`
+	} `json:"labels"`
+}
+
+func (u *user) statusLabelState(repoID int64) statusLabelState {
+	u.e.t.Helper()
+	resp := u.do("GET", statusLabelsPath(repoID), "", nil)
+	var s statusLabelState
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(u.body(resp), &s) != nil {
+		u.e.t.Fatalf("status label state: %d", resp.StatusCode)
+	}
+	return s
+}
+
+// Write or Triage users cannot turn status labels on or off, forged requests fail, and nothing reaches GitHub.
+func TestStatusLabelsNeedAdminOrMaintain(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	for login, level := range map[string]string{"bob": "write", "carol": "triage", "dave": "maintain"} {
+		e.gh.SetPermission(login, repo, level)
+	}
+	bob, carol, dave := e.signIn("bob"), e.signIn("carol"), e.signIn("dave")
+
+	if s := bob.statusLabelState(repo); s.CanChange || s.Labels != nil {
+		t.Fatalf("a Write user is offered the setup: %+v", s)
+	}
+	if resp, _ := bob.send(statusLabelsPath(repo), "on-bob", `{}`); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Write user turned labels on: %d", resp.StatusCode)
+	}
+	if resp, _ := carol.send(statusLabelsPath(repo), "on-carol", `{}`); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Triage user turned labels on: %d", resp.StatusCode)
+	}
+	forged := carol.do("POST", statusLabelsPath(repo), `{}`, map[string]string{"Origin": appURL, "Idempotency-Key": "forged", "Content-Type": "application/json"})
+	if forged.StatusCode != http.StatusForbidden {
+		t.Fatalf("request without CSRF token: %d", forged.StatusCode)
+	}
+	if len(e.gh.Labels(repo)) != 0 || e.statusLabelsOn(repo) {
+		t.Fatalf("denied requests changed something: labels=%v on=%v", e.gh.Labels(repo), e.statusLabelsOn(repo))
+	}
+
+	if resp, op := dave.send(statusLabelsPath(repo), "on-dave", `{}`); resp.StatusCode != http.StatusCreated || op.State != "succeeded" || op.Kind != "status_labels" {
+		t.Fatalf("Maintain user could not turn labels on: %d %+v", resp.StatusCode, op)
+	}
+	if resp := bob.disableStatusLabels(repo); resp.StatusCode != http.StatusForbidden || !e.statusLabelsOn(repo) {
+		t.Fatalf("Write user turned labels off: %d", resp.StatusCode)
+	}
+	if resp := alice.disableStatusLabels(repo); resp.StatusCode != http.StatusNoContent || e.statusLabelsOn(repo) {
+		t.Fatalf("Admin could not turn labels off: %d", resp.StatusCode)
+	}
+	e.noInstallationAuthority()
+}
+
+// Turning labels on creates exactly the missing labels through review and reuses an existing one, whatever its case.
+func TestStatusLabelsCreateOnlyMissing(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.AddLabel(repo, "Status:Todo")
+	e.gh.AddLabel(repo, "bug")
+
+	s := alice.statusLabelState(repo)
+	exists := map[string]bool{}
+	for _, l := range s.Labels {
+		exists[l.Name] = l.Exists
+	}
+	if s.Enabled || !s.CanChange || len(exists) != 3 || !exists["status:todo"] || exists["status:in-progress"] || exists["status:review"] {
+		t.Fatalf("review state: %+v", s)
+	}
+
+	resp, op := alice.send(statusLabelsPath(repo), "on-1", `{}`)
+	if resp.StatusCode != http.StatusCreated || op.State != "succeeded" || op.Actor != "alice" || len(op.Outcome.Unapplied) != 0 {
+		t.Fatalf("status=%d op=%+v", resp.StatusCode, op)
+	}
+	var out struct {
+		Created []string `json:"created"`
+	}
+	raw := alice.body(alice.do("GET", opPath(op.ID), "", nil))
+	var full struct {
+		Outcome json.RawMessage `json:"outcome"`
+	}
+	if json.Unmarshal(raw, &full) != nil || json.Unmarshal(full.Outcome, &out) != nil || !slices.Equal(out.Created, []string{"status:in-progress", "status:review"}) {
+		t.Fatalf("created labels: %s", raw)
+	}
+	if got := e.gh.Labels(repo); !slices.Equal(got, []string{"Status:Todo", "bug", "status:in-progress", "status:review"}) {
+		t.Fatalf("repository labels: %v", got)
+	}
+	if !e.statusLabelsOn(repo) {
+		t.Fatal("status labels not turned on")
+	}
+	if s := alice.statusLabelState(repo); !s.Enabled || s.Labels != nil {
+		t.Fatalf("state after enabling: %+v", s)
+	}
+
+	// Turning them on again reuses all three; turning them off writes nothing to GitHub.
+	if _, op := alice.send(statusLabelsPath(repo), "on-2", `{}`); op.State != "succeeded" {
+		t.Fatalf("second enable: %+v", op)
+	}
+	if resp := alice.disableStatusLabels(repo); resp.StatusCode != http.StatusNoContent || len(e.gh.Labels(repo)) != 4 {
+		t.Fatalf("disable: %d labels=%v", resp.StatusCode, e.gh.Labels(repo))
+	}
+	var list struct{ Operations []operation }
+	if json.Unmarshal(alice.body(alice.do("GET", fmt.Sprintf("/api/repositories/%d/write-operations", repo), "", nil)), &list) != nil ||
+		len(list.Operations) != 2 || list.Operations[0].Kind != "status_labels" {
+		t.Fatalf("history: %+v", list.Operations)
+	}
+	e.noInstallationAuthority()
+}
+
+// A label create without a reliable answer leaves the operation unknown and the setting off; a recheck that finds all
+// three labels turns status labels on, but only for an actor who is still Admin or Maintain.
+func TestAmbiguousStatusLabelsResolveOnRecheck(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetPermission("dave", repo, "maintain")
+	dave := e.signIn("dave")
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/alice/app/labels" {
+			http.Error(w, "gateway timeout", http.StatusGatewayTimeout) // nothing created, but the client cannot know
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+	resp, op := dave.send(statusLabelsPath(repo), "on-1", `{}`)
+	if resp.StatusCode != http.StatusAccepted || op.State != "unknown" || e.statusLabelsOn(repo) {
+		t.Fatalf("status=%d op=%+v on=%v", resp.StatusCode, op, e.statusLabelsOn(repo))
+	}
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) { next.ServeHTTP(w, r) })
+	for _, l := range []string{"status:todo", "status:in-progress", "status:review"} {
+		e.gh.AddLabel(repo, l)
+	}
+
+	e.gh.SetPermission("dave", repo, "write")
+	if resp, _ := dave.send(opPath(op.ID)+"/recheck", "", `{}`); resp.StatusCode != http.StatusForbidden || e.statusLabelsOn(repo) {
+		t.Fatalf("recheck by a demoted actor: %d", resp.StatusCode)
+	}
+	e.gh.SetPermission("dave", repo, "maintain")
+	resp, op = dave.send(opPath(op.ID)+"/recheck", "", `{}`)
+	if resp.StatusCode != http.StatusOK || op.State != "succeeded" || !e.statusLabelsOn(repo) {
+		t.Fatalf("recheck: %d %+v on=%v", resp.StatusCode, op, e.statusLabelsOn(repo))
+	}
+	_ = alice
+}
