@@ -9,77 +9,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
-	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
-	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
-type evidencePage struct {
-	ids      []int64
-	after    int64
-	n        int
-	withheld int
-	retry    *string
-	fence    accessfence.Snapshot
-	userID   int64
-	checks   map[int64]repositories.Decision
-}
-
-func (r *queryResolver) evidenceAccess(ctx context.Context, raw []string, first int, after *string) (evidencePage, error) {
-	var p evidencePage
-	var err error
-	if p.n, err = pageLimit(first); err != nil {
-		return p, err
-	}
-	if p.after, err = parsePositiveID(after); err != nil {
-		return p, err
-	}
-	if len(raw) > maxRepositoryIDs {
-		return p, fmt.Errorf("at most %d repositories", maxRepositoryIDs)
-	}
-	for _, s := range raw {
-		id, e := parsePositiveID(&s)
-		if e != nil {
-			return p, e
-		}
-		p.ids = append(p.ids, id)
-	}
-	if r.Demo {
-		p.ids = nil
-		return p, nil
-	}
-	user, err := r.userID(ctx)
-	if err != nil {
-		return p, err
-	}
-	p.userID = user
-	p.fence, err = accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, user)
-	if err != nil {
-		return p, fmt.Errorf("database unavailable")
-	}
-	p.ids, err = r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: user, RepositoryIds: p.ids})
-	if err != nil {
-		return p, fmt.Errorf("database unavailable")
-	}
-	p.checks = r.RepoAccess.Check(ctx, user, p.ids, true)
-	allowed := make([]int64, 0, len(p.ids))
-	for _, id := range p.ids {
-		d := p.checks[id]
-		if d.Allowed {
-			allowed = append(allowed, id)
-		}
-		if d.Unverified {
-			p.withheld++
-			p.retry = laterRetry(p.retry, d.RetryAt)
-		}
-	}
-	p.ids = allowed
-	return p, nil
-}
-func (r *queryResolver) evidenceCurrent(ctx context.Context, p evidencePage) bool {
-	current, err := p.fence.Current(ctx, r.RepoAccess.Pool)
-	return err == nil && current
-}
 func actor(id *int64, login, kind *string) *model.EvidenceActor {
 	if id == nil || login == nil || kind == nil {
 		return nil

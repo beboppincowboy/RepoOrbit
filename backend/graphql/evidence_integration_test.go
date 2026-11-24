@@ -613,3 +613,250 @@ func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 		}
 	})
 }
+
+func TestOverviewGuardedReadsAndEdges(t *testing.T) {
+	ctx := context.Background()
+	_, pool := testutil.Database(t)
+	gh := fake.New("cid", "secret")
+	var limitRepo atomic.Int64
+	resetUnix := time.Now().Add(time.Hour).UTC().Unix()
+	ghHandler := gh.Handler()
+	gs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id := limitRepo.Load(); id != 0 && r.URL.Path == fmt.Sprintf("/repositories/%d", id) {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetUnix, 10))
+			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+			return
+		}
+		ghHandler.ServeHTTP(w, r)
+	}))
+	defer gs.Close()
+
+	client := githubapp.New("cid", "secret", gs.URL, gs.URL, "http://app.test/auth/github/callback")
+	q := db.New(pool)
+	authSvc := &auth.Service{Pool: pool, Queries: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
+	repos := &repositories.Service{Pool: pool, Queries: q, GitHub: client, TokenSource: authSvc, TTL: time.Nanosecond}
+	ah := &auth.Handler{Service: authSvc, AppURL: "http://app.test"}
+	mux := http.NewServeMux()
+	mux.Handle("/auth/", ah.Routes())
+	mux.Handle("/graphql", ah.Protect(Server(&Resolver{Queries: q, RepoAccess: repos})))
+	api := httptest.NewServer(mux)
+	defer api.Close()
+
+	signIn := func(login string) *http.Client {
+		t.Helper()
+		jar, _ := cookiejar.New(nil)
+		c := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		resp, err := c.Get(api.URL + "/auth/github/login")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		loc, _ := url.Parse(resp.Header.Get("Location"))
+		v := loc.Query()
+		v.Set("as", login)
+		loc.RawQuery = v.Encode()
+		resp, err = c.Get(loc.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		cb, _ := url.Parse(resp.Header.Get("Location"))
+		resp, err = c.Get(api.URL + cb.RequestURI())
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return c
+	}
+
+	alice := signIn("alice")
+	bob := signIn("bob")
+	var aliceID, bobID int64
+	if err := pool.QueryRow(ctx, `SELECT (SELECT id FROM users WHERE login='alice'), (SELECT id FROM users WHERE login='bob')`).Scan(&aliceID, &bobID); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(c *http.Client, query string) string {
+		t.Helper()
+		me, err := c.Get(api.URL + "/auth/me")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var session struct {
+			CSRFToken string `json:"csrfToken"`
+		}
+		_ = json.NewDecoder(me.Body).Decode(&session)
+		me.Body.Close()
+		body, _ := json.Marshal(map[string]string{"query": query})
+		req, _ := http.NewRequest("POST", api.URL+"/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "http://app.test")
+		req.Header.Set("X-CSRF-Token", session.CSRFToken)
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 {
+			t.Fatalf("status %d: %s", resp.StatusCode, b)
+		}
+		return string(b)
+	}
+
+	// Setup Alice's sole private installed repo and verify sole-repository installation removal on crossRepositoryOverview.
+	priv := gh.AddRepo("alice", "sole-secret", true)
+	gh.Install("alice", 20, priv)
+	if err := repos.Connect(ctx, aliceID, priv); err != nil {
+		t.Fatal(err)
+	}
+	gh.Uninstall(20)
+	crossQ := `{ crossRepositoryOverview(days: 7) { repositoriesCounted repositoriesSyncing withheld retryAt openIssues { value } daily { day } } }`
+	if got := run(alice, crossQ); !strings.Contains(got, `"crossRepositoryOverview":null`) || !strings.Contains(got, "ACCESS_UNVERIFIED") || strings.Contains(got, `"retryAt"`) {
+		t.Fatalf("sole-repo revocation first read: %s", got)
+	}
+	if got := run(alice, crossQ); !strings.Contains(got, `"repositoriesCounted":0`) || strings.Contains(got, `"errors"`) {
+		t.Fatalf("sole-repo revocation second read: %s", got)
+	}
+
+	// Reinstall (first read discovers the installation and advances the fence; second read succeeds) and verify unselected, pre-read unverified with retryAt, follow-suspended, and mid-read attachMetadataStatus revocation.
+	gh.Install("alice", 21, priv)
+	_ = run(alice, crossQ)
+	unselected := gh.AddRepo("carol", "unselected", false)
+	beforeGH := gh.Hits("/user/repos") + gh.Hits("/repositories/")
+	if got := run(alice, fmt.Sprintf(`{ repositoryOverview(id: "%d", days: 7) { fullName } }`, unselected)); !strings.Contains(got, `"repositoryOverview":null`) || strings.Contains(got, `"errors"`) {
+		t.Fatalf("unselected repositoryOverview: %s", got)
+	}
+	if afterGH := gh.Hits("/user/repos") + gh.Hits("/repositories/"); afterGH != beforeGH {
+		t.Fatalf("unselected repositoryOverview made %d GitHub hits, want 0", afterGH-beforeGH)
+	}
+
+	// Follow-suspended public star stays readable in both repositoryOverview and crossRepositoryOverview.
+	pub := gh.AddRepo("carol", "suspended-star", false)
+	if _, err := pool.Exec(ctx, `INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES ($1, 'carol/suspended-star', '', false, false)`, pub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO selections (user_id, repository_id, source, selected_at, follow_suspended_at) VALUES ($1, $2, 'starred', now(), now())`, aliceID, pub); err != nil {
+		t.Fatal(err)
+	}
+	if got := run(alice, fmt.Sprintf(`{ repositoryOverview(id: "%d", days: 7) { fullName } }`, pub)); !strings.Contains(got, `"fullName":"carol/suspended-star"`) || strings.Contains(got, `"errors"`) {
+		t.Fatalf("suspended-follow repositoryOverview: %s", got)
+	}
+	if got := run(alice, crossQ); !strings.Contains(got, `"repositoriesSyncing":2`) || strings.Contains(got, `"errors"`) {
+		t.Fatalf("suspended-follow crossRepositoryOverview: %s", got)
+	}
+
+	// Pre-read rate-limited repositoryOverview returns ACCESS_UNVERIFIED with extensions.retryAt.
+	limitRepo.Store(pub)
+	wantRetry := time.Unix(resetUnix, 0).UTC().Format(time.RFC3339)
+	if got := run(alice, fmt.Sprintf(`{ repositoryOverview(id: "%d", days: 7) { fullName } }`, pub)); !strings.Contains(got, "ACCESS_UNVERIFIED") || !strings.Contains(got, fmt.Sprintf(`"retryAt":"%s"`, wantRetry)) {
+		t.Fatalf("pre-read rate-limited repositoryOverview: %s", got)
+	}
+
+	// All-unverified crossRepositoryOverview (only pub selected on bob, rate-limited) returns non-null overview with withheld=1, retryAt, and full daily series.
+	if _, err := pool.Exec(ctx, `INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES ($1, $2, 'starred', now())`, bobID, pub); err != nil {
+		t.Fatal(err)
+	}
+	gotBob := run(bob, crossQ)
+	var bobResp struct {
+		Data struct {
+			CrossRepositoryOverview *struct {
+				RepositoriesCounted int
+				Withheld            int
+				RetryAt             *string
+				Daily               []any
+			}
+		}
+		Errors []any
+	}
+	if err := json.Unmarshal([]byte(gotBob), &bobResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(bobResp.Errors) != 0 || bobResp.Data.CrossRepositoryOverview == nil ||
+		bobResp.Data.CrossRepositoryOverview.RepositoriesCounted != 0 ||
+		bobResp.Data.CrossRepositoryOverview.Withheld != 1 ||
+		bobResp.Data.CrossRepositoryOverview.RetryAt == nil ||
+		*bobResp.Data.CrossRepositoryOverview.RetryAt != wantRetry ||
+		len(bobResp.Data.CrossRepositoryOverview.Daily) != 7 {
+		t.Fatalf("all-unverified crossRepositoryOverview: %s", gotBob)
+	}
+	limitRepo.Store(0)
+
+	// Mid-read revocation inside attachMetadataStatus (after LoadRepositoryOverview finishes) returns ACCESS_UNVERIFIED without retryAt.
+	t.Run("mid_read_attach_metadata_status", func(t *testing.T) {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err = tx.Exec(ctx, `LOCK TABLE repository_sync IN ACCESS EXCLUSIVE MODE`); err != nil {
+			t.Fatal(err)
+		}
+		resCh := make(chan string, 1)
+		go func() {
+			resCh <- run(alice, fmt.Sprintf(`{ repositoryOverview(id: "%d", days: 7) { fullName } }`, priv))
+		}()
+		deadline := time.Now().Add(2 * time.Second)
+		blocked := false
+		for time.Now().Before(deadline) {
+			if err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%name: ListMetadataStatuses%')`).Scan(&blocked); err != nil {
+				t.Fatal(err)
+			}
+			if blocked {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !blocked {
+			t.Fatal("repositoryOverview did not block in attachMetadataStatus on repository_sync")
+		}
+		fenceTx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = accessfence.InvalidateAccess(ctx, fenceTx, accessfence.ScopeUser, aliceID); err != nil {
+			t.Fatal(err)
+		}
+		if err = fenceTx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got := <-resCh
+		if !strings.Contains(got, `"repositoryOverview":null`) || !strings.Contains(got, "ACCESS_UNVERIFIED") || strings.Contains(got, `"retryAt"`) {
+			t.Fatalf("fenced attachMetadataStatus leaked or wrong error: %s", got)
+		}
+	})
+
+	// Selection limit on crossRepositoryOverview: 100 succeeds, 101 fails with OVERVIEW_SELECTION_LIMIT and 0 GitHub calls.
+	t.Run("cross_overview_selection_limit_100_vs_101", func(t *testing.T) {
+		for i := 0; i < 99; i++ { // bob already has 1 selection (pub)
+			id := gh.AddRepo("bob", fmt.Sprintf("r-%03d", i), false)
+			if _, err := pool.Exec(ctx, `INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES ($1, $2, '', false, false)`, id, fmt.Sprintf("bob/r-%03d", i)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, `INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES ($1, $2, 'owned', now())`, bobID, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := run(bob, crossQ); !strings.Contains(got, `"repositoriesSyncing":100`) || strings.Contains(got, `"errors"`) {
+			t.Fatalf("100 selections failed: %s", got)
+		}
+		extra := gh.AddRepo("bob", "r-101", false)
+		if _, err := pool.Exec(ctx, `INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES ($1, 'bob/r-101', '', false, false)`, extra); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES ($1, $2, 'owned', now())`, bobID, extra); err != nil {
+			t.Fatal(err)
+		}
+		hitsBefore := gh.Hits("/user/repos") + gh.Hits("/user/installations")
+		if got := run(bob, crossQ); !strings.Contains(got, "OVERVIEW_SELECTION_LIMIT") {
+			t.Fatalf("101 selections did not return OVERVIEW_SELECTION_LIMIT: %s", got)
+		}
+		if hitsAfter := gh.Hits("/user/repos") + gh.Hits("/user/installations"); hitsAfter != hitsBefore {
+			t.Fatalf("101 selections made %d GitHub hits, want 0", hitsAfter-hitsBefore)
+		}
+	})
+}
