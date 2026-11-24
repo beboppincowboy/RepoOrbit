@@ -291,11 +291,11 @@ func (d SchedulerDeps) pollActivity(ctx context.Context, now time.Time) error {
 // issue-write operation is deleted and an unresolved one is wiped and redacted (and then kept indefinitely).
 const (
 	writeOperationRetention = 30 * 24 * time.Hour
-	StalePendingTimeout     = time.Minute
+	stalePendingTimeout     = time.Minute
 )
 
 func (d SchedulerDeps) expireWriteOperations(ctx context.Context, now time.Time) error {
-	staleCutoff := now.Add(-StalePendingTimeout)
+	staleCutoff := now.Add(-stalePendingTimeout)
 	cutoff := now.Add(-writeOperationRetention)
 	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `UPDATE write_operations SET state = 'failed',
