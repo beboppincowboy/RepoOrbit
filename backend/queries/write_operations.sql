@@ -11,13 +11,16 @@ RETURNING id;
 SELECT id, request_hash FROM write_operations WHERE user_id = $1 AND idempotency_key = $2;
 
 -- name: GetWriteOperation :one
--- Scoped to the initiating user: another user's id reads as not found.
-SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name
+-- Scoped to the initiating user: another user's id reads as not found. stale_pending is the complement of
+-- MarkWriteOperationSent's freshness guard on the same database clock: a row it reports can no longer be sent.
+SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name,
+ (o.state = 'pending' AND o.created_at < now() - interval '1 minute') AS stale_pending
 FROM write_operations o JOIN users u ON u.id = o.user_id JOIN repositories r ON r.id = o.repository_id WHERE o.id = $1 AND o.user_id = $2;
 
 -- name: ListWriteOperations :many
--- The user's own operations on one repository, newest first, at most 100 (no paging).
-SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name
+-- The user's own operations on one repository, newest first, at most 100 (no paging). Same columns as GetWriteOperation.
+SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name,
+ (o.state = 'pending' AND o.created_at < now() - interval '1 minute') AS stale_pending
 FROM write_operations o JOIN users u ON u.id = o.user_id JOIN repositories r ON r.id = o.repository_id WHERE o.user_id = $1 AND o.repository_id = $2 ORDER BY o.id DESC LIMIT 100;
 
 -- name: MarkWriteOperationSent :execrows

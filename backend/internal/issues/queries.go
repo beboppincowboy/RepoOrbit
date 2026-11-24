@@ -7,13 +7,11 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
-	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
@@ -25,7 +23,7 @@ var (
 func (s *Service) view(row db.GetWriteOperationRow) opView {
 	state := row.State
 	rawOutcome := row.Outcome
-	if state == "pending" && row.CreatedAt.Valid && time.Since(row.CreatedAt.Time) > ingestion.StalePendingTimeout {
+	if row.StalePending.Bool { // decided by the database clock that MarkWriteOperationSent checks
 		state = "failed"
 		if len(row.Draft) == 0 {
 			rawOutcome = abandonedPendingRedactedOutcome

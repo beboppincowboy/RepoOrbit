@@ -134,7 +134,8 @@ func (q *Queries) GetRepositoryIsPrivate(ctx context.Context, id int64) (bool, e
 }
 
 const getWriteOperation = `-- name: GetWriteOperation :one
-SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name
+SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name,
+ (o.state = 'pending' AND o.created_at < now() - interval '1 minute') AS stale_pending
 FROM write_operations o JOIN users u ON u.id = o.user_id JOIN repositories r ON r.id = o.repository_id WHERE o.id = $1 AND o.user_id = $2
 `
 
@@ -159,9 +160,11 @@ type GetWriteOperationRow struct {
 	ActorLogin           string
 	ActorGithubID        int64
 	RepositoryName       string
+	StalePending         pgtype.Bool
 }
 
-// Scoped to the initiating user: another user's id reads as not found.
+// Scoped to the initiating user: another user's id reads as not found. stale_pending is the complement of
+// MarkWriteOperationSent's freshness guard on the same database clock: a row it reports can no longer be sent.
 func (q *Queries) GetWriteOperation(ctx context.Context, arg GetWriteOperationParams) (GetWriteOperationRow, error) {
 	row := q.db.QueryRow(ctx, getWriteOperation, arg.ID, arg.UserID)
 	var i GetWriteOperationRow
@@ -181,6 +184,7 @@ func (q *Queries) GetWriteOperation(ctx context.Context, arg GetWriteOperationPa
 		&i.ActorLogin,
 		&i.ActorGithubID,
 		&i.RepositoryName,
+		&i.StalePending,
 	)
 	return i, err
 }
@@ -246,7 +250,8 @@ func (q *Queries) InsertWriteOperation(ctx context.Context, arg InsertWriteOpera
 }
 
 const listWriteOperations = `-- name: ListWriteOperations :many
-SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name
+SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name,
+ (o.state = 'pending' AND o.created_at < now() - interval '1 minute') AS stale_pending
 FROM write_operations o JOIN users u ON u.id = o.user_id JOIN repositories r ON r.id = o.repository_id WHERE o.user_id = $1 AND o.repository_id = $2 ORDER BY o.id DESC LIMIT 100
 `
 
@@ -271,9 +276,10 @@ type ListWriteOperationsRow struct {
 	ActorLogin           string
 	ActorGithubID        int64
 	RepositoryName       string
+	StalePending         pgtype.Bool
 }
 
-// The user's own operations on one repository, newest first, at most 100 (no paging).
+// The user's own operations on one repository, newest first, at most 100 (no paging). Same columns as GetWriteOperation.
 func (q *Queries) ListWriteOperations(ctx context.Context, arg ListWriteOperationsParams) ([]ListWriteOperationsRow, error) {
 	rows, err := q.db.Query(ctx, listWriteOperations, arg.UserID, arg.RepositoryID)
 	if err != nil {
@@ -299,6 +305,7 @@ func (q *Queries) ListWriteOperations(ctx context.Context, arg ListWriteOperatio
 			&i.ActorLogin,
 			&i.ActorGithubID,
 			&i.RepositoryName,
+			&i.StalePending,
 		); err != nil {
 			return nil, err
 		}
