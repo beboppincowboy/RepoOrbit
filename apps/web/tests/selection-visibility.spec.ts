@@ -1,0 +1,350 @@
+import { expect, test } from '@playwright/test';
+import { mockSession, quietActivity, selectedRepo, signedIn } from './mocks';
+
+const covered = { covered: true, reason: null, through: '2026-11-17T08:00:00Z' };
+const stream = { phase: 'current', boundary: '2026-08-01T00:00:00Z', catchupThrough: null, lastSuccessAt: '2026-11-17T08:00:00Z', failureCode: null, jobState: 'queued', nextAttemptAt: '2026-11-17T09:00:00Z' };
+const child = { complete: true, pendingChildren: 0, lastSuccessAt: '2026-11-17T08:00:00Z', failureCode: null, nextAttemptAt: null };
+const fullActivity = { synchronized: true, message: '', archived: false, issues: stream, pullRequests: stream, releases: stream, reviews: child, comments: child, issueEvents: { traversal: stream, historicalGap: false }, futureResources: [] };
+
+const repoOverview = (id: string) => ({
+  fullName: `ada/repo-${id}`,
+  syncState: 'awaiting-sync',
+  activity: fullActivity,
+  openIssues: { value: 4, coverage: covered },
+  staleOpenIssues: { value: 1, coverage: covered },
+  pullRequestsMerged: { value: 2, coverage: covered },
+  openPullRequests: { value: 1, coverage: covered },
+  firstResponseTime: { seconds: 1800, sampleSize: 2, coverage: covered },
+  mergeTime: { seconds: 3600, sampleSize: 2, coverage: covered },
+  issuesWithoutResponse: { value: 0 },
+  eventsCoveredFrom: '2026-11-03T00:00:00Z',
+  windowStart: '2026-10-19T00:00:00Z',
+  activeBotContributors: { value: 0, coverage: covered },
+  contributorsCoverage: covered,
+  contributors: [],
+  timeline: [],
+  daily: [],
+});
+
+const issuePage = (id: string) => ({
+  nodes: [{ id, repositoryId: id, title: `Issue ${id}`, state: 'open' }],
+  hasNextPage: false,
+  withheld: 0,
+  retryAt: null,
+});
+
+const sidebar = (page: import('@playwright/test').Page) => page.getByRole('navigation', { name: 'Primary' });
+
+test('per-alias denial removes A snapshots and drafts while temporary uncertainty preserves B drafts and frozen snapshot', async ({ page }) => {
+  await mockSession(page, signedIn);
+  const retryAt = new Date(Date.now() + 600_000).toISOString();
+  let detailsPhase: 'ok' | 'split' = 'ok';
+  let overviewPhase: 'ok' | 'split' = 'ok';
+
+  await page.route('**/graphql', async route => {
+    const { query, variables } = route.request().postDataJSON();
+    if (String(query).startsWith('query SelectedRepositories')) {
+      return route.fulfill({
+        json: {
+          data: {
+            selectedRepositories: {
+              nodes: [selectedRepo('1'), selectedRepo('2')],
+              endCursor: '2',
+              hasNextPage: false,
+              withheld: 0,
+              retryAt: null,
+            },
+          },
+        },
+      });
+    }
+    if (String(query).startsWith('query RepositoryDetails')) {
+      if (detailsPhase === 'ok') {
+        return route.fulfill({
+          json: { data: { a0: { activity: quietActivity }, r0: issuePage('1'), a1: { activity: quietActivity }, r1: issuePage('2') } },
+        });
+      }
+      // Alias a0 is present error-free null (definitive denial for repo 1); a1 has ACCESS_UNVERIFIED with retryAt (temporary for repo 2).
+      return route.fulfill({
+        json: {
+          data: { a0: null, r0: issuePage('1'), a1: null, r1: { nodes: [], hasNextPage: false, withheld: 1, retryAt } },
+          errors: [{ message: 'Rate limited', path: ['a1'], extensions: { code: 'ACCESS_UNVERIFIED', retryAt } }],
+        },
+      });
+    }
+    if (String(query).startsWith('query RepositoryOverview')) {
+      if (overviewPhase === 'ok') {
+        return route.fulfill({ json: { data: { repositoryOverview: repoOverview(variables.id) } } });
+      }
+      if (variables.id === '1') {
+        return route.fulfill({ json: { data: { repositoryOverview: null } } });
+      }
+      return route.fulfill({
+        json: {
+          data: { repositoryOverview: null },
+          errors: [{ message: 'Rate limited', path: ['repositoryOverview'], extensions: { code: 'ACCESS_UNVERIFIED', retryAt } }],
+        },
+      });
+    }
+    if (String(query).startsWith('query CrossRepositoryOverview')) {
+      return route.fulfill({
+        json: {
+          data: {
+            crossRepositoryOverview: {
+              days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
+              repositoriesCounted: 2, repositoriesSyncing: 0, withheld: 0, retryAt: null,
+              openIssues: { value: 8, coverage: covered },
+              reviewBacklog: { value: 1, coverage: covered },
+              needsAttention: [], assignedToMe: [], daily: [],
+            },
+          },
+        },
+      });
+    }
+    return route.fallback();
+  });
+
+  // Prime snapshots for repo 1 (7d and 30d) and repo 2 (30d), plus browser drafts for both.
+  await page.goto('/workspace/1?days=30');
+  await expect(page.getByRole('heading', { name: 'repo-1', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: '7d', exact: true }).click();
+  await expect(page.getByRole('link', { name: '7d', exact: true })).toHaveAttribute('aria-current', 'page');
+  await sidebar(page).getByRole('link', { name: 'repo-2', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
+
+  await page.evaluate(() => {
+    localStorage.setItem('repoorbit:issue-draft:real:ada:1:create', JSON.stringify({ version: 1, title: 'Secret A draft' }));
+    localStorage.setItem('repoorbit:issue-draft:real:ada:2:create', JSON.stringify({ version: 1, title: 'Keep B draft' }));
+  });
+
+  // Now navigate to Overview while A is denied and B is rate-limited unverified.
+  detailsPhase = 'split';
+  overviewPhase = 'split';
+  await sidebar(page).getByRole('link', { name: 'Overview', exact: true }).click();
+
+  // Repo 1's drafts are cleared and its sidebar link is removed; Repo 2's drafts stay and its link is anonymous.
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('repoorbit:issue-draft:real:ada:')))).toEqual([
+    'repoorbit:issue-draft:real:ada:2:create',
+  ]);
+  await expect(sidebar(page).getByRole('link', { name: 'repo-1', exact: true })).toHaveCount(0);
+  await expect(sidebar(page).locator('a[href*="/workspace/1"]')).toHaveCount(0);
+  await expect(sidebar(page).getByRole('link', { name: 'Repository', exact: true })).toHaveAttribute('href', /\/workspace\/2/);
+
+  // Opening Repo 2 still shows its read-only frozen snapshot for 30d; Repo 1 has no snapshot left even for 7d.
+  await sidebar(page).getByRole('link', { name: 'Repository', exact: true }).click();
+  await expect(page.getByText(/Showing saved data from/)).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
+});
+
+test('delayed manual detail retry completing after a workspace rejection cannot restore private data', async ({ page }) => {
+  await mockSession(page, signedIn);
+  const repositories = Array.from({ length: 10 }, (_, i) => selectedRepo(String(i + 1)));
+  let failChunk2 = true;
+  let releaseDelayedRetry!: () => void;
+  const delayedRetry = new Promise<void>(resolve => { releaseDelayedRetry = resolve; });
+  let chunk2Calls = 0;
+
+  await page.route('**/graphql', async route => {
+    const { query, variables } = route.request().postDataJSON();
+    if (String(query).startsWith('query SelectedRepositories')) {
+      return route.fulfill({
+        json: { data: { selectedRepositories: { nodes: repositories, endCursor: '10', hasNextPage: false, withheld: 0, retryAt: null } } },
+      });
+    }
+    if (String(query).startsWith('query RepositoryDetails')) {
+      const ids = Object.values(variables as Record<string, string>);
+      if (ids[0] === '9') {
+        chunk2Calls++;
+        if (failChunk2) {
+          failChunk2 = false;
+          return route.fulfill({ status: 502 });
+        }
+        await delayedRetry;
+      }
+      const data = Object.fromEntries(ids.flatMap((id, i) => [[`a${i}`, { activity: quietActivity }], [`r${i}`, issuePage(id)]]));
+      return route.fulfill({ json: { data } }).catch(() => {});
+    }
+    if (String(query).startsWith('query RepositoryOverview')) {
+      if (variables.id === '9') {
+        return route.fulfill({ json: { data: { repositoryOverview: null } } });
+      }
+      return route.fulfill({ json: { data: { repositoryOverview: repoOverview(variables.id) } } });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/workspace/1');
+  const retryBtn = sidebar(page).getByRole('button', { name: 'Retry details' });
+  await expect(retryBtn).toBeVisible();
+
+  // Start the manual detail retry for chunk 2 (repos 9 and 10), then reject repo 9 via workspace before it completes.
+  await retryBtn.click();
+  await expect.poll(() => chunk2Calls).toBe(2);
+  await sidebar(page).getByRole('link', { name: 'repo-9', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Repository', exact: true })).toBeVisible();
+  await expect(sidebar(page).getByRole('link', { name: 'repo-9', exact: true })).toHaveCount(0);
+
+  // Even after the delayed retry resolves claiming repo 9 is available, repo 9 stays hidden.
+  releaseDelayedRetry();
+  await page.waitForTimeout(200);
+  await expect(sidebar(page).getByRole('link', { name: 'repo-9', exact: true })).toHaveCount(0);
+  await expect(page.locator('#repolist option[value="ada/repo-9"]')).toHaveCount(0);
+});
+
+test('aggregate overview hides rejected repository rows and totals immediately while preserving authorized and unloaded-page rows', async ({ page }) => {
+  await mockSession(page, signedIn);
+  let detailMode: 'ok' | 'reject-1' = 'ok';
+  let releaseCrossRefresh!: () => void;
+  const crossRefresh = new Promise<void>(resolve => { releaseCrossRefresh = resolve; });
+  let crossCalls = 0;
+
+  const aggregatePayload = {
+    days: 30,
+    windowStart: '2026-10-19T00:00:00Z',
+    now: '2026-11-17T08:00:00Z',
+    repositoriesCounted: 3,
+    repositoriesSyncing: 0,
+    withheld: 0,
+    retryAt: null,
+    openIssues: { value: 9, coverage: covered },
+    reviewBacklog: { value: 4, coverage: covered },
+    needsAttention: [
+      { kind: 'issue_no_response', repositoryId: '1', fullName: 'ada/repo-1', number: 11, title: 'Secret issue 1', url: 'https://github.com/ada/repo-1/issues/11', since: '2026-11-15T00:00:00Z' },
+      { kind: 'issue_no_response', repositoryId: '2', fullName: 'ada/repo-2', number: 22, title: 'Visible issue 2', url: 'https://github.com/ada/repo-2/issues/22', since: '2026-11-15T00:00:00Z' },
+      { kind: 'stale_issue', repositoryId: '25', fullName: 'ada/repo-25', number: 250, title: 'Unloaded page issue 25', url: 'https://github.com/ada/repo-25/issues/250', since: '2026-10-01T00:00:00Z' },
+    ],
+    assignedToMe: [
+      { repositoryId: '1', fullName: 'ada/repo-1', number: 11, title: 'Secret assigned 1', url: 'https://github.com/ada/repo-1/issues/11', updatedAt: '2026-11-15T00:00:00Z', status: 'todo' },
+      { repositoryId: '25', fullName: 'ada/repo-25', number: 251, title: 'Unloaded assigned 25', url: 'https://github.com/ada/repo-25/issues/251', updatedAt: '2026-11-15T00:00:00Z', status: 'in_progress' },
+    ],
+    daily: [{ day: '2026-11-17T00:00:00Z', issuesOpened: 3, pullRequestsMerged: 2 }],
+  };
+
+  await page.route('**/graphql', async route => {
+    const { query, variables } = route.request().postDataJSON();
+    if (String(query).startsWith('query SelectedRepositories')) {
+      return route.fulfill({
+        json: {
+          data: {
+            selectedRepositories: {
+              nodes: [selectedRepo('1'), selectedRepo('2')],
+              endCursor: '2',
+              hasNextPage: true,
+              withheld: 0,
+              retryAt: null,
+            },
+          },
+        },
+      });
+    }
+    if (String(query).startsWith('query RepositoryDetails')) {
+      if (detailMode === 'reject-1') {
+        return route.fulfill({
+          json: {
+            data: { a0: null, r0: issuePage('1'), a1: { activity: quietActivity }, r1: issuePage('2') },
+          },
+        });
+      }
+      return route.fulfill({
+        json: { data: { a0: { activity: quietActivity }, r0: issuePage('1'), a1: { activity: quietActivity }, r1: issuePage('2') } },
+      });
+    }
+    if (String(query).startsWith('query CrossRepositoryOverview')) {
+      crossCalls++;
+      if (crossCalls >= 2) {
+        await crossRefresh;
+      }
+      return route.fulfill({ json: { data: { crossRepositoryOverview: aggregatePayload } } }).catch(() => {});
+    }
+    if (String(query).startsWith('query RepositoryOverview')) {
+      return route.fulfill({ json: { data: { repositoryOverview: variables.id === '1' ? null : repoOverview(variables.id) } } });
+    }
+    return route.fallback();
+  });
+
+  try {
+    await page.goto('/');
+    const attn = page.getByRole('region', { name: 'Needs attention' });
+    const mine = page.getByRole('region', { name: 'Assigned to me' });
+    const totals = page.getByRole('region', { name: 'Totals' });
+
+    await expect(attn).toContainText('Secret issue 1');
+    await expect(attn).toContainText('Visible issue 2');
+    await expect(attn).toContainText('Unloaded page issue 25');
+    await expect(mine).toContainText('Secret assigned 1');
+    await expect(mine).toContainText('Unloaded assigned 25');
+    await expect(totals).toContainText('9');
+
+    // Trigger a revalidation where repo 1 is denied while the aggregate refresh is delayed.
+    detailMode = 'reject-1';
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('offline'));
+      window.dispatchEvent(new Event('online'));
+    });
+
+    // Immediately: repo-1 disappears from Needs attention, Assigned to me, and shell; totals are withheld; repo-2 and repo-25 stay visible!
+    await expect(attn).not.toContainText('Secret issue 1');
+    await expect(mine).not.toContainText('Secret assigned 1');
+    await expect(sidebar(page).getByRole('link', { name: 'repo-1', exact: true })).toHaveCount(0);
+    await expect(attn).toContainText('Visible issue 2');
+    await expect(attn).toContainText('Unloaded page issue 25');
+    await expect(mine).toContainText('Unloaded assigned 25');
+    await expect(totals).not.toContainText('9');
+    await expect(totals).toContainText('—');
+  } finally {
+    releaseCrossRefresh();
+  }
+});
+
+test('all-withheld metadata page still advances its cursor to load the next page', async ({ page }) => {
+  await mockSession(page, signedIn);
+  const cursors: (string | null)[] = [];
+  await page.route('**/graphql', async route => {
+    const { query, variables } = route.request().postDataJSON();
+    if (String(query).startsWith('query SelectedRepositories')) {
+      cursors.push(variables.after ?? null);
+      if (!variables.after) {
+        return route.fulfill({
+          json: {
+            data: {
+              selectedRepositories: { nodes: [], endCursor: '10', hasNextPage: true, withheld: 2, retryAt: null },
+            },
+          },
+        });
+      }
+      return route.fulfill({
+        json: {
+          data: {
+            selectedRepositories: { nodes: [selectedRepo('11')], endCursor: '11', hasNextPage: false, withheld: 0, retryAt: null },
+          },
+        },
+      });
+    }
+    if (String(query).startsWith('query RepositoryDetails')) {
+      return route.fulfill({ json: { data: { a0: { activity: quietActivity }, r0: issuePage('11') } } });
+    }
+    if (String(query).startsWith('query CrossRepositoryOverview')) {
+      return route.fulfill({
+        json: {
+          data: {
+            crossRepositoryOverview: {
+              days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
+              repositoriesCounted: 0, repositoriesSyncing: 0, withheld: 2, retryAt: null,
+              openIssues: { value: null, coverage: { covered: false, reason: 'not_synchronized', through: null } },
+              reviewBacklog: { value: null, coverage: { covered: false, reason: 'not_synchronized', through: null } },
+              needsAttention: [], assignedToMe: [], daily: [],
+            },
+          },
+        },
+      });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/');
+  const loadMore = sidebar(page).getByRole('button', { name: 'Load more selected repositories' });
+  await expect(loadMore).toBeVisible();
+  await loadMore.click();
+  await expect(sidebar(page).getByRole('link', { name: 'repo-11', exact: true })).toBeVisible();
+  expect(cursors).toContain('10');
+});

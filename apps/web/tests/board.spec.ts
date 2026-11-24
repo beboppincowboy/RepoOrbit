@@ -252,3 +252,62 @@ test('a staged card survives a reload and confirmed access loss clears it with t
   await page.reload();
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('repoorbit:issue-draft:')))).toEqual([]);
 });
+
+test('failing an independent Board refetch hides rows, filters, staging controls, and an open drawer; authoritative null clears drafts', async ({ page }) => {
+  await setup(page);
+  let boardMode: 'ok' | 'transient' | 'unverified' | 'denied' = 'ok';
+  await page.route('**/graphql', route => {
+    const { query } = route.request().postDataJSON();
+    if (!String(query).startsWith('query RepositoryBoard')) return route.fallback();
+    if (boardMode === 'transient') {
+      return route.fulfill({ status: 502, body: 'Bad Gateway' });
+    }
+    if (boardMode === 'unverified') {
+      return route.fulfill({
+        json: {
+          data: { repositoryBoard: null },
+          errors: [{ message: 'Access unverified', path: ['repositoryBoard'], extensions: { code: 'ACCESS_UNVERIFIED' } }],
+        },
+      });
+    }
+    if (boardMode === 'denied') {
+      return route.fulfill({ json: { data: { repositoryBoard: null } } });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/workspace/1?tab=board&issue=3');
+  const drawer = page.getByRole('dialog', { name: 'Issue #3' });
+  await expect(drawer).toBeVisible();
+  await drawer.getByRole('radio', { name: 'In Progress' }).check();
+  await expect(page.getByText('1 staged change')).toBeVisible();
+  await page.evaluate(() => localStorage.setItem('repoorbit:issue-draft:real:ada:1:create', JSON.stringify({ version: 1, title: 'Private draft' })));
+
+  // 1. Transient Board refetch failure (502) while RepositoryOverview remains authorized:
+  // open drawer, Board rows, private filter options, and staging controls must hide immediately, while drafts survive.
+  boardMode = 'transient';
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('offline'));
+    window.dispatchEvent(new Event('online'));
+  });
+
+  await expect(drawer).toHaveCount(0);
+  await expect(page.locator('main [data-issue-card]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Save…' })).toHaveCount(0);
+  await expect(page.getByLabel('Filter by assignee').locator('option')).toHaveText(['All assignees']);
+  await expect(page.getByLabel('Filter by label').locator('option')).toHaveText(['All labels']);
+  expect(await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('repoorbit:issue-draft:real:ada:1:')))).toHaveLength(2);
+
+  // 2. ACCESS_UNVERIFIED through the Board hides private name in shell and workspace while preserving drafts.
+  boardMode = 'unverified';
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Repository', exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: 'repo-1', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('repoorbit:issue-draft:real:ada:1:')))).toHaveLength(2);
+
+  // 3. Authoritative null from the Board triggers full access-loss cleanup (drafts + sidebar link removed).
+  boardMode = 'denied';
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('repoorbit:issue-draft:real:ada:1:')))).toEqual([]);
+  await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: /^(repo-1|Repository)$/ })).toHaveCount(0);
+});

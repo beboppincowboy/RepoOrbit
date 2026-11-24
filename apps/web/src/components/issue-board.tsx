@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { StatusSourceSetup } from "@/components/status-source-setup";
 import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
 import { BOARD_STATUSES, deriveChange, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
-import { fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type IssueCapabilities } from "@/lib/api";
+import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type IssueCapabilities, type ViewerSession } from "@/lib/api";
+import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, selectRowVisibility, useSelectionVisibility } from "@/lib/selected-repositories";
 
 // The workspace route's class strings.
 const panel = "rounded-xl border border-border bg-card min-w-0 min-h-0";
@@ -25,6 +26,7 @@ const CLOSED_CAP = 50;
 const locked = (card?: BoardCard) => card?.phase === "pending" || card?.phase === "unknown";
 
 type IssueBoardProps = {
+  session: ViewerSession;
   repositoryId: string;
   viewerKey: string;
   viewerLogin: string | null;
@@ -40,8 +42,11 @@ type IssueBoardProps = {
 };
 
 // The repository's issues by status in Board and List views, with shared filters and the task drawer. Moves, assignee
-// edits and close/reopen are only staged on the card, in this browser (KTD8); nothing reaches GitHub until Save.
-export function IssueBoard({ repositoryId, viewerKey, viewerLogin, demo, github, capabilities, capabilitiesError, assignable, openIssue, onOpenIssue }: IssueBoardProps) {
+// edits and close/reopen are only staged on the card, in this browser; nothing reaches GitHub until Save.
+export function IssueBoard({ session, repositoryId, viewerKey, viewerLogin, demo, github, capabilities, capabilitiesError, assignable, openIssue, onOpenIssue }: IssueBoardProps) {
+  const queryClient = useQueryClient();
+  const visibility = useSelectionVisibility(session);
+  const rowVisibility = selectRowVisibility([], visibility, repositoryId);
   const [cards, setCards] = useState(() => loadBoardCards(viewerKey, repositoryId));
   const [view, setView] = useState<"board" | "list">("board");
   const [assignee, setAssignee] = useState("");
@@ -57,10 +62,36 @@ export function IssueBoard({ repositoryId, viewerKey, viewerLogin, demo, github,
   const query = useQuery({
     queryKey: ["repositoryBoard", viewerKey, repositoryId],
     // Staged cards and an opened issue may fall outside the caps, so the read includes them (the API takes at most 100).
-    queryFn: ({ signal }) => fetchRepositoryBoard(repositoryId, [...new Set([...(openIssue ? [openIssue] : []), ...cards.map(card => card.number)])].slice(0, 100), signal),
+    queryFn: async ({ signal }) => {
+      const startedAtSeq = currentAccessSeq();
+      try {
+        const result = await fetchRepositoryBoard(
+          repositoryId,
+          [...new Set([...(openIssue ? [openIssue] : []), ...cards.map(card => card.number)])].slice(0, 100),
+          signal,
+        );
+        signal.throwIfAborted();
+        if (result === null) {
+          recordAccessDenied(queryClient, session, repositoryId);
+          setCards([]);
+        } else {
+          recordAccessVerified(session, repositoryId, startedAtSeq);
+        }
+        return result;
+      } catch (error) {
+        if (!signal.aborted && error instanceof RepositoryAccessUnverifiedError) {
+          recordAccessUnverified(queryClient, session, repositoryId, error.retryAt, { preserveSnapshot: Boolean(error.retryAt) });
+        }
+        throw error;
+      }
+    },
     gcTime: 0,
+    retry: (count, error) => !(error instanceof RepositoryAccessUnverifiedError || error instanceof GraphQLUnavailableError) && count < 1,
   });
-  const board = query.data;
+  const accessBlocked = rowVisibility.availability === "denied" || rowVisibility.availability === "unverified";
+  // Immediately hide stale Board rows, filter options, staging controls, and any open TaskDrawer on refetch error,
+  // authoritative null, or a newer Selection access rejection.
+  const board = query.isError || query.isPending || accessBlocked ? null : (query.data ?? null);
   const rows = board?.issues ?? noRows;
   // StatusSourceSetup shares this query; once it turns labels on or off, read the Board again.
   const labelsSetting = useQuery({ queryKey: statusLabelsQueryKey(viewerKey, repositoryId), queryFn: ({ signal }) => fetchStatusLabels(repositoryId, signal), enabled: false, gcTime: 0 }).data?.enabled;
