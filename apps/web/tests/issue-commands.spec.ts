@@ -80,6 +80,7 @@ async function setupWorkspace(
     issues?: MockIssue[];
     capabilities?: { canCreateIssue: boolean; canCreateIssueWithMetadata: boolean; canManageIssues: boolean };
     operations?: Record<string, unknown>[];
+    statusLabels?: Record<string, unknown>;
   } = {},
 ) {
   const session = opts.session ?? signedIn;
@@ -120,6 +121,8 @@ async function setupWorkspace(
     await page.route('**/api/repositories/1/issue-capabilities', route => route.fulfill({ json: caps }));
     await page.route('**/api/repositories/1/write-operations', route => route.fulfill({ json: { operations } }));
     await page.route('**/api/repositories/1/assignees', route => route.fulfill({ json: { assignees: ['ada', 'alex'] } }));
+    const statusLabels = opts.statusLabels ?? { enabled: false, canChange: false };
+    await page.route('**/api/repositories/1/status-labels', route => route.request().method() === 'GET' ? route.fulfill({ json: statusLabels }) : route.fallback());
   }
 }
 
@@ -678,4 +681,77 @@ test('keeps a draft when access is unverified and clears it when access is lost'
   denied = true;
   await page.reload();
   await expect.poll(draftExists).toBe(false);
+});
+
+test('an Admin turns status labels on through review; the result names the created labels', async ({ page }) => {
+  const off = {
+    enabled: false,
+    canChange: true,
+    labels: [
+      { name: 'status:todo', exists: true },
+      { name: 'status:in-progress', exists: false },
+      { name: 'status:review', exists: false },
+    ],
+  };
+  let enabled = false;
+  const posts: Record<string, string>[] = [];
+  await setupWorkspace(page, { statusLabels: off });
+  await page.route('**/api/repositories/1/status-labels', async route => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: enabled ? { enabled: true, canChange: true } : off });
+    posts.push(route.request().headers());
+    enabled = true;
+    return route.fulfill({
+      status: 201,
+      json: {
+        id: 601, repositoryId: 1, kind: 'status_labels', state: 'succeeded', issueNumber: null,
+        draft: { labels: ['status:todo', 'status:in-progress', 'status:review'] },
+        outcome: { created: ['status:in-progress', 'status:review'] },
+        actor: 'ada', createdAt: '2026-11-17T12:00:00Z', updatedAt: '2026-11-17T12:00:01Z',
+      },
+    });
+  });
+
+  await page.goto('/workspace/1?tab=issues');
+  const setup = page.getByRole('region', { name: 'Status labels' });
+  await expect(setup).toContainText('Off');
+  await setup.getByRole('button', { name: 'Turn on…' }).click();
+  const review = setup.getByRole('list', { name: 'Status labels to set up' });
+  await expect(review).toContainText('status:todo→ Todoexists, reused');
+  await expect(review).toContainText('status:review→ In Reviewwill be created');
+  expect(posts).toHaveLength(0);
+
+  await setup.getByRole('button', { name: 'Submit' }).click();
+  await expect(setup.getByRole('status')).toHaveText('Confirmed: status labels are on; created status:in-progress, status:review.');
+  await expect(setup).toContainText('On');
+  await expect(setup.getByRole('button', { name: 'Turn off' })).toBeVisible();
+  expect(posts).toHaveLength(1);
+  expect(posts[0]['x-csrf-token']).toBe('t');
+  expect(posts[0]['idempotency-key']).toMatch(/^[A-Za-z0-9_.:-]{1,128}$/);
+  expect(await page.getByRole('main').evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true);
+});
+
+test('a user without Admin or Maintain sees the setting but cannot change it', async ({ page }) => {
+  await setupWorkspace(page, { statusLabels: { enabled: true, canChange: false } });
+  await page.goto('/workspace/1?tab=issues');
+  const setup = page.getByRole('region', { name: 'Status labels' });
+  await expect(setup).toContainText('On');
+  await expect(setup).toContainText('Only Admin or Maintain users can change this.');
+  await expect(setup.getByRole('button')).toHaveCount(0);
+});
+
+test('write history shows the GitHub App cleanup without offering a recheck', async ({ page }) => {
+  await setupWorkspace(page, {
+    operations: [
+      { id: 7, repositoryId: 1, kind: 'cleanup', state: 'succeeded', issueNumber: 12, draft: { label: 'status:review' }, outcome: {}, actor: '', createdAt: '2026-11-17T12:05:00Z', updatedAt: '2026-11-17T12:05:00Z' },
+      { id: 8, repositoryId: 1, kind: 'cleanup', state: 'unknown', issueNumber: 15, draft: { label: 'status:todo' }, outcome: {}, actor: '', createdAt: '2026-11-17T12:04:00Z', updatedAt: '2026-11-17T12:04:00Z' },
+    ],
+  });
+  await page.goto('/workspace/1?tab=issues');
+  const history = page.getByRole('list', { name: 'Write operations' });
+  await expect(history.getByRole('listitem')).toHaveCount(2);
+  await expect(history.getByRole('listitem').first()).toContainText('Remove status label from closed issue #12');
+  await expect(history.getByRole('listitem').first()).toContainText('GitHub App');
+  await expect(history.getByRole('listitem').first()).toContainText('-label: status:review');
+  await expect(history.getByRole('listitem').nth(1)).toContainText('the app retries the removal on its own');
+  await expect(history.getByRole('button', { name: 'Recheck' })).toHaveCount(0);
 });

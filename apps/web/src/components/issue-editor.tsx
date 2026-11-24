@@ -117,7 +117,7 @@ export function hasSavedCreateDraft(viewerKey: string, repositoryId: string): bo
   );
 }
 
-function generateIdempotencyKey(): string {
+export function generateIdempotencyKey(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `ro-${crypto.randomUUID()}`;
   }

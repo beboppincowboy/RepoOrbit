@@ -9,6 +9,7 @@ import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { WriteHistory, writeOperationsQueryKey } from "@/components/write-history";
+import { StatusSourceSetup } from "@/components/status-source-setup";
 import { selectedRepositoriesKey, flattenSelectedRepositoryRows, useSelectedRepositories } from "@/lib/selected-repositories";
 import {
   RepositoryAccessUnverifiedError,
@@ -772,7 +773,8 @@ function IssuesTab({
         </div>
       </section>
 
-      <div className="flex min-h-0 flex-[1_1_360px] flex-col">
+      <div className="flex min-h-0 flex-[1_1_360px] flex-col gap-3">
+        <StatusSourceSetup repositoryId={id} viewerKey={viewerKey} demo={demo} frozen={frozen} />
         <WriteHistory
           repositoryId={id}
           viewerKey={viewerKey}
