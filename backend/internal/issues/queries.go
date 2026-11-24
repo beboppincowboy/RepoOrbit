@@ -1,14 +1,12 @@
 package issues
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -203,32 +201,15 @@ func (s *Service) statusLabelState(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
-		labels := make([]label, len(statusLabels))
-		errs := make([]error, len(statusLabels))
-		var wg sync.WaitGroup
-		for i, l := range statusLabels {
-			wg.Add(1)
-			go func(idx int, name string) {
-				defer wg.Done()
-				exists, err := s.GitHub.LabelExists(ctx, token, d.Repo.FullName, name)
-				if err != nil {
-					errs[idx] = err
-					cancel()
-					return
-				}
-				labels[idx] = label{name, exists}
-			}(i, l.name)
-		}
-		wg.Wait()
-		for _, err := range errs {
+		// One at a time: a GitHub 401 must reach upstream unmasked by a canceled sibling check, so it revokes the token.
+		for _, l := range statusLabels {
+			exists, err := s.GitHub.LabelExists(r.Context(), token, d.Repo.FullName, l.name)
 			if err != nil {
 				s.upstream(w, r.Context(), userID, err)
 				return
 			}
+			out.Labels = append(out.Labels, label{l.name, exists})
 		}
-		out.Labels = labels
 	}
 	writeJSON(w, http.StatusOK, out)
 }
