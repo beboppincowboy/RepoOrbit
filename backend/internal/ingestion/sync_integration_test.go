@@ -23,10 +23,11 @@ import (
 )
 
 type issueFixture struct {
-	pages    map[int][]githubapp.Issue
-	accesses int
-	flip     bool
-	onFetch  func()
+	hasPullRequests *bool
+	pages           map[int][]githubapp.Issue
+	accesses        int
+	flip            bool
+	onFetch         func()
 }
 
 func (f *issueFixture) FetchRepo(context.Context, string, int64) (githubapp.Repo, error) {
@@ -44,7 +45,7 @@ func (f *issueFixture) FetchIssuesCursor(_ context.Context, _ string, _ string, 
 
 func (f *issueFixture) CheckOne(context.Context, int64, int64, bool) repositories.Decision {
 	f.accesses++
-	return repositories.Decision{Allowed: true, Repo: githubapp.Repo{ID: 70, FullName: "a/b", Private: f.flip && f.accesses >= 2}}
+	return repositories.Decision{Allowed: true, Repo: githubapp.Repo{ID: 70, FullName: "a/b", HasPullRequests: f.hasPullRequests, Private: f.flip && f.accesses >= 2}}
 }
 
 func TestIssueBackfillAndVisibilityFence(t *testing.T) {

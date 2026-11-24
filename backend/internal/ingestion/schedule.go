@@ -21,15 +21,19 @@ func childKey(repoID, parentID int64) string {
 }
 
 // registerChild commits discovered history work with the parent page checkpoint.
-func registerChild(ctx context.Context, tx pgx.Tx, repoID int64, resource string, parentID, number int64, now time.Time) error {
+func registerChild(ctx context.Context, tx pgx.Tx, repoID int64, resource string, parentID, number int64, refreshCompleted bool, now time.Time) error {
 	kind := jobs.KindActivityComments
 	if resource == "reviews" {
 		kind = jobs.KindActivityReviews
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO activity_children(repository_id,resource,parent_id,parent_number) VALUES($1,$2,$3,$4)
-		ON CONFLICT(repository_id,resource,parent_id) DO UPDATE SET parent_number=EXCLUDED.parent_number, cursor='', complete=false, generation=activity_children.generation+1, scan_started_at=NULL, previous_scan=NULL, current_scan='{}'`, repoID, resource, parentID, number)
+	result, err := tx.Exec(ctx, `INSERT INTO activity_children(repository_id,resource,parent_id,parent_number) VALUES($1,$2,$3,$4)
+		ON CONFLICT(repository_id,resource,parent_id) DO UPDATE SET parent_number=EXCLUDED.parent_number, cursor='', complete=false, generation=activity_children.generation+1, scan_started_at=NULL, previous_scan=NULL, current_scan='{}'
+		WHERE (activity_children.complete AND $5) OR activity_children.parent_number <> EXCLUDED.parent_number`, repoID, resource, parentID, number, refreshCompleted)
 	if err != nil {
 		return err
+	}
+	if result.RowsAffected() == 0 {
+		return nil
 	}
 	return jobs.Enqueue(ctx, tx, kind, childKey(repoID, parentID), now)
 }
