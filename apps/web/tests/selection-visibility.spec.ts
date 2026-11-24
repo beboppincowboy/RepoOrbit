@@ -508,3 +508,41 @@ test('a rate-limited repository missing from a complete selection refresh loses 
   await expect(sidebar(page).locator('a[href*="/workspace/2"]')).toHaveCount(0);
   await expect(sidebar(page).getByText('Waiting for GitHub')).toHaveCount(0);
 });
+
+test('navigating away during a manual detail retry cancels it without reporting a failed check', async ({ page }) => {
+  await mockSession(page, signedIn);
+  let detailCalls = 0;
+  let releaseRetry!: () => void;
+  const retry = new Promise<void>(resolve => { releaseRetry = resolve; });
+
+  await page.route('**/graphql', async route => {
+    const { query, variables } = route.request().postDataJSON();
+    if (String(query).startsWith('query SelectedRepositories')) {
+      return route.fulfill({
+        json: { data: { selectedRepositories: { nodes: [selectedRepo('1'), selectedRepo('2')], endCursor: '2', hasNextPage: false, withheld: 0, retryAt: null } } },
+      });
+    }
+    if (String(query).startsWith('query RepositoryDetails')) {
+      if (++detailCalls === 1) return route.fulfill({ status: 502 });
+      await retry;
+      return route.fulfill({ json: { data: { a0: { activity: quietActivity }, r0: issuePage('1'), a1: { activity: quietActivity }, r1: issuePage('2') } } }).catch(() => {});
+    }
+    if (String(query).startsWith('query RepositoryOverview')) {
+      return route.fulfill({ json: { data: { repositoryOverview: repoOverview(variables.id) } } });
+    }
+    return route.fallback();
+  });
+
+  try {
+    await page.goto('/workspace/1');
+    const retryBtn = sidebar(page).getByRole('button', { name: 'Retry details' });
+    await retryBtn.click();
+    await expect.poll(() => detailCalls).toBe(2);
+    await sidebar(page).getByRole('link', { name: 'repo-2', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
+    await expect(retryBtn).toBeEnabled();
+    await expect(sidebar(page).getByRole('alert')).toHaveCount(0);
+  } finally {
+    releaseRetry();
+  }
+});
