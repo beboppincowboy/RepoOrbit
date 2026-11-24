@@ -308,8 +308,8 @@ func TestUnknownRemovalIsSettledByNextRun(t *testing.T) {
 		}
 		return resp, err
 	})
-	if err := e.runCleanup(repoID); err == nil {
-		t.Fatal("expected the run to fail while the removal is unknown")
+	if err := e.runCleanup(repoID); !upstreamDeferred(err) {
+		t.Fatalf("a lost answer must defer the cleanup without spending an attempt, got %v", err)
 	}
 	ops, _ := db.New(e.pool).ListAppOperations(ctx, repoID)
 	if len(ops) != 1 || ops[0].State != "unknown" {
@@ -322,6 +322,70 @@ func TestUnknownRemovalIsSettledByNextRun(t *testing.T) {
 	ops, _ = db.New(e.pool).ListAppOperations(ctx, repoID)
 	if len(ops) != 1 || ops[0].State != "succeeded" || e.labelDeletes() != 1 {
 		t.Fatalf("app operations=%+v deletes=%d", ops, e.labelDeletes())
+	}
+}
+
+// upstreamDeferred reports whether err is the cleanup's fixed-interval deferral for temporary GitHub trouble.
+func upstreamDeferred(err error) bool {
+	var d *jobs.Defer
+	return errors.As(err, &d) && d.Reason == ingestion.CodeUpstream && d.RetryAt.After(time.Now().Add(10*time.Minute))
+}
+
+// A removal GitHub never answers (and never applied) defers the cleanup on every run, reusing the one unknown
+// operation instead of adding rows.
+func TestUnansweredRemovalDefersCleanup(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	repoID := statusRepo(t, e, true, statusIssue(1, "closed", "status:review"))
+	e.ghc.HTTP.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodDelete {
+			return answer(http.StatusBadGateway), nil
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})
+	for run := 1; run <= 2; run++ {
+		if err := e.runCleanup(repoID); !upstreamDeferred(err) {
+			t.Fatalf("run %d: want an upstream deferral, got %v", run, err)
+		}
+		ops, _ := db.New(e.pool).ListAppOperations(ctx, repoID)
+		if len(ops) != 1 || ops[0].State != "unknown" || e.labelDeletes() != 0 {
+			t.Fatalf("run %d: app operations=%+v deletes=%d", run, ops, e.labelDeletes())
+		}
+	}
+}
+
+// A permanent refusal (a plain 403) is not temporary: it still spends an attempt so an operator sees it.
+func TestRefusedIssueReadSpendsAttempt(t *testing.T) {
+	e := setup(t)
+	repoID := statusRepo(t, e, true, statusIssue(1, "closed", "status:review"))
+	e.ghc.HTTP.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/1") {
+			return answer(http.StatusForbidden), nil
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})
+	err := e.runCleanup(repoID)
+	var d *jobs.Defer
+	if err == nil || errors.As(err, &d) {
+		t.Fatalf("want a plain error, got %v", err)
+	}
+}
+
+// An issue GitHub reports as gone is skipped like a missing one, so it cannot block the rest of the batch.
+func TestGoneIssueDoesNotBlockCleanup(t *testing.T) {
+	e := setup(t)
+	repoID := statusRepo(t, e, true, statusIssue(1, "closed", "status:review"), statusIssue(2, "closed", "status:todo"))
+	e.ghc.HTTP.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/1") {
+			return answer(http.StatusGone), nil
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})
+	if err := e.runCleanup(repoID); err != nil {
+		t.Fatal(err)
+	}
+	if got := remoteLabels(e, repoID, 2); len(got) != 0 {
+		t.Fatalf("issue 2 labels after cleanup: %v", got)
 	}
 }
 

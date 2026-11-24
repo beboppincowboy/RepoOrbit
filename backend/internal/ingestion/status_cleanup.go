@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -57,13 +60,40 @@ var errStatusLabelsOff = errors.New("status labels turned off")
 // (a sync or an issue write may be waiting on that claim to enqueue this very job), so it retries shortly instead.
 var errIssueBusy = errors.New("issue busy")
 
+// cleanupRetry is how long the cleanup waits after temporary GitHub trouble. A Defer spends no attempt, so an outage
+// never leaves the job dead (later syncs cannot revive a dead job; only an operator can).
+// ponytail: fixed interval with no backoff; an outage costs one pass per affected repository every 15 minutes.
+const cleanupRetry = 15 * time.Minute
+
+// githubError decides the cleanup's result for a failed GitHub call. Calls made with the installation token pass its
+// installation, so an API error is recorded on it; app-JWT calls pass 0. Temporary trouble (no HTTP answer, 5xx, 401,
+// a rate limit) defers without spending an attempt. Anything else (another 4xx, a malformed answer) is a plain error
+// that spends one, so a permanent refusal still ends in a dead job an operator sees.
+func (d *Deps) githubError(installation int64, token string, err error) error {
+	var api *githubapp.APIError
+	isAPI := errors.As(err, &api)
+	if isAPI && installation != 0 {
+		d.InstallationCredentials.RecordAPIError(installation, token, api)
+	}
+	var transport *url.Error
+	switch {
+	case isAPI && api.RateLimited():
+		return &jobs.Defer{RetryAt: api.RetryAt, Reason: CodeRateLimited}
+	case errors.As(err, &transport), isAPI && (api.Unauthorized() || api.Status >= 500):
+		log.Printf("ingestion: status cleanup deferred: %v", err)
+		return &jobs.Defer{RetryAt: d.Clock.Now().Add(cleanupRetry), Reason: CodeUpstream}
+	}
+	return fmt.Errorf("status cleanup: %w", err)
+}
+
 // CleanupStatusLabels is the jobs.KindStatusLabelCleanup handler (Key "repo:<repositories.id>"): the one RepoOrbit
 // write with no user behind it (R20, KTD3). In a repository with status labels on, for each stored closed issue that
 // still has a status label (and each issue with a removal left unknown), it re-reads the issue with the installation
 // token and, only if GitHub still shows it closed with that label, removes the label, records the removal in
 // app_operations as done by the app, and projects the issue as read back. Nothing is written without an installation
 // that holds Issues write and covers this repository's ID, or after status labels are turned off. Removing a label is
-// idempotent, so a removal left unknown is resolved by a later run rather than a Recheck.
+// idempotent, so a removal left unknown is resolved by a later run rather than a Recheck. Temporary GitHub trouble and
+// unknown removals defer the job (githubError); only permanent refusals and database or fence errors spend attempts.
 func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) error {
 	repoID, err := parseKey("repo:", job.Key)
 	if err != nil {
@@ -82,28 +112,25 @@ func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs
 		return err
 	}
 	installation, issuesWrite, err := client.RepositoryInstallationGrant(ctx, d.AppKey, storedName)
-	var api *githubapp.APIError
-	if errors.As(err, &api) && api.RateLimited() {
-		return &jobs.Defer{RetryAt: api.RetryAt, Reason: CodeRateLimited}
-	}
 	if err != nil {
-		return fmt.Errorf("status cleanup: installation lookup: %w", err)
+		return d.githubError(0, "", err)
 	}
 	if installation == 0 || !issuesWrite {
 		return nil
 	}
 	token, err := d.InstallationCredentials.AccessToken(ctx, installation)
 	if err != nil {
-		return d.installationFetchError(installation, token, err)
+		return d.githubError(installation, token, err)
 	}
 	// The stored name may be stale (a rename or transfer): read the repository by ID, so every write below goes to this
 	// repository's live name.
 	repo, err := client.FetchRepo(ctx, token, repoID)
+	var api *githubapp.APIError
 	if errors.As(err, &api) && api.NotFound() {
 		return nil
 	}
 	if err != nil {
-		return d.installationFetchError(installation, token, err)
+		return d.githubError(installation, token, err)
 	}
 	if repo.ID != repoID || repo.FullName == "" {
 		return nil
@@ -114,7 +141,7 @@ func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs
 		// that covers this repository under its live name.
 		live, liveWrite, err := client.RepositoryInstallationGrant(ctx, d.AppKey, fullName)
 		if err != nil {
-			return fmt.Errorf("status cleanup: installation lookup: %w", err)
+			return d.githubError(0, "", err)
 		}
 		if live != installation || !liveWrite {
 			return nil
@@ -123,11 +150,11 @@ func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs
 	unresolved, progressed := false, false
 	for _, c := range candidates {
 		issue, err := client.FetchIssue(ctx, token, fullName, c.Number)
-		if errors.As(err, &api) && api.NotFound() {
-			continue // gone or transferred; a deletion webhook or the next sync removes it
+		if errors.As(err, &api) && (api.NotFound() || api.Status == http.StatusGone) {
+			continue // missing or deleted; a deletion webhook or the next sync removes it
 		}
 		if err != nil {
-			return d.installationFetchError(installation, token, err)
+			return d.githubError(installation, token, err)
 		}
 		if issue.PullRequest != nil || issue.ID != c.SourceID {
 			continue // not the issue that was projected under this number
@@ -169,14 +196,14 @@ func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs
 			removeErr := client.RemoveLabel(ctx, token, fullName, c.Number, label)
 			if errors.As(removeErr, &api) && api.RateLimited() {
 				// Stop the batch for the cooldown; this removal stays unknown and a later run resolves it.
-				return d.installationFetchError(installation, token, removeErr)
+				return d.githubError(installation, token, removeErr)
 			}
 			removals = append(removals, removal{opID, label, removeErr})
 		}
 		if len(labels) > 0 {
 			if issue, err = client.FetchIssue(ctx, token, fullName, c.Number); err != nil {
 				// The removals stay unknown; a later run finds the labels gone (or removes them again) and resolves them.
-				return d.installationFetchError(installation, token, err)
+				return d.githubError(installation, token, err)
 			}
 		}
 		err = fence.Commit(ctx, func(tx pgx.Tx) error {
@@ -262,7 +289,9 @@ func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs
 		}
 	}
 	if unresolved {
-		return errors.New("status cleanup: a label removal has no reliable answer yet")
+		// A removal with no reliable answer yet: retry later without spending an attempt. The retried removal reuses
+		// its unknown app_operations row, so waiting out an outage adds no rows.
+		return &jobs.Defer{RetryAt: d.Clock.Now().Add(cleanupRetry), Reason: CodeUpstream}
 	}
 	if len(candidates) == 100 && progressed {
 		return &jobs.Defer{RetryAt: d.Clock.Now(), Reason: "continue"}
