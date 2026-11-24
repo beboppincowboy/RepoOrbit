@@ -111,6 +111,7 @@ function RepositoryWorkspace() {
       if (display !== "partial") return false;
       const streams = [activity.issues, activity.pullRequests, activity.releases, activity.issueEvents?.traversal];
       const children = [activity.reviews, activity.comments];
+      if (streams.some(stream => stream?.jobState === "running" && stream.phase !== "current")) return 3000;
       const queued = streams.some(stream => stream?.jobState === "queued" && stream.phase !== "current")
         || children.some(child => child && !child.complete && child.nextAttemptAt);
       return queued ? 10000 : false;
@@ -163,39 +164,28 @@ function RepositoryWorkspace() {
   const sync: SyncInput | null = overview ? {
     syncState: overview.syncState,
     activity: demo ? null : overview.activity,
-    metadataStatus: overview.syncState === "awaiting-sync" ? row?.repo.metadataStatus ?? null : null,
+    metadataStatus: row?.repo.metadataStatus ?? null,
     retryAt: row?.detail?.state === "available" ? row.detail.issues.retryAt : retryAt,
   } : null;
   const display = sync ? syncDisplay(sync) : null;
 
-  // Check access before rendering any data: a refetch that loses access keeps the last good data in the cache.
-  // Only real withholding hides the page; a paused metadata refresh also reads "Access unverified" but stays explained in Sync details.
-  if (!snapshot && (query.error instanceof RepositoryAccessUnverifiedError || (overview !== null && row?.detail?.state === "access-unverified"))) return <div className="flex h-full min-h-0 flex-col gap-3">
-    {rateLimited && retryAt ? <div role="status" className={`${card} flex items-center gap-3 p-4`}>
-      <Ico>{icons.info}</Ico>
-      <div><h1 className="text-base">Waiting for GitHub</h1>
-        <p className={`m-0 ${muted}`}>GitHub limited access checks. RepoOrbit will retry after {clock.format(new Date(retryAt))}.</p>
-      </div>
-    </div> : <>
-    <section className={`${card} flex flex-none flex-wrap items-center gap-x-3 gap-y-2 p-4`}>
-      <SyncStatus compact syncState="awaiting-sync" withheld={1} retryAt={retryAt} />
-      <h1 className="text-[19px] leading-[1.2]">Repository</h1>
-      {retryAt && <span className={`text-xs ${muted}`}>GitHub rate limited the access check; next check after {clock.format(new Date(retryAt))}.</span>}
+  const unavailable = !snapshot && (accessRejected || row?.detail?.state === "access-unverified");
+  if (unavailable || !overview || !sync) return <div className="flex h-full min-h-0 flex-col gap-3">
+    <section className={`${card} flex flex-none flex-wrap items-center gap-3 p-4`}>
+      <Ico>{icons.repo}</Ico>
+      <h1 className="text-[19px] leading-[1.2]">{unavailable ? "Repository" : row?.repo.fullName || "Repository"}</h1>
+      {unavailable && <SyncStatus compact syncState="awaiting-sync" withheld={1} retryAt={retryAt} />}
     </section>
-    <div className="grid min-h-0 flex-1 place-items-center">
-      <div className={`${card} flex max-w-[440px] flex-col items-center gap-2.5 p-4 text-center`}>
-        <Ico tone="bg-destructive-soft text-destructive">{icons.info}</Ico>
-        <h2 className="text-base">Access could not be verified</h2>
-        <p className={`m-0 ${muted}`}>Protected content is hidden, not deleted.</p>
-        <Button onClick={() => void Promise.all([query.refetch(), selection.refetch()])} disabled={query.isFetching || selection.isFetching}>Re-verify access</Button>
-      </div>
-    </div>
-    </>}
-  </div>;
-  if (query.isPending) return <p role="status" className={`${card} flex items-center gap-2 p-4`}><LoadingCircle />Loading repository workspace…</p>;
-  if (!overview || !sync) return <div role="alert" className={`${card} p-4`}>
-    <h1 className="text-base">{query.isError ? "Could not load repository analytics. Check that the local services are running." : <span className="inline-flex items-center gap-2"><SyncStatus compact syncState="awaiting-sync" withheld={1} />Repository</span>}</h1>
-    {query.isError && <Button className="mt-3" onClick={() => void query.refetch()} disabled={query.isFetching}>Retry</Button>}
+    <section aria-label="Repository overview" className={`${card} p-4`}>
+      {query.isPending && !unavailable ? <p role="status" className="flex items-center gap-2"><LoadingCircle />Loading repository data…</p> : <>
+        <p role="alert" className="m-0">{unavailable
+          ? rateLimited && retryAt
+            ? `GitHub limited access checks. RepoOrbit will retry after ${clock.format(new Date(retryAt))}.`
+            : "Repository data is unavailable because GitHub access could not be verified."
+          : "Repository analytics are unavailable."}</p>
+        {!rateLimited && <Button className="mt-3" onClick={() => void Promise.all([query.refetch(), selection.refetch()])} disabled={query.isFetching || selection.isFetching}>Retry</Button>}
+      </>}
+    </section>
   </div>;
 
   const [owner, name] = overview.fullName.split("/");
@@ -223,7 +213,10 @@ function RepositoryWorkspace() {
       <strong>Showing saved data from {new Date(snapshot.dataUpdatedAt).toLocaleString()}.</strong>
       <span>{snapshotReason} {retryAt && `Retry after ${clock.format(new Date(retryAt))}.`}</span>
       {!rateLimited && <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>Retry</Button>}
-    </div> : display && <Banner overview={overview} display={display} />}
+    </div> : display && <Banner overview={overview} display={display} sync={sync} />}
+    {query.isError && !snapshot && <div role="alert" className={`${card} flex items-center gap-3 p-3`}>
+      Could not refresh repository analytics. <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>Retry</Button>
+    </div>}
     {search.tab === "overview" && <OverviewTab overview={overview} days={search.days} recent={<Link {...path} search={{ ...search, tab: "activity" }} className={smallBtn}>All</Link>} github={github} />}
     {search.tab === "pulls" && (snapshot ? <p className={`${card} p-4`}>The pull request list needs a live connection. Saved PR counts are available on Overview.</p> : <PullRequests key={repositoryId} id={repositoryId} viewer={`${session.mode}:${session.user?.login}`} github={github} />)}
     {search.tab === "contributors" && <Contributors overview={overview} days={search.days} />}
@@ -257,7 +250,7 @@ const streamNames: [string, (a: Overview["activity"]) => ActivityResourceStatus 
 const list = (items: string[]) => items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 
 // One state banner under the header, as in the prototype: rate limited, syncing/awaiting, stopped, or partial coverage.
-function Banner({ overview, display }: { overview: Overview; display: string }) {
+function Banner({ overview, display, sync }: { overview: Overview; display: string; sync: SyncInput }) {
   const a = overview.activity;
   const note = (text: ReactNode, warn = true) => <div role="status" className={`flex flex-none items-start gap-2.5 rounded-[10px] border px-3 py-2.5 text-[13px] ${warn ? "border-warning bg-warning-soft" : "border-border bg-card"}`}>
     <span className="mt-[3px]">{icons.info}</span><span>{text}</span>
@@ -273,7 +266,17 @@ function Banner({ overview, display }: { overview: Overview; display: string }) 
     const running = streams.filter(([, s]) => s.jobState === "running").map(([label]) => label);
     return note(`Syncing ${running.length ? list(running) : "activity"}. Figures update as data arrives.`, false);
   }
-  if (display === "stopped") return note("Synchronization stopped after repeated failures; an operator must requeue it. Showing the last good data.");
+  if (display === "stopped" || display === "access-unverified") {
+    const failures = [
+      ...streams.map(([label, status]) => [label, status.failureCode ?? (status.jobState === "dead" || status.jobState === "paused" ? status.jobState : null)] as const),
+      ["comments", a.comments?.failureCode],
+      ["reviews", a.reviews?.failureCode],
+      ["metadata", sync.metadataStatus?.failureCode ?? (sync.metadataStatus?.state === "paused" || sync.metadataStatus?.state === "dead" ? sync.metadataStatus.state : null)],
+    ].filter(([, code]) => Boolean(code));
+    return note(failures.length
+      ? `Sync needs attention. ${failures.map(([label, code]) => `${label} (${code?.replace(/_/g, " ")})`).join(", ")}.`
+      : "GitHub access could not be verified for sync.");
+  }
   if (display === "awaiting" || display === "not-synchronized" || (uncovered.length && uncovered.every(c => c.reason === "not_synchronized"))) {
     return note("First sync has not started. Figures show — until data exists.", false);
   }

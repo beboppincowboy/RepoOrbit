@@ -38,3 +38,14 @@ func throttleCredential(ctx context.Context, q *db.Queries, userID int64, until 
 		log.Printf("ingestion: record credential throttle: %v", err)
 	}
 }
+
+// earlierRetry keeps the earliest provider deadline across eligible credentials.
+func earlierRetry(current, candidate time.Time) time.Time {
+	if candidate.IsZero() {
+		return current
+	}
+	if current.IsZero() || candidate.Before(current) {
+		return candidate
+	}
+	return current
+}

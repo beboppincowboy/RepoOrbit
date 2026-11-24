@@ -134,12 +134,13 @@ func apiError(resp *http.Response) *APIError {
 }
 
 type Repo struct {
-	ID          int64  `json:"id"`
-	FullName    string `json:"full_name"`
-	Description string `json:"description"` // GitHub sends null for none
-	Private     bool   `json:"private"`
-	Archived    bool   `json:"archived"`
-	Owner       struct {
+	ID              int64  `json:"id"`
+	FullName        string `json:"full_name"`
+	Description     string `json:"description"` // GitHub sends null for none
+	Private         bool   `json:"private"`
+	Archived        bool   `json:"archived"`
+	HasPullRequests *bool  `json:"has_pull_requests"`
+	Owner           struct {
 		ID    int64  `json:"id"`
 		Login string `json:"login"`
 		Type  string `json:"type"`

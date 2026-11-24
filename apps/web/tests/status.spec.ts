@@ -125,3 +125,11 @@ for (const [name, status_, body, headers, expected, role] of refreshCases) {
     expect(csrf).toBe('t');
   });
 }
+
+test('disabled pull requests are shown without a sync failure', async ({ page }) => {
+  await mockRepository(page, null, {
+    ...quietActivity, synchronized: true, pullRequests: res({ phase: 'disabled', lastSuccessAt: null }),
+  });
+  await expect(page.getByText('Pull requests: disabled on GitHub.')).toBeVisible();
+  await expect(page.locator('[data-sync-state="synced"]')).toHaveText('Synced');
+});

@@ -13,9 +13,17 @@ import (
 type pullRequestFetcher interface {
 	FetchPullRequestsCursor(context.Context, string, string, string) ([]githubapp.PullRequest, string, error)
 }
+
+const CodePullRequestsDisabled = "pull_requests_disabled"
+
+func pullRequestsDisabled(repo githubapp.Repo) bool {
+	return repo.HasPullRequests != nil && !*repo.HasPullRequests
+}
+
 type pullRequestPage struct {
-	items []githubapp.PullRequest
-	next  string
+	disabled bool
+	items    []githubapp.PullRequest
+	next     string
 }
 
 // SyncPullRequests imports one page and atomically registers all required child histories.
@@ -49,13 +57,18 @@ func (d *Deps) SyncPullRequests(ctx context.Context, job jobs.Job, fence jobs.Cl
 		return jobs.Permanent(errors.New("pull request fetch unavailable"))
 	}
 	started := d.Clock.Now()
-	err = d.withEvidencePage(ctx, job, fence, repoID, func(token, name string) (any, error) {
-		items, next, err := fetcher.FetchPullRequestsCursor(ctx, token, name, cursor)
+	skipped := false
+	err = d.withEvidencePage(ctx, job, fence, repoID, func(token string, repo githubapp.Repo) (any, error) {
+		if pullRequestsDisabled(repo) {
+			return pullRequestPage{disabled: true}, nil
+		}
+		items, next, err := fetcher.FetchPullRequestsCursor(ctx, token, repo.FullName, cursor)
 		return pullRequestPage{items: items, next: next}, err
 	}, func(tx pgx.Tx, data any) error {
 		var storedPhase, storedCursor string
 		var storedGeneration int64
-		err := tx.QueryRow(ctx, `SELECT phase,cursor,generation FROM activity_resources WHERE repository_id=$1 AND resource='pull_requests' FOR UPDATE`, repoID).Scan(&storedPhase, &storedCursor, &storedGeneration)
+		var firstPass bool
+		err := tx.QueryRow(ctx, `SELECT phase,cursor,generation,previous_scan IS NULL FROM activity_resources WHERE repository_id=$1 AND resource='pull_requests' FOR UPDATE`, repoID).Scan(&storedPhase, &storedCursor, &storedGeneration, &firstPass)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errRace
 		}
@@ -66,6 +79,11 @@ func (d *Deps) SyncPullRequests(ctx context.Context, job jobs.Job, fence jobs.Cl
 			return errRace
 		}
 		page := data.(pullRequestPage)
+		if page.disabled {
+			skipped = true
+			_, err = tx.Exec(ctx, `UPDATE activity_resources SET phase='current',page=1,cursor='',scan_started_at=NULL,previous_scan=NULL,current_scan='{}',watermark=NULL,last_error_code=$2 WHERE repository_id=$1 AND resource='pull_requests'`, repoID, CodePullRequestsDisabled)
+			return err
+		}
 		ids := make([]int64, 0, len(page.items))
 		for _, p := range page.items {
 			if p.ID <= 0 || p.Number <= 0 || p.CreatedAt.IsZero() || p.UpdatedAt.IsZero() {
@@ -83,10 +101,10 @@ func (d *Deps) SyncPullRequests(ctx context.Context, job jobs.Job, fence jobs.Cl
 			if err != nil {
 				return err
 			}
-			if err = registerChild(ctx, tx, repoID, "reviews", p.ID, p.Number, started); err != nil {
+			if err = registerChild(ctx, tx, repoID, "reviews", p.ID, p.Number, firstPass, started); err != nil {
 				return err
 			}
-			if err = registerChild(ctx, tx, repoID, "comments", p.Number, p.Number, started); err != nil {
+			if err = registerChild(ctx, tx, repoID, "comments", p.Number, p.Number, firstPass, started); err != nil {
 				return err
 			}
 		}
@@ -105,7 +123,7 @@ func (d *Deps) SyncPullRequests(ctx context.Context, job jobs.Job, fence jobs.Cl
 		_, err = tx.Exec(ctx, `UPDATE activity_resources SET phase=CASE WHEN previous_scan=current_scan THEN 'current' ELSE 'catchup' END,watermark=CASE WHEN previous_scan=current_scan THEN scan_started_at ELSE watermark END,last_success_at=CASE WHEN previous_scan=current_scan THEN $2 ELSE last_success_at END,previous_scan=current_scan,current_scan='{}',scan_started_at=NULL,page=1,cursor='' WHERE repository_id=$1 AND resource='pull_requests'`, repoID, d.Clock.Now())
 		return err
 	})
-	if err != nil {
+	if err != nil || skipped {
 		return err
 	}
 	return &jobs.Defer{RetryAt: d.Clock.Now(), Reason: "continue"}

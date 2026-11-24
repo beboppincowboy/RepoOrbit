@@ -59,7 +59,8 @@ func (d *Deps) syncEventResource(ctx context.Context, job jobs.Job, fence jobs.C
 		return err
 	}
 	started := d.Clock.Now()
-	err = d.withEvidencePage(ctx, job, fence, repoID, func(token, name string) (any, error) {
+	err = d.withEvidencePage(ctx, job, fence, repoID, func(token string, repo githubapp.Repo) (any, error) {
+		name := repo.FullName
 		if resource == "releases" {
 			f, ok := d.GitHub.(releaseFetcher)
 			if !ok {
