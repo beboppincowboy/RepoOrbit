@@ -10,14 +10,17 @@ export type MetadataStatus = { state: "not-scheduled" | "queued" | "running" | "
 export type ActivityResourceStatus = { phase: string; boundary: string; catchupThrough: string | null; lastSuccessAt: string | null; failureCode: string | null; jobState: string; nextAttemptAt: string | null };
 export type ChildResourceStatus = { complete: boolean; pendingChildren: number; lastSuccessAt: string | null; failureCode: string | null; nextAttemptAt: string | null };
 export type ActivityStatus = { synchronized: boolean; message: string; issues: ActivityResourceStatus | null; pullRequests: ActivityResourceStatus | null; releases: ActivityResourceStatus | null; reviews: ChildResourceStatus | null; comments: ChildResourceStatus | null; issueEvents: { traversal: ActivityResourceStatus | null; historicalGap: boolean } | null; futureResources: string[] };
+// --- Pure queries & shared types -----------------------------------------------------------------
+
 // fullName is "owner/name".
-type SelectedRepository = { id: string; fullName: string; description: string; syncState: SyncState; metadataStatus: MetadataStatus | null };
-type IssueConnection = { nodes: Issue[]; hasNextPage: boolean; withheld: number; retryAt: string | null };
-type RepositoryDetail =
+export type SelectedRepository = { id: string; fullName: string; description: string; syncState: SyncState; metadataStatus: MetadataStatus | null };
+export type IssueConnection = { nodes: Issue[]; hasNextPage: boolean; withheld: number; retryAt: string | null };
+export type RepositoryDetail =
   | { state: "available"; activity: ActivityStatus | null; issues: IssueConnection }
+  | { state: "access-denied" }
   | { state: "access-unverified"; retryAt: string | null };
 // withheld counts selected repositories hidden because access could not be verified; retryAt is set when GitHub rate limited the check.
-type RepositoryConnection = { nodes: SelectedRepository[]; endCursor: string | null; hasNextPage: boolean; withheld: number; retryAt: string | null };
+export type RepositoryConnection = { nodes: SelectedRepository[]; endCursor: string | null; hasNextPage: boolean; withheld: number; retryAt: string | null };
 // One row of a REST repository list. `selected` means connected on the owned list and followed on the starred list.
 export type ListedRepo = { id: string; fullName: string; description: string; private: boolean; selected: boolean; syncState: SyncState };
 export type OwnedPage = { repositories: ListedRepo[]; nextPage: number; refreshFailed: boolean; withheld: number; retryAt: string | null; installUrl: string };
@@ -75,8 +78,10 @@ type DetailResponse = Partial<Record<`a${number}`, { activity: ActivityStatus | 
   & Partial<Record<`r${number}`, IssueConnection | null>>;
 
 // Rechecks access and fetches activity and up to five issues per ID, in input order.
-// Accepts one to eight IDs. Access-unverified entries carry only an optional retry time.
-// Rejects an invalid batch size, cancellation, or a request or unexpected GraphQL error.
+// Accepts one to eight IDs. Preserves per-alias evidence:
+// - ACCESS_UNVERIFIED error or withheld issues -> "access-unverified" (temporary uncertainty)
+// - Present, error-free null on repository alias -> "access-denied" (definitive unavailability)
+// - Omitted or malformed alias -> rejects the batch so callers take the batch failure path
 export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal): Promise<RepositoryDetail[]> {
   if (ids.length === 0 || ids.length > detailChunk) throw new RangeError("Expected one to eight repository IDs");
   const declarations = ids.map((_, i) => `$id${i}: ID!`).join(", ");
@@ -86,19 +91,28 @@ export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal
     throw new Error("Unable to load repository details");
   }
   return ids.map((_, i) => {
-    const repository = data[`a${i}`];
-    const issues = data[`r${i}`];
-    const accessError = errors.find(error => error.path?.[0] === `a${i}` || error.path?.[0] === `r${i}`);
-    if (repository === null || accessError || issues?.withheld) {
+    const repoAlias = `a${i}` as const;
+    const issuesAlias = `r${i}` as const;
+    const hasRepoAlias = Object.prototype.hasOwnProperty.call(data, repoAlias);
+    const hasIssuesAlias = Object.prototype.hasOwnProperty.call(data, issuesAlias);
+    const repository = data[repoAlias];
+    const issues = data[issuesAlias];
+    const accessError = errors.find(error => error.path?.[0] === repoAlias || error.path?.[0] === issuesAlias);
+    if (accessError || issues?.withheld) {
       return { state: "access-unverified", retryAt: accessError?.extensions?.retryAt ?? issues?.retryAt ?? null };
     }
-    if (!repository || !issues) throw new Error("Unable to load repository details");
+    if (hasRepoAlias && repository === null) {
+      return { state: "access-denied" };
+    }
+    if (!hasRepoAlias || !hasIssuesAlias || !repository || !issues || typeof repository !== "object" || typeof issues !== "object") {
+      throw new Error("Unable to load repository details");
+    }
     return { state: "available", activity: repository.activity, issues };
   });
 }
 
-type SelectedRepositoryBatch = { repositories: SelectedRepository[]; details: RepositoryDetail[] | null };
-type SelectedRepositoryPage = Omit<RepositoryConnection, "nodes"> & { batches: SelectedRepositoryBatch[] };
+export type SelectedRepositoryBatch = { repositories: SelectedRepository[]; details: RepositoryDetail[] | null };
+export type SelectedRepositoryPage = Omit<RepositoryConnection, "nodes"> & { batches: SelectedRepositoryBatch[] };
 
 // Fetches up to 20 verified selections from GraphQL. Start with null, then pass the previous endCursor.
 // Withheld rows count toward the page size and appear only in the withheld count. An empty page can still have a next cursor.

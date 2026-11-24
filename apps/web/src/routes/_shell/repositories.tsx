@@ -1,4 +1,3 @@
-import { repositorySnapshotPrefix } from "@/lib/repository-snapshots";
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -6,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { SyncStatus } from "@/components/sync-status";
 import { RepositoryCell, RepositoriesHeading, SourceTabs, ToolsRow, noteClass, searchBoxClass, segGroupClass, segItemClass, tableCardClass, tdClass, thClass, warnNoteClass } from "@/components/repository-list";
 import { matchesListSearch, validateListSearch } from "@/lib/list-search";
-import { flattenSelectedRepositoryRows, useSelectedRepositories } from "@/lib/selected-repositories";
+import { flattenSelectedRepositoryRows, recordRepositoryRemoved, useSelectedRepositories } from "@/lib/selected-repositories";
 import { ownedRepositories, setSelected, type ListedRepo, type OwnedPage } from "@/lib/api";
 
 export const Route = createFileRoute("/_shell/repositories")({
@@ -73,7 +72,7 @@ function Repositories() {
       try {
         await setSelected(repo.id, selected);
         done.set(repo.id, selected);
-        if (!selected) queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repo.id) });
+        if (!selected) recordRepositoryRemoved(queryClient, session, repo.id);
         next[repo.id] = { ok: true, text: selected ? "Connected. Awaiting sync." : "Disconnected. RepoOrbit no longer syncs it for you." };
       } catch (e) {
         next[repo.id] = { ok: false, text: e instanceof Error ? e.message : "Something went wrong." };
