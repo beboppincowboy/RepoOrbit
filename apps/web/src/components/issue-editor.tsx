@@ -261,7 +261,7 @@ export function IssueEditor(props: IssueEditorProps) {
     lastError: string | null;
     lastOperation: WriteOperation | null;
     duplicateOperationId: number | null;
-  }): boolean => {
+  }, opts?: { verify?: boolean }): boolean => {
     const { duplicateOperationId, submittedDraft: draftPayload, ...writeState } = status;
     if (isCreate) {
       return writeStorage(storageKey, {
@@ -269,14 +269,14 @@ export function IssueEditor(props: IssueEditorProps) {
         duplicateOperationId,
         submittedDraft: draftPayload as IssueCreateDraft | null,
         ...writeState,
-      } satisfies StoredCreateDraft);
+      } satisfies StoredCreateDraft, opts);
     }
     return writeStorage(storageKey, {
       version: 1, issueNumber, addLabels, removeLabels, addAssignees, removeAssignees,
       state: targetState,
       submittedDraft: draftPayload as IssueUpdateDraft | null,
       ...writeState,
-    } satisfies StoredUpdateDraft);
+    } satisfies StoredUpdateDraft, opts);
   }, [
     isCreate, storageKey, title, body, createLabels, createAssignees,
     issueNumber, addLabels, removeLabels, addAssignees, removeAssignees, targetState,
@@ -545,8 +545,6 @@ export function IssueEditor(props: IssueEditorProps) {
 
   async function submitWrite(reuseExistingKey = false) {
     if (submittingRef.current || demo) return;
-    // Explicit recovery of an already-attempted write is allowed even after archival or permission changes
-    // while read access survives, provided the attempt timestamp is still within the server's retention window.
     const existingKey = (reuseExistingKey || keepKeyOnNextSubmit) ? idempotencyKey : null;
     if (reuseExistingKey) {
       if (!existingKey || !canReplayWithSameKey(attemptedAt)) return;
@@ -558,8 +556,6 @@ export function IssueEditor(props: IssueEditorProps) {
     const attemptStamp = existingKey ? (attemptedAt ?? new Date().toISOString()) : new Date().toISOString();
     const payload = existingKey && submittedDraft ? submittedDraft : buildCurrentDraft();
 
-    // Persist reviewed body, key, and original attempt timestamp before the first send; if browser storage rejects
-    // the write, keep the draft editable and send nothing so a lost response can never leave an unrecoverable create.
     const persisted = saveDraft({
       step: "unknown",
       idempotencyKey: key,
@@ -569,7 +565,7 @@ export function IssueEditor(props: IssueEditorProps) {
       lastError: null,
       lastOperation: null,
       duplicateOperationId: null,
-    });
+    }, { verify: !existingKey });
     if (!existingKey && !persisted) {
       setValidationError("Could not save the recovery key in browser storage, so nothing was sent to GitHub. Check browser storage space or site permissions, then try again.");
       setStep("edit");
@@ -619,12 +615,10 @@ export function IssueEditor(props: IssueEditorProps) {
         setLastError(classified.message);
         setStep("unknown");
       } else if (classified.outcome === "possibly_recorded") {
-        // Ambiguous outcome: preserve exact idempotency key, payload, and original attempt timestamp.
         setKeepKeyOnNextSubmit(true);
         setLastError(classified.message);
         setStep("unknown");
       } else {
-        // Definite rejection before recording (first attempt only): next reviewed submit gets a fresh key.
         setKeepKeyOnNextSubmit(false);
         setAttemptedAt(null);
         setSubmittedDraft(null);

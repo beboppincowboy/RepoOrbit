@@ -289,18 +289,13 @@ func (d SchedulerDeps) pollActivity(ctx context.Context, now time.Time) error {
 
 // writeOperationRetention is the age, measured from write_operations.created_at, after which a succeeded or failed
 // issue-write operation is deleted and an unresolved one is wiped and redacted (and then kept indefinitely).
-// stalePendingTimeout matches the 1-minute freshness guard on MarkWriteOperationSent.
 const (
 	writeOperationRetention = 30 * 24 * time.Hour
-	stalePendingTimeout     = time.Minute
+	StalePendingTimeout     = time.Minute
 )
 
-// expireWriteOperations settles abandoned pending operations older than stalePendingTimeout as failed, deletes the
-// app's own operations and succeeded and failed issue-write operations older than writeOperationRetention, and wipes
-// and redacts the rest of that age. Remaining unresolved rows are 'unknown', and an unknown create must stay: its
-// content hash is what stops a retry of the same content from creating a second issue.
 func (d SchedulerDeps) expireWriteOperations(ctx context.Context, now time.Time) error {
-	staleCutoff := now.Add(-stalePendingTimeout)
+	staleCutoff := now.Add(-StalePendingTimeout)
 	cutoff := now.Add(-writeOperationRetention)
 	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `UPDATE write_operations SET state = 'failed',

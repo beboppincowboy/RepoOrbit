@@ -1592,45 +1592,10 @@ func TestStateChangesOrderAroundLabelSteps(t *testing.T) {
 	}
 }
 
-type writeOpSQLTracer struct {
-	mu      sync.Mutex
-	enabled bool
-	queries []string
-}
-
-func (tr *writeOpSQLTracer) start() {
-	tr.mu.Lock()
-	tr.queries = nil
-	tr.enabled = true
-	tr.mu.Unlock()
-}
-
-func (tr *writeOpSQLTracer) stop() []string {
-	tr.mu.Lock()
-	tr.enabled = false
-	out := slices.Clone(tr.queries)
-	tr.mu.Unlock()
-	return out
-}
-
-func (tr *writeOpSQLTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	tr.mu.Lock()
-	if tr.enabled {
-		tr.queries = append(tr.queries, data.SQL)
-	}
-	tr.mu.Unlock()
-	return ctx
-}
-
-func (*writeOpSQLTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
-
-// GET /write-operations and GET /write-operations/{id} execute zero UPDATE write_operations queries,
-// project stale pending rows (>1m) as failed (preserving redacted shape when wiped), and a resumed
-// MarkWriteOperationSent updates 0 rows.
 func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 	ctx := context.Background()
 	dbURL, pool := testutil.Database(t)
-	tr := &writeOpSQLTracer{}
+	tr := &testutil.SQLRecorder{}
 	cfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
 		t.Fatal(err)
@@ -1663,13 +1628,17 @@ func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 	alice := e.signIn("alice")
 	repo := e.repo("alice", "app", false)
 
-	var intactID, wipedID int64
+	var freshID, intactID, wipedID int64
 	if err := pool.QueryRow(ctx, `INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, draft, state, outcome, created_at)
-		VALUES ($1, $2, 'stale-intact', 'update', '\x00', '{"state":"closed"}', 'pending', '{}', now() - interval '2 minutes') RETURNING id`, alice.id, repo).Scan(&intactID); err != nil {
+		VALUES ($1, $2, 'fresh-pending', 'update', '\x00', '{"state":"closed"}', 'pending', '{}', now() - interval '50 seconds') RETURNING id`, alice.id, repo).Scan(&freshID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, draft, state, outcome, created_at)
-		VALUES ($1, $2, 'stale-wiped', 'update', '\x00', NULL, 'pending', '{"redacted":true}', now() - interval '2 minutes') RETURNING id`, alice.id, repo).Scan(&wipedID); err != nil {
+		VALUES ($1, $2, 'stale-intact', 'update', '\x00', '{"state":"closed"}', 'pending', '{}', now() - interval '65 seconds') RETURNING id`, alice.id, repo).Scan(&intactID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, draft, state, outcome, created_at)
+		VALUES ($1, $2, 'stale-wiped', 'update', '\x00', NULL, 'pending', '{"redacted":true}', now() - interval '65 seconds') RETURNING id`, alice.id, repo).Scan(&wipedID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1682,9 +1651,9 @@ func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 		}
 	}
 
-	tr.start()
+	tr.Start()
 	listResp := alice.do("GET", fmt.Sprintf("/api/repositories/%d/write-operations", repo), "", nil)
-	assertNoWriteOpUpdate("GET list", tr.stop())
+	assertNoWriteOpUpdate("GET list", tr.Stop())
 	if listResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET list status %d: %s", listResp.StatusCode, alice.body(listResp))
 	}
@@ -1702,12 +1671,15 @@ func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 	if err := json.Unmarshal(alice.body(listResp), &list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Operations) != 2 {
-		t.Fatalf("expected 2 operations, got %+v", list.Operations)
+	if len(list.Operations) != 3 {
+		t.Fatalf("expected 3 operations, got %+v", list.Operations)
 	}
 	byID := map[int64]int{}
 	for i, op := range list.Operations {
 		byID[op.ID] = i
+	}
+	if fresh := list.Operations[byID[freshID]]; fresh.State != "pending" {
+		t.Fatalf("list fresh pending: %+v", fresh)
 	}
 	intact := list.Operations[byID[intactID]]
 	if intact.State != "failed" || !strings.Contains(intact.Outcome.Error, "abandoned before sending") || intact.Outcome.Redacted {
@@ -1718,9 +1690,9 @@ func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 		t.Fatalf("list wiped stale pending: %+v", wiped)
 	}
 
-	tr.start()
+	tr.Start()
 	getResp := alice.do("GET", opPath(wipedID), "", nil)
-	assertNoWriteOpUpdate("GET one", tr.stop())
+	assertNoWriteOpUpdate("GET one", tr.Stop())
 	if getResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET one status %d: %s", getResp.StatusCode, alice.body(getResp))
 	}
@@ -1738,34 +1710,29 @@ func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 		t.Fatalf("GET wiped stale pending: %+v", single)
 	}
 
-	// Resumed stale sender must update 0 rows in MarkWriteOperationSent even though GET left the row pending.
-	n, err := db.New(pool).MarkWriteOperationSent(ctx, intactID)
-	if err != nil {
-		t.Fatal(err)
+	if n, err := db.New(pool).MarkWriteOperationSent(ctx, freshID); err != nil || n != 1 {
+		t.Fatalf("MarkWriteOperationSent fresh pending updated %d rows (err=%v), want 1", n, err)
 	}
-	if n != 0 {
-		t.Fatalf("MarkWriteOperationSent updated %d rows on stale pending op, want 0", n)
+	if n, err := db.New(pool).MarkWriteOperationSent(ctx, intactID); err != nil || n != 0 {
+		t.Fatalf("MarkWriteOperationSent stale pending updated %d rows (err=%v), want 0", n, err)
 	}
 }
 
-// Submit failures communicate recording status via RepoOrbit-Write-Disposition while keeping legacy status codes and text.
 func TestWriteDispositionHeadersAndArchiveRecovery(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
 	carol := e.signIn("carol")
 	repo := e.repo("alice", "app", false)
 
-	// Pre-send rejections carry RepoOrbit-Write-Disposition: not-recorded.
-	if resp, _ := carol.send(create(repo), "perm-1", `{"title":"No metadata perm","labels":["bug"]}`); resp.StatusCode != http.StatusForbidden || resp.Header.Get("RepoOrbit-Write-Disposition") != "not-recorded" {
-		t.Fatalf("403 disposition=%q status=%d", resp.Header.Get("RepoOrbit-Write-Disposition"), resp.StatusCode)
+	if resp, _ := carol.send(create(repo), "perm-1", `{"title":"No metadata perm","labels":["bug"]}`); resp.StatusCode != http.StatusForbidden || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionNotRecorded {
+		t.Fatalf("403 disposition=%q status=%d", resp.Header.Get(issues.HeaderWriteDisposition), resp.StatusCode)
 	}
 	e.gh.Fail(true)
-	if resp, _ := alice.send(create(repo), "unverified-1", `{"title":"Precheck 503"}`); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("RepoOrbit-Write-Disposition") != "not-recorded" {
-		t.Fatalf("precheck 503 disposition=%q status=%d", resp.Header.Get("RepoOrbit-Write-Disposition"), resp.StatusCode)
+	if resp, _ := alice.send(create(repo), "unverified-1", `{"title":"Precheck 503"}`); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionNotRecorded {
+		t.Fatalf("precheck 503 disposition=%q status=%d", resp.Header.Get(issues.HeaderWriteDisposition), resp.StatusCode)
 	}
 	e.gh.Fail(false)
 
-	// Post-record fenced 503 carries RepoOrbit-Write-Disposition: possibly-recorded and preserves legacy text.
 	bumped := false
 	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
 		next.ServeHTTP(w, r)
@@ -1780,11 +1747,10 @@ func TestWriteDispositionHeadersAndArchiveRecovery(t *testing.T) {
 	})
 	resp, _ := alice.send(create(repo), "fenced-1", `{"title":"Created before fence moved"}`)
 	body := string(alice.body(resp))
-	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("RepoOrbit-Write-Disposition") != "possibly-recorded" || !strings.Contains(body, "same Idempotency-Key") {
-		t.Fatalf("fenced 503 status=%d disposition=%q body=%q", resp.StatusCode, resp.Header.Get("RepoOrbit-Write-Disposition"), body)
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionPossiblyRecorded || !strings.Contains(body, "same Idempotency-Key") {
+		t.Fatalf("fenced 503 status=%d disposition=%q body=%q", resp.StatusCode, resp.Header.Get(issues.HeaderWriteDisposition), body)
 	}
 
-	// Replay with the same key recovers the recorded operation even after the repository is archived while read access survives.
 	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
 		if r.URL.Path == fmt.Sprintf("/repositories/%d", repo) || r.URL.Path == "/user/repos" {
 			rec := httptest.NewRecorder()
@@ -1820,8 +1786,20 @@ func TestWriteDispositionHeadersAndArchiveRecovery(t *testing.T) {
 	if len(e.gh.Issues(repo)) != 1 {
 		t.Fatalf("expected 1 upstream issue after recovery replay, got %d", len(e.gh.Issues(repo)))
 	}
-	// Fresh writes after archival are refused with not-recorded.
-	if resp, _ := alice.send(create(repo), "archived-new", `{"title":"New after archive"}`); resp.StatusCode != http.StatusForbidden || resp.Header.Get("RepoOrbit-Write-Disposition") != "not-recorded" {
-		t.Fatalf("fresh archived write status=%d disposition=%q", resp.StatusCode, resp.Header.Get("RepoOrbit-Write-Disposition"))
+	if resp, _ := alice.send(create(repo), "archived-new", `{"title":"New after archive"}`); resp.StatusCode != http.StatusForbidden || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionNotRecorded {
+		t.Fatalf("fresh archived write status=%d disposition=%q", resp.StatusCode, resp.Header.Get(issues.HeaderWriteDisposition))
+	}
+
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) { next.ServeHTTP(w, r) })
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `CREATE FUNCTION fail_write_op_insert() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'boom'; END; $$ LANGUAGE plpgsql;
+		CREATE TRIGGER test_fail_write_op_insert BEFORE INSERT ON write_operations FOR EACH ROW EXECUTE FUNCTION fail_write_op_insert();`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = e.pool.Exec(ctx, `DROP TRIGGER IF EXISTS test_fail_write_op_insert ON write_operations; DROP FUNCTION IF EXISTS fail_write_op_insert();`)
+	})
+	if resp, _ := alice.send(create(repo), "db-error-500", `{"title":"DB insert error"}`); resp.StatusCode != http.StatusInternalServerError || resp.Header.Get(issues.HeaderWriteDisposition) != "" {
+		t.Fatalf("pre-insert 500 status=%d disposition=%q", resp.StatusCode, resp.Header.Get(issues.HeaderWriteDisposition))
 	}
 }

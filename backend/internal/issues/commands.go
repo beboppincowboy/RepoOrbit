@@ -45,9 +45,6 @@ const (
 	WriteDispositionPossiblyRecorded = "possibly-recorded"
 )
 
-// submitWriter attaches HeaderWriteDisposition to error responses on submit commands.
-// Pre-insert 500s omit the header so server errors stay uncertain; once recording starts,
-// errors emit "possibly-recorded" (and "not-recorded" only when an insert rejection proves nothing was recorded).
 type submitWriter struct {
 	http.ResponseWriter
 	disposition string
@@ -538,11 +535,6 @@ func (s *Service) replay(sw *submitWriter, ctx context.Context, userID int64, ke
 
 var errAccessMoved = errors.New("access changed")
 
-// submit records and sends one command: validate access and permission, check an update's expect against the live
-// issue, record the operation as pending, mark it unknown, send it with the actor's token, then record what GitHub
-// confirmed. A reused key is answered right after the access check, before the permission and expect checks. An
-// operation that is no longer pending when it is marked (a stale-pending recovery failed it or the freshness guard
-// rejected it) is sent nowhere and answered as a replay.
 func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 	ctx := r.Context()
 	userID, ok := auth.SignedInUserID(ctx)
@@ -703,7 +695,7 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 	if n, err := s.Queries.MarkWriteOperationSent(ctx, opID); err != nil {
 		s.internal(sw, fmt.Errorf("mark sent: %w", err))
 		return
-	} else if n == 0 { // no longer pending or past freshness guard: settle stale pending rows and send nothing
+	} else if n == 0 {
 		if err := s.Queries.FailStalePendingOperations(ctx, userID); err != nil {
 			s.internal(sw, err)
 			return
@@ -960,9 +952,28 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	userID, row, d, snap, ok := s.loadOperation(w, r, true)
+	userID, row, d, snap, ok := s.loadOperation(w, r)
 	if !ok {
 		return
+	}
+	if row.State == "pending" {
+		if err := s.Queries.FailStalePendingOperations(r.Context(), userID); err != nil {
+			s.internal(w, err)
+			return
+		}
+		reloaded, err := s.Queries.GetWriteOperation(r.Context(), db.GetWriteOperationParams{ID: row.ID, UserID: userID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			s.internal(w, err)
+			return
+		}
+		if !s.fenceHolds(w, r.Context(), snap) {
+			return
+		}
+		row = reloaded
 	}
 	if row.State != "unknown" {
 		writeJSON(w, http.StatusOK, s.view(row))

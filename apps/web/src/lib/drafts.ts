@@ -51,12 +51,13 @@ export function readStorageByPrefix<T>(prefix: string): T[] {
   return storageKeys(prefix).map(key => readStorage<T>(key)).filter(value => value !== null);
 }
 
-export function writeStorage(key: string, value: unknown): boolean {
+export function writeStorage(key: string, value: unknown, opts: { verify?: boolean } = {}): boolean {
   if (typeof window === "undefined") return false;
   try {
     const serialized = JSON.stringify(value);
+    if (serialized === undefined) return false;
     window.localStorage.setItem(key, serialized);
-    return window.localStorage.getItem(key) === serialized;
+    return opts.verify ? window.localStorage.getItem(key) === serialized : true;
   } catch {
     return false;
   }

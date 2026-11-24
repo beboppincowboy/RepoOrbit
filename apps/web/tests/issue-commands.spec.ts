@@ -756,7 +756,7 @@ test('write history shows the GitHub App cleanup without offering a recheck', as
   await expect(history.getByRole('button', { name: 'Recheck' })).toHaveCount(0);
 });
 
-test('write disposition header controls 503 recovery independently of English prose and handles proxy 503 safely', async ({ page }) => {
+test('write disposition header controls 503 recovery independently of English prose', async ({ page }) => {
   const keys: string[] = [];
   let attempt = 0;
   await setupWorkspace(page);
@@ -764,7 +764,6 @@ test('write disposition header controls 503 recovery independently of English pr
     attempt++;
     keys.push(route.request().headers()['idempotency-key'] ?? '');
     if (attempt === 1) {
-      // Explicit not-recorded 503 with misleading text must be treated as a definite rejection -> fresh key on retry.
       return route.fulfill({
         status: 503,
         headers: { 'RepoOrbit-Write-Disposition': 'not-recorded' },
@@ -773,7 +772,6 @@ test('write disposition header controls 503 recovery independently of English pr
       });
     }
     if (attempt === 2) {
-      // Explicit possibly-recorded 503 with altered text must preserve key and offer recovery.
       return route.fulfill({
         status: 503,
         headers: { 'RepoOrbit-Write-Disposition': 'possibly-recorded' },
@@ -781,7 +779,6 @@ test('write disposition header controls 503 recovery independently of English pr
         body: 'upstream fence moved',
       });
     }
-    // Recovery replay returns the recorded operation.
     return route.fulfill({
       status: 200,
       json: {
@@ -831,7 +828,6 @@ test('archived repository still allows same-key recovery of an earlier uncertain
     keys.push(route.request().headers()['idempotency-key'] ?? '');
     bodies.push(route.request().postDataJSON() as Record<string, unknown>);
     if (keys.length === 1) {
-      // Unmarked proxy 503 -> safe same-key recovery.
       return route.fulfill({ status: 503, contentType: 'text/plain', body: 'Proxy temporarily unavailable' });
     }
     return route.fulfill({
@@ -861,6 +857,11 @@ test('archived repository still allows same-key recovery of an earlier uncertain
   await expect(dialog.getByText('Confirmed on GitHub.')).toBeVisible();
   expect(keys).toEqual([keys[0], keys[0]]);
   expect(bodies).toEqual([bodies[0], bodies[0]]);
+
+  await dialog.getByRole('button', { name: 'Done' }).click();
+  await page.getByRole('button', { name: '+ New issue' }).click();
+  await expect(dialog.getByLabel('Title')).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: 'Review' })).toBeDisabled();
 });
 
 test('expired and undated legacy uncertain drafts suppress same-key POSTs and preserve the draft for manual reconciliation', async ({ page }) => {
@@ -871,7 +872,6 @@ test('expired and undated legacy uncertain drafts suppress same-key POSTs and pr
     return route.fulfill({ status: 500, body: 'should not be called' });
   });
 
-  // 1. Expired attempt (> 29 days old).
   await page.goto('/workspace/1');
   await page.evaluate(() => {
     const expiredAt = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
@@ -897,7 +897,6 @@ test('expired and undated legacy uncertain drafts suppress same-key POSTs and pr
   await expect(dialog).toContainText(/manual|Write history/i);
   expect(posts).toBe(0);
 
-  // 2. Undated legacy draft (no attemptedAt field).
   await page.evaluate(() => {
     localStorage.setItem('repoorbit:issue-draft:real:ada:1:create', JSON.stringify({
       version: 1,
@@ -984,7 +983,6 @@ test('status source enable retry reuses key on uncertain 503 and rotates key on 
   await setup.getByRole('button', { name: 'Turn on…' }).click();
   await setup.getByRole('button', { name: 'Submit' }).click();
   await expect(setup.getByRole('alert')).toContainText('access unverified');
-  // Definitive not-recorded rejection should NOT label the button "Retry submit" with the old key.
   await setup.getByRole('button', { name: 'Submit' }).click();
   await expect(setup.getByRole('alert')).toContainText('fence moved');
   await setup.getByRole('button', { name: 'Retry submit' }).click();

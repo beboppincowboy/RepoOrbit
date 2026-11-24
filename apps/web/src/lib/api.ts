@@ -456,13 +456,11 @@ export class IssueWriteError extends Error {
   }
 }
 
-// Completed write operations are deleted on the server after 30 days. Use a 29-day cutoff in the browser
-// to allow clock skew before suppressing automatic same-key recovery POSTs.
-export const WRITE_RECOVERY_WINDOW_MS = 29 * 24 * 60 * 60 * 1000;
+const SERVER_WRITE_RETENTION_DAYS = 30;
+const CLOCK_SKEW_MARGIN_DAYS = 1;
+const WRITE_RECOVERY_WINDOW_MS = (SERVER_WRITE_RETENTION_DAYS - CLOCK_SKEW_MARGIN_DAYS) * 24 * 60 * 60 * 1000;
 const WRITE_RECOVERY_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
-// Pure query: whether an unresolved attempt's timestamp is reliably within the server's idempotency retention window.
-// Undated legacy drafts, malformed dates, expired attempts, and implausible future timestamps require manual reconciliation.
 export function canReplayWithSameKey(attemptedAt: string | null | undefined, now: number = Date.now()): boolean {
   if (!attemptedAt) return false;
   const parsed = Date.parse(attemptedAt);
@@ -478,10 +476,6 @@ export type WriteFailureClassification =
   | { outcome: "possibly_recorded"; message: string }
   | { outcome: "not_recorded"; message: string };
 
-// Pure classifier: whether a failed issue write may have been recorded, and so sent.
-// Relies on HTTP status, structured error kind, and the server's RepoOrbit-Write-Disposition header rather than
-// human-readable error prose. On a replay (isReplay=true), a precheck rejection cannot disprove the earlier attempt.
-// Unmarked 503 responses (proxies or older servers) default safely to uncertain.
 export function mayHaveBeenRecorded(error: unknown, opts: { isReplay?: boolean } = {}): boolean {
   if (!(error instanceof IssueWriteError)) return true;
   if (error.kind === "duplicate_create" || error.kind === "recheck_unresolved") return false;
@@ -493,7 +487,6 @@ export function mayHaveBeenRecorded(error: unknown, opts: { isReplay?: boolean }
   return false;
 }
 
-// Pure classifier mapping any failed submit or recheck error to the next recovery action.
 export function classifyWriteFailure(error: unknown, opts: { isReplay?: boolean } = {}): WriteFailureClassification {
   const message = error instanceof Error ? error.message : "Could not submit to GitHub.";
   if (error instanceof IssueWriteError) {

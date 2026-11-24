@@ -19,7 +19,6 @@ export function StatusSourceSetup({ repositoryId, viewerKey, demo, frozen }: { r
   const [step, setStep] = useState<Step>("idle");
   const [result, setResult] = useState<WriteOperation | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Kept after an uncertain submit so a retry replays the same operation instead of recording a second one.
   const [retryKey, setRetryKey] = useState<string | null>(null);
   const [retryAttemptedAt, setRetryAttemptedAt] = useState<string | null>(null);
 
