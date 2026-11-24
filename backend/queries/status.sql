@@ -10,11 +10,11 @@ WHERE s.user_id = $1 AND s.deselected_at IS NULL AND s.repository_id = ANY(sqlc.
 -- name: ListFollowedRepositoryIDs :many
 -- Repositories some user actively selects and is still follow-eligible for: the poll set.
 SELECT DISTINCT s.repository_id FROM selections s JOIN repositories r ON r.id = s.repository_id
-WHERE s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false ORDER BY s.repository_id;
+WHERE is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo) ORDER BY s.repository_id;
 
 -- name: ListEligibleRepositoryIDsForUser :many
 SELECT s.repository_id FROM selections s JOIN repositories r ON r.id = s.repository_id
-WHERE s.user_id = $1 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false ORDER BY s.repository_id;
+WHERE s.user_id = $1 AND is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo) ORDER BY s.repository_id;
 
 -- name: ListStarFollowerIDs :many
 -- Users whose followed repositories depend on a star snapshot (suspended ones included: they may star again).

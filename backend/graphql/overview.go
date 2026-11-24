@@ -17,6 +17,10 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 	if err := analytics.ValidateMetricWindowDays(days); err != nil {
 		return nil, err
 	}
+	repoID, err := parsePositiveID(&id)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := withReadDeadline(ctx)
 	defer cancel()
 
@@ -31,7 +35,6 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 		if err != nil || repo == nil {
 			return nil, err
 		}
-		repoID, _ := strconv.ParseInt(id, 10, 64)
 		overview, err := analytics.LoadRepositoryOverview(ctx, r.DemoPool, repoID, days, now)
 		if err != nil {
 			return nil, fmt.Errorf("database unavailable")
@@ -39,35 +42,36 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 		return &model.RepositoryOverview{Overview: overview, FullName: repo.FullName, SyncState: repo.SyncState, Activity: repo.Activity}, nil
 	}
 
-	page, err := r.evidenceAccess(ctx, []string{id}, 1, nil)
+	auth, err := r.authorizeSelected(ctx, []int64{repoID})
 	if err != nil {
 		return nil, err
 	}
-	if page.withheld > 0 {
-		var retry time.Time
-		if page.retry != nil {
-			retry, _ = time.Parse(time.RFC3339, *page.retry)
+	if len(auth.ids) == 0 {
+		if auth.withheld > 0 {
+			return nil, unverifiedError(auth.retryAt)
 		}
-		return nil, unverifiedError(retry)
-	}
-	if len(page.ids) == 0 {
 		return nil, nil
 	}
-	overview, err := analytics.LoadRepositoryOverview(ctx, r.RepoAccess.Pool, page.ids[0], days, now)
-	if err != nil {
-		return nil, fmt.Errorf("database unavailable")
-	}
-	repo := &model.Repository{ID: id, Activity: activityStatus(false, true)}
-	if err := r.attachMetadataStatus(ctx, page.userID, []*model.Repository{repo}); err != nil {
-		return nil, fmt.Errorf("database unavailable")
-	}
-	if !r.evidenceCurrent(ctx, page) {
-		return nil, unverifiedError(time.Time{})
-	}
-	return &model.RepositoryOverview{
-		Overview: overview, FullName: page.checks[page.ids[0]].Repo.FullName,
-		SyncState: string(repositories.SyncStateFor(true)), Activity: repo.Activity,
-	}, nil
+	return guardedRead(ctx, r.RepoAccess.Pool, auth,
+		func() (*model.RepositoryOverview, error) {
+			targetID := auth.ids[0]
+			overview, err := analytics.LoadRepositoryOverview(ctx, r.RepoAccess.Pool, targetID, days, now)
+			if err != nil {
+				return nil, fmt.Errorf("database unavailable")
+			}
+			repo := &model.Repository{ID: strconv.FormatInt(targetID, 10), Activity: activityStatus(false, true)}
+			if err := r.attachMetadataStatus(ctx, auth.userID, []*model.Repository{repo}); err != nil {
+				return nil, fmt.Errorf("database unavailable")
+			}
+			return &model.RepositoryOverview{
+				Overview: overview, FullName: auth.checks[targetID].Repo.FullName,
+				SyncState: string(repositories.SyncStateFor(true)), Activity: repo.Activity,
+			}, nil
+		},
+		func() (*model.RepositoryOverview, error) {
+			return nil, unverifiedError(time.Time{})
+		},
+	)
 }
 
 // demoAssigneeID is the GitHub user ID testdata/demo.sql assigns demo issues to, standing in for auth.DemoViewer.
@@ -115,24 +119,28 @@ func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (
 	if len(selected) > maxRepositoryIDs {
 		return nil, codedError("OVERVIEW_SELECTION_LIMIT", fmt.Sprintf("The overview supports up to %d selected repositories. Disconnect or unfollow repositories to view your overview.", maxRepositoryIDs))
 	}
-	raw := make([]string, len(selected))
-	for i, id := range selected {
-		raw[i] = strconv.FormatInt(id, 10)
-	}
-	page, err := r.evidenceAccess(ctx, raw, 1, nil)
+	auth, err := r.authorizePreselected(ctx, user, selected)
 	if err != nil {
 		return nil, err
 	}
-	assignee, err := r.Queries.GetUserGithubID(ctx, user)
-	if err != nil {
-		return nil, fmt.Errorf("database unavailable")
-	}
-	out, err := analytics.LoadCrossRepositoryOverview(ctx, r.RepoAccess.Pool, page.ids, assignee, days, now)
-	if err != nil {
-		return nil, fmt.Errorf("database unavailable")
-	}
-	if !r.evidenceCurrent(ctx, page) {
-		return nil, unverifiedError(time.Time{})
-	}
-	return &model.CrossRepositoryOverview{CrossOverview: out, Withheld: page.withheld, RetryAt: page.retry}, nil
+	return guardedRead(ctx, r.RepoAccess.Pool, auth,
+		func() (*model.CrossRepositoryOverview, error) {
+			var assignee int64
+			if len(auth.ids) > 0 {
+				var err error
+				assignee, err = r.Queries.GetUserGithubID(ctx, user)
+				if err != nil {
+					return nil, fmt.Errorf("database unavailable")
+				}
+			}
+			out, err := analytics.LoadCrossRepositoryOverview(ctx, r.RepoAccess.Pool, auth.ids, assignee, days, now)
+			if err != nil {
+				return nil, fmt.Errorf("database unavailable")
+			}
+			return &model.CrossRepositoryOverview{CrossOverview: out, Withheld: auth.withheld, RetryAt: auth.retryAtString()}, nil
+		},
+		func() (*model.CrossRepositoryOverview, error) {
+			return nil, unverifiedError(time.Time{})
+		},
+	)
 }
