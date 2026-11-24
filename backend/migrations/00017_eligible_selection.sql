@@ -7,6 +7,7 @@ CREATE FUNCTION is_eligible_selection(
 ) RETURNS boolean
 LANGUAGE sql
 IMMUTABLE
+PARALLEL SAFE
 AS $$
     SELECT deselected_at IS NULL
        AND follow_suspended_at IS NULL

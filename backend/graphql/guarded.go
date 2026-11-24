@@ -68,16 +68,16 @@ func (r *Resolver) authorizeSelected(ctx context.Context, rawIDs []int64) (guard
 	if len(rawIDs) == 0 {
 		return guardedAuth{userID: user}, nil
 	}
+	snap, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, user)
+	if err != nil {
+		return a, fmt.Errorf("database unavailable")
+	}
 	selected, err := r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: user, RepositoryIds: rawIDs})
 	if err != nil {
 		return a, fmt.Errorf("database unavailable")
 	}
 	if len(selected) == 0 {
 		return guardedAuth{userID: user}, nil
-	}
-	snap, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, user)
-	if err != nil {
-		return a, fmt.Errorf("database unavailable")
 	}
 	return r.finishAuth(ctx, user, selected, snap), nil
 }
@@ -170,6 +170,7 @@ func queryEvidencePage[N any](
 		out.endCursor = &cursor
 		out.nodes = append(out.nodes, node)
 	}
+	rows.Close()
 	if rows.Err() != nil {
 		return pageData[N]{}, fmt.Errorf("database unavailable")
 	}
