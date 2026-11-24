@@ -1,7 +1,8 @@
-INSERT INTO repositories (id, name, description, is_demo) VALUES
- (1, 'orbit/example', 'A sample repository for exploring RepoOrbit.', true),
- (2, 'orbit/launchpad', 'A second sample repository.', true)
-ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description
+-- orbit/example has status labels on, so its Board has columns; orbit/launchpad shows "No status source".
+INSERT INTO repositories (id, name, description, is_demo, status_labels) VALUES
+ (1, 'orbit/example', 'A sample repository for exploring RepoOrbit.', true, true),
+ (2, 'orbit/launchpad', 'A second sample repository.', true, false)
+ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description, status_labels = EXCLUDED.status_labels
  WHERE repositories.is_demo;
 -- Demo activity evidence for the analytics screens. Timestamps are relative to seeding time, and every Demo start
 -- reseeds, replacing these rows. Assignee source_id 1 stands in for the Demo viewer (graphql demoAssigneeID).
@@ -31,6 +32,12 @@ SELECT i.source_id + 500, i.repository_id, i.number, 'Sample reply', i.html_url,
   i.created_at + (i.number % 5 + 1) * interval '1 hour', 9000 + (i.number + 1) % 5, p.login, 'User'
 FROM activity_issues i JOIN (VALUES (0, 'maya'), (1, 'sam'), (2, 'jordan'), (3, 'priya'), (4, 'alex')) AS p(k, login) ON p.k = (i.number + 1) % 5
 WHERE i.repository_id IN (SELECT id FROM repositories WHERE is_demo) AND i.number % 4 <> 1;
+-- Status labels on a few open orbit/example issues; #7 carries two (flagged, shown in In Review).
+INSERT INTO activity_issue_labels (issue_id, source_id, name)
+SELECT i.source_id, l.id, l.name
+FROM activity_issues i JOIN repositories r ON r.id = i.repository_id AND r.is_demo AND r.id = 1
+JOIN (VALUES (2, 2, 'status:in-progress'), (4, 1, 'status:todo'), (5, 3, 'status:review'), (7, 1, 'status:todo'), (7, 3, 'status:review'),
+  (8, 2, 'status:in-progress'), (10, 1, 'status:todo')) AS l(number, id, name) ON l.number = i.number;
 INSERT INTO activity_issue_assignees (issue_id, source_id, login, type)
 SELECT source_id, 1, 'demo-user', 'User' FROM activity_issues
 WHERE repository_id IN (SELECT id FROM repositories WHERE is_demo) AND state = 'open' AND number % 6 = 2;

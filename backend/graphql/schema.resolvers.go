@@ -199,6 +199,11 @@ func (r *queryResolver) CrossRepositoryOverview(ctx context.Context, days int) (
 	return r.crossRepositoryOverview(ctx, days)
 }
 
+// RepositoryBoard is the resolver for the repositoryBoard field.
+func (r *queryResolver) RepositoryBoard(ctx context.Context, id string, include []int) (*model.RepositoryBoard, error) {
+	return r.repositoryBoard(ctx, id, include)
+}
+
 // AssignedIssue returns AssignedIssueResolver implementation.
 func (r *Resolver) AssignedIssue() AssignedIssueResolver { return &assignedIssueResolver{r} }
 

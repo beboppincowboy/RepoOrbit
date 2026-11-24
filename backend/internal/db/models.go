@@ -194,6 +194,12 @@ type Issue struct {
 	State        string
 }
 
+type IssueBoardState struct {
+	IssueID        int64
+	Status         string
+	MultipleStatus bool
+}
+
 type Job struct {
 	ID         int64
 	Kind       string
