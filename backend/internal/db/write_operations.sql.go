@@ -12,7 +12,10 @@ import (
 )
 
 const failStalePendingCreate = `-- name: FailStalePendingCreate :execrows
-UPDATE write_operations SET state = 'failed', outcome = '{"error":"abandoned before sending; nothing was sent to GitHub"}', updated_at = now()
+UPDATE write_operations SET state = 'failed',
+ outcome = CASE WHEN draft IS NULL THEN redacted_write_outcome('{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb)
+  ELSE '{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb END,
+ updated_at = now()
 WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND state = 'pending' AND content_hash = $3 AND created_at < now() - interval '1 minute'
 `
 
@@ -23,8 +26,9 @@ type FailStalePendingCreateParams struct {
 }
 
 // A create still pending a minute after it was recorded was never sent: marking it sent (MarkWriteOperationSent,
-// conditional on 'pending') precedes the request, so a process that stopped in between sent nothing. Failing it frees
-// the content for a retry; should the original process resume, its mark finds no pending row and it sends nothing.
+// conditional on 'pending' and created_at within 1 minute) precedes the request, so a process that stopped in between
+// sent nothing. Failing it frees the content for a retry; should the original process resume, its mark finds no fresh
+// pending row and it sends nothing.
 // Run by a new create that collided with that pending create; the threshold is the literal '1 minute' below. Only a
 // non-zero count (this call failed a never-sent create) lets that new create retry its insert.
 func (q *Queries) FailStalePendingCreate(ctx context.Context, arg FailStalePendingCreateParams) (int64, error) {
@@ -36,14 +40,17 @@ func (q *Queries) FailStalePendingCreate(ctx context.Context, arg FailStalePendi
 }
 
 const failStalePendingOperations = `-- name: FailStalePendingOperations :exec
-UPDATE write_operations SET state = 'failed', outcome = '{"error":"abandoned before sending; nothing was sent to GitHub"}', updated_at = now()
+UPDATE write_operations SET state = 'failed',
+ outcome = CASE WHEN draft IS NULL THEN redacted_write_outcome('{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb)
+  ELSE '{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb END,
+ updated_at = now()
 WHERE user_id = $1 AND state = 'pending' AND created_at < now() - interval '1 minute'
 `
 
-// FailStalePendingCreate for every operation of one user, of any kind, run before their operations are read, listed,
-// or replayed: a row still pending a minute after it was recorded was never sent (the process stopped before
-// MarkWriteOperationSent), so it is failed instead of reading as pending forever. Same threshold and same safety: a
-// resumed sender finds no pending row.
+// FailStalePendingCreate for every operation of one user, of any kind, run on command paths (replay, recheck,
+// lost send claim): a row still pending a minute after it was recorded was never sent (the process stopped before
+// MarkWriteOperationSent), so it is failed instead of staying pending forever. Same threshold and same safety: a
+// resumed sender finds no fresh pending row.
 func (q *Queries) FailStalePendingOperations(ctx context.Context, userID int64) error {
 	_, err := q.db.Exec(ctx, failStalePendingOperations, userID)
 	return err
@@ -304,11 +311,13 @@ func (q *Queries) ListWriteOperations(ctx context.Context, arg ListWriteOperatio
 }
 
 const markWriteOperationSent = `-- name: MarkWriteOperationSent :execrows
-UPDATE write_operations SET state = 'unknown', sent_at = now(), updated_at = now() WHERE id = $1 AND state = 'pending'
+UPDATE write_operations SET state = 'unknown', sent_at = now(), updated_at = now()
+WHERE id = $1 AND state = 'pending' AND created_at >= now() - interval '1 minute'
 `
 
-// Moves a pending operation to 'unknown' and stamps sent_at, just before its request is sent. 0 rows: it is no longer
-// pending (FailStalePendingCreate or FailStalePendingOperations failed it), and nothing may be sent; the caller answers with the row as it stands.
+// Moves a fresh pending operation to 'unknown' and stamps sent_at, just before its request is sent. 0 rows: it is no
+// longer pending or is past the 1-minute freshness window (an abandoned row that reads project as failed and commands
+// settle), so nothing may be sent; the caller settles stale pending rows and answers with the row as it stands.
 func (q *Queries) MarkWriteOperationSent(ctx context.Context, id int64) (int64, error) {
 	result, err := q.db.Exec(ctx, markWriteOperationSent, id)
 	if err != nil {

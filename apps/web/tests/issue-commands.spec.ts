@@ -755,3 +755,242 @@ test('write history shows the GitHub App cleanup without offering a recheck', as
   await expect(history.getByRole('listitem').nth(1)).toContainText('the app retries the removal on its own');
   await expect(history.getByRole('button', { name: 'Recheck' })).toHaveCount(0);
 });
+
+test('write disposition header controls 503 recovery independently of English prose and handles proxy 503 safely', async ({ page }) => {
+  const keys: string[] = [];
+  let attempt = 0;
+  await setupWorkspace(page);
+  await page.route('**/api/repositories/1/issues', async route => {
+    attempt++;
+    keys.push(route.request().headers()['idempotency-key'] ?? '');
+    if (attempt === 1) {
+      // Explicit not-recorded 503 with misleading text must be treated as a definite rejection -> fresh key on retry.
+      return route.fulfill({
+        status: 503,
+        headers: { 'RepoOrbit-Write-Disposition': 'not-recorded' },
+        contentType: 'text/plain',
+        body: 'temporary precheck failure (same Idempotency-Key text ignored)',
+      });
+    }
+    if (attempt === 2) {
+      // Explicit possibly-recorded 503 with altered text must preserve key and offer recovery.
+      return route.fulfill({
+        status: 503,
+        headers: { 'RepoOrbit-Write-Disposition': 'possibly-recorded' },
+        contentType: 'text/plain',
+        body: 'upstream fence moved',
+      });
+    }
+    // Recovery replay returns the recorded operation.
+    return route.fulfill({
+      status: 200,
+      json: {
+        id: 810, repositoryId: 1, kind: 'create', state: 'succeeded', issueNumber: 88,
+        draft: { title: 'Disposition test' },
+        outcome: { issue: { number: 88, url: 'https://github.com/ada/repo-1/issues/88', title: 'Disposition test', state: 'open', labels: [], assignees: [] } },
+        actor: 'ada', createdAt: '2026-11-24T12:00:00Z', updatedAt: '2026-11-24T12:00:01Z',
+      },
+    });
+  });
+
+  await page.goto('/workspace/1?editor=new');
+  const dialog = page.getByRole('dialog', { name: 'New issue' });
+  await dialog.getByLabel('Title').fill('Disposition test');
+  await dialog.getByRole('button', { name: 'Review' }).click();
+  await dialog.getByRole('button', { name: 'Submit to GitHub' }).click();
+
+  await expect(dialog.getByRole('alert')).toContainText('Write did not fully succeed.');
+  await dialog.getByRole('button', { name: 'Back to edit' }).click();
+  await dialog.getByRole('button', { name: 'Review' }).click();
+  await dialog.getByRole('button', { name: 'Submit to GitHub' }).click();
+
+  await expect(dialog.getByText('Outcome unknown.')).toBeVisible();
+  const recover = dialog.getByRole('button', { name: 'Check recorded status with same key' });
+  await expect(recover).toBeVisible();
+  await recover.click();
+  await expect(dialog.getByText('Confirmed on GitHub.')).toBeVisible();
+
+  expect(keys).toHaveLength(3);
+  expect(keys[0]).not.toBe(keys[1]);
+  expect(keys[1]).toBe(keys[2]);
+});
+
+test('archived repository still allows same-key recovery of an earlier uncertain write while disabling fresh writes', async ({ page }) => {
+  const keys: string[] = [];
+  const bodies: Record<string, unknown>[] = [];
+  let archived = false;
+  await setupWorkspace(page);
+  await page.route('**/graphql', async route => {
+    const query = String(route.request().postDataJSON().query);
+    if (query.startsWith('query RepositoryOverview')) {
+      return route.fulfill({ json: { data: { repositoryOverview: overview({ activity: { ...fullActivity, archived } }) } } });
+    }
+    return route.fallback();
+  });
+  await page.route('**/api/repositories/1/issues', async route => {
+    keys.push(route.request().headers()['idempotency-key'] ?? '');
+    bodies.push(route.request().postDataJSON() as Record<string, unknown>);
+    if (keys.length === 1) {
+      // Unmarked proxy 503 -> safe same-key recovery.
+      return route.fulfill({ status: 503, contentType: 'text/plain', body: 'Proxy temporarily unavailable' });
+    }
+    return route.fulfill({
+      status: 200,
+      json: {
+        id: 811, repositoryId: 1, kind: 'create', state: 'succeeded', issueNumber: 89,
+        draft: bodies[0],
+        outcome: { issue: { number: 89, url: 'https://github.com/ada/repo-1/issues/89', title: 'Archived recovery', state: 'open', labels: [], assignees: [] } },
+        actor: 'ada', createdAt: '2026-11-24T12:00:00Z', updatedAt: '2026-11-24T12:00:01Z',
+      },
+    });
+  });
+
+  await page.goto('/workspace/1?editor=new');
+  const dialog = page.getByRole('dialog', { name: 'New issue' });
+  await dialog.getByLabel('Title').fill('Archived recovery');
+  await dialog.getByRole('button', { name: 'Review' }).click();
+  await dialog.getByRole('button', { name: 'Submit to GitHub' }).click();
+  await expect(dialog.getByText('Outcome unknown.')).toBeVisible();
+
+  archived = true;
+  await page.reload();
+  await expect(dialog).toContainText('archived on GitHub');
+  const recover = dialog.getByRole('button', { name: 'Check recorded status with same key' });
+  await expect(recover).toBeVisible();
+  await recover.click();
+  await expect(dialog.getByText('Confirmed on GitHub.')).toBeVisible();
+  expect(keys).toEqual([keys[0], keys[0]]);
+  expect(bodies).toEqual([bodies[0], bodies[0]]);
+});
+
+test('expired and undated legacy uncertain drafts suppress same-key POSTs and preserve the draft for manual reconciliation', async ({ page }) => {
+  let posts = 0;
+  await setupWorkspace(page);
+  await page.route('**/api/repositories/1/issues', route => {
+    posts++;
+    return route.fulfill({ status: 500, body: 'should not be called' });
+  });
+
+  // 1. Expired attempt (> 29 days old).
+  await page.goto('/workspace/1');
+  await page.evaluate(() => {
+    const expiredAt = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+    localStorage.setItem('repoorbit:issue-draft:real:ada:1:create', JSON.stringify({
+      version: 1,
+      title: 'Old uncertain draft',
+      body: 'Keep this body',
+      labels: [],
+      assignees: [],
+      idempotencyKey: 'ro-expired-key',
+      attemptedAt: expiredAt,
+      keepKeyOnNextSubmit: true,
+      lastError: 'Lost response',
+      lastOperation: null,
+      duplicateOperationId: null,
+      step: 'unknown',
+    }));
+  });
+  await page.goto('/workspace/1?editor=new');
+  let dialog = page.getByRole('dialog', { name: 'New issue' });
+  await expect(dialog.getByText('Outcome unknown.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Check recorded status with same key' })).toHaveCount(0);
+  await expect(dialog).toContainText(/manual|Write history/i);
+  expect(posts).toBe(0);
+
+  // 2. Undated legacy draft (no attemptedAt field).
+  await page.evaluate(() => {
+    localStorage.setItem('repoorbit:issue-draft:real:ada:1:create', JSON.stringify({
+      version: 1,
+      title: 'Legacy undated draft',
+      body: 'Legacy body preserved',
+      labels: [],
+      assignees: [],
+      idempotencyKey: 'ro-legacy-key',
+      keepKeyOnNextSubmit: true,
+      lastError: 'Lost response',
+      lastOperation: null,
+      duplicateOperationId: null,
+      step: 'unknown',
+    }));
+  });
+  await page.reload();
+  dialog = page.getByRole('dialog', { name: 'New issue' });
+  await expect(dialog.getByText('Outcome unknown.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Check recorded status with same key' })).toHaveCount(0);
+  const storedTitle = await page.evaluate(() => JSON.parse(localStorage.getItem('repoorbit:issue-draft:real:ada:1:create') ?? '{}').title);
+  expect(storedTitle).toBe('Legacy undated draft');
+  expect(posts).toBe(0);
+});
+
+test('storage failure before a new editor send keeps the draft editable and issues zero requests', async ({ page }) => {
+  let posts = 0;
+  await setupWorkspace(page);
+  await page.route('**/api/repositories/1/issues', route => {
+    posts++;
+    return route.fulfill({ status: 201, json: {} });
+  });
+
+  await page.goto('/workspace/1?editor=new');
+  const dialog = page.getByRole('dialog', { name: 'New issue' });
+  await dialog.getByLabel('Title').fill('Do not send without storage');
+  await dialog.getByRole('button', { name: 'Review' }).click();
+
+  await page.evaluate(() => {
+    Storage.prototype.setItem = () => {
+      throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+    };
+  });
+  await dialog.getByRole('button', { name: 'Submit to GitHub' }).click();
+
+  await expect(dialog.getByRole('alert')).toContainText(/browser storage/i);
+  await expect(dialog.getByLabel('Title')).toHaveValue('Do not send without storage');
+  expect(posts).toBe(0);
+});
+
+test('status source enable retry reuses key on uncertain 503 and rotates key on not-recorded 503', async ({ page }) => {
+  const off = {
+    enabled: false,
+    canChange: true,
+    labels: [
+      { name: 'status:todo', exists: true },
+      { name: 'status:in-progress', exists: false },
+      { name: 'status:review', exists: false },
+    ],
+  };
+  const keys: string[] = [];
+  await setupWorkspace(page, { statusLabels: off });
+  await page.route('**/api/repositories/1/status-labels', async route => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: keys.length >= 3 ? { enabled: true, canChange: true } : off });
+    keys.push(route.request().headers()['idempotency-key'] ?? '');
+    if (keys.length === 1) {
+      return route.fulfill({ status: 503, headers: { 'RepoOrbit-Write-Disposition': 'not-recorded' }, contentType: 'text/plain', body: 'access unverified' });
+    }
+    if (keys.length === 2) {
+      return route.fulfill({ status: 503, headers: { 'RepoOrbit-Write-Disposition': 'possibly-recorded' }, contentType: 'text/plain', body: 'fence moved' });
+    }
+    return route.fulfill({
+      status: 200,
+      json: {
+        id: 602, repositoryId: 1, kind: 'status_labels', state: 'succeeded', issueNumber: null,
+        draft: { labels: ['status:todo', 'status:in-progress', 'status:review'] },
+        outcome: { created: ['status:in-progress', 'status:review'] },
+        actor: 'ada', createdAt: '2026-11-24T12:00:00Z', updatedAt: '2026-11-24T12:00:01Z',
+      },
+    });
+  });
+
+  await page.goto('/workspace/1?tab=issues');
+  const setup = page.getByRole('region', { name: 'Status labels' });
+  await setup.getByRole('button', { name: 'Turn on…' }).click();
+  await setup.getByRole('button', { name: 'Submit' }).click();
+  await expect(setup.getByRole('alert')).toContainText('access unverified');
+  // Definitive not-recorded rejection should NOT label the button "Retry submit" with the old key.
+  await setup.getByRole('button', { name: 'Submit' }).click();
+  await expect(setup.getByRole('alert')).toContainText('fence moved');
+  await setup.getByRole('button', { name: 'Retry submit' }).click();
+  await expect(setup.getByRole('status')).toContainText('Confirmed: status labels are on');
+
+  expect(keys).toHaveLength(3);
+  expect(keys[0]).not.toBe(keys[1]);
+  expect(keys[1]).toBe(keys[2]);
+});

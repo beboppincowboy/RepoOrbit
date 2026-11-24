@@ -13,7 +13,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -38,7 +37,34 @@ const (
 	maxBody  = 65536 // GitHub's body limit, in characters
 	maxItems = 10    // labels or assignees per list; GitHub allows at most 10 assignees
 	maxLabel = 50    // GitHub's label name limit
+
+	// HeaderWriteDisposition tells submit callers whether the server proved this attempt recorded nothing
+	// ("not-recorded") or recorded/replayed an operation whose response was withheld or failed ("possibly-recorded").
+	HeaderWriteDisposition           = "RepoOrbit-Write-Disposition"
+	WriteDispositionNotRecorded      = "not-recorded"
+	WriteDispositionPossiblyRecorded = "possibly-recorded"
 )
+
+// submitWriter attaches HeaderWriteDisposition to error responses on submit commands.
+// Pre-insert 500s omit the header so server errors stay uncertain; once recording starts,
+// errors emit "possibly-recorded" (and "not-recorded" only when an insert rejection proves nothing was recorded).
+type submitWriter struct {
+	http.ResponseWriter
+	disposition string
+}
+
+func newSubmitWriter(w http.ResponseWriter) *submitWriter {
+	return &submitWriter{ResponseWriter: w, disposition: WriteDispositionNotRecorded}
+}
+
+func (sw *submitWriter) WriteHeader(code int) {
+	if code >= http.StatusBadRequest && sw.disposition != "" {
+		if code != http.StatusInternalServerError || sw.disposition == WriteDispositionPossiblyRecorded {
+			sw.Header().Set(HeaderWriteDisposition, sw.disposition)
+		}
+	}
+	sw.ResponseWriter.WriteHeader(code)
+}
 
 var (
 	loginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
@@ -406,38 +432,24 @@ func (s *Service) revokeIfUnauthorized(ctx context.Context, userID int64, err er
 	return true
 }
 
-func (s *Service) view(row db.GetWriteOperationRow) opView {
-	v := opView{ID: row.ID, RepositoryID: row.RepositoryID, Kind: row.Kind, State: row.State, Draft: row.Draft, Outcome: row.Outcome,
-		Actor: row.ActorLogin, CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time}
-	if row.IssueNumber.Valid {
-		v.IssueNumber = &row.IssueNumber.Int64
-	}
-	if row.Kind == "create" && row.State == "unknown" {
-		q := "is:issue author:" + row.ActorLogin
-		var d createDraft
-		if json.Unmarshal(row.Draft, &d) == nil && d.Title != "" {
-			q += ` in:title "` + strings.ReplaceAll(d.Title, `"`, "") + `"`
-		}
-		v.SearchURL = s.GitHubURL + "/" + row.RepositoryName + "/issues?q=" + url.QueryEscape(q)
-	}
-	return v
-}
-
 // respond reads the operation back and writes it, unless access changed since snap (the snapshot the request's access
 // check was made under): then it is withheld with 503, as other fenced reads are. The operation exists and may have
 // been sent, so the client must retry under the same key, never a fresh one.
 func (s *Service) respond(w http.ResponseWriter, ctx context.Context, status int, userID, opID int64, snap accessfence.Snapshot) {
 	row, err := s.Queries.GetWriteOperation(ctx, db.GetWriteOperationParams{ID: opID, UserID: userID})
 	if err != nil {
+		w.Header().Set(HeaderWriteDisposition, WriteDispositionPossiblyRecorded)
 		s.internal(w, err)
 		return
 	}
 	current, err := snap.Current(ctx, s.Pool)
 	if err != nil {
+		w.Header().Set(HeaderWriteDisposition, WriteDispositionPossiblyRecorded)
 		s.internal(w, err)
 		return
 	}
 	if !current {
+		w.Header().Set(HeaderWriteDisposition, WriteDispositionPossiblyRecorded)
 		http.Error(w, "access changed; the operation was recorded and may have been sent: retry with the same Idempotency-Key", http.StatusServiceUnavailable)
 		return
 	}
@@ -445,140 +457,6 @@ func (s *Service) respond(w http.ResponseWriter, ctx context.Context, status int
 		status = http.StatusAccepted // recorded and possibly applied; the outcome is not known
 	}
 	writeJSON(w, status, s.view(row))
-}
-
-// --- reads -------------------------------------------------------------------------------------
-
-func (s *Service) capabilities(w http.ResponseWriter, r *http.Request) {
-	userID, ok := auth.SignedInUserID(r.Context())
-	repoID, idOK := pathID(r, "id")
-	if !ok || !idOK {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	d, ok := s.access(w, r, userID, repoID, false)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"canCreateIssue": canCreate(d.Repo), "canCreateIssueWithMetadata": canCreateWithMetadata(d.Repo), "canManageIssues": canManage(d.Repo)})
-}
-
-// assignees lists the users GitHub would accept as assignees ({"assignees": [login]}), read with the viewer's own
-// token, so editor suggestions pass the submit-time eligibility check. A viewer who cannot assign gets an empty list.
-func (s *Service) assignees(w http.ResponseWriter, r *http.Request) {
-	userID, ok := auth.SignedInUserID(r.Context())
-	repoID, idOK := pathID(r, "id")
-	if !ok || !idOK {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	d, ok := s.access(w, r, userID, repoID, false)
-	if !ok {
-		return
-	}
-	if !canManage(d.Repo) && !canCreateWithMetadata(d.Repo) {
-		writeJSON(w, http.StatusOK, map[string][]string{"assignees": {}})
-		return
-	}
-	token, ok := s.token(w, r.Context(), userID)
-	if !ok {
-		return
-	}
-	logins, err := s.GitHub.ListAssignees(r.Context(), token, d.Repo.FullName)
-	if err != nil {
-		s.upstream(w, r.Context(), userID, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string][]string{"assignees": logins})
-}
-
-// list returns the viewer's own operations on one repository, merged newest first with the app's own writes there
-// (status label cleanup, kind "cleanup"); other users' operations are never listed.
-func (s *Service) list(w http.ResponseWriter, r *http.Request) {
-	userID, ok := auth.SignedInUserID(r.Context())
-	repoID, idOK := pathID(r, "id")
-	if !ok || !idOK {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	_, snap, ok := s.checkedAccess(w, r, userID, repoID)
-	if !ok {
-		return
-	}
-	if err := s.Queries.FailStalePendingOperations(r.Context(), userID); err != nil {
-		s.internal(w, err)
-		return
-	}
-	rows, err := s.Queries.ListWriteOperations(r.Context(), db.ListWriteOperationsParams{UserID: userID, RepositoryID: repoID})
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	appRows, err := s.Queries.ListAppOperations(r.Context(), repoID)
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	if !s.fenceHolds(w, r.Context(), snap) {
-		return
-	}
-	out := make([]opView, 0, len(rows)+len(appRows))
-	for _, row := range rows {
-		out = append(out, s.view(db.GetWriteOperationRow(row)))
-	}
-	for _, row := range appRows {
-		draft, _ := json.Marshal(map[string]string{"label": row.Label})
-		out = append(out, opView{ID: row.ID, RepositoryID: row.RepositoryID, Kind: "cleanup", State: row.State, IssueNumber: &row.IssueNumber,
-			Draft: draft, Outcome: row.Outcome, CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time})
-	}
-	slices.SortStableFunc(out, func(a, b opView) int { return b.CreatedAt.Compare(a.CreatedAt) })
-	writeJSON(w, http.StatusOK, map[string]any{"operations": out})
-}
-
-// operation loads one of the viewer's operations under a fresh access check of its repository, withholding it when
-// access changed while it loaded. Another user's id, a missing id and lost access all answer 404. The snapshot is the
-// one the access check was made under.
-func (s *Service) operation(w http.ResponseWriter, r *http.Request) (int64, db.GetWriteOperationRow, repositories.Decision, accessfence.Snapshot, bool) {
-	userID, ok := auth.SignedInUserID(r.Context())
-	opID, idOK := pathID(r, "id")
-	if !ok || !idOK {
-		http.Error(w, "not found", http.StatusNotFound)
-		return 0, db.GetWriteOperationRow{}, repositories.Decision{}, accessfence.Snapshot{}, false
-	}
-	load := func() (db.GetWriteOperationRow, bool) {
-		row, err := s.Queries.GetWriteOperation(r.Context(), db.GetWriteOperationParams{ID: opID, UserID: userID})
-		if errors.Is(err, pgx.ErrNoRows) {
-			http.Error(w, "not found", http.StatusNotFound)
-			return row, false
-		}
-		if err != nil {
-			s.internal(w, err)
-			return row, false
-		}
-		return row, true
-	}
-	row, ok := load() // only to learn the repository; read again once access is known
-	if !ok {
-		return 0, row, repositories.Decision{}, accessfence.Snapshot{}, false
-	}
-	d, snap, ok := s.checkedAccess(w, r, userID, row.RepositoryID)
-	if !ok {
-		return 0, row, d, snap, false
-	}
-	if err := s.Queries.FailStalePendingOperations(r.Context(), userID); err != nil {
-		s.internal(w, err)
-		return 0, row, d, snap, false
-	}
-	if row, ok = load(); !ok || !s.fenceHolds(w, r.Context(), snap) {
-		return 0, row, d, snap, false
-	}
-	return userID, row, d, snap, true
-}
-
-func (s *Service) get(w http.ResponseWriter, r *http.Request) {
-	if _, row, _, _, ok := s.operation(w, r); ok {
-		writeJSON(w, http.StatusOK, s.view(row))
-	}
 }
 
 // --- commands ----------------------------------------------------------------------------------
@@ -596,59 +474,64 @@ type command struct {
 }
 
 func (s *Service) create(w http.ResponseWriter, r *http.Request) {
+	sw := newSubmitWriter(w)
 	var d createDraft
-	if err := decodeStrict(w, r, &d); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeStrict(sw, r, &d); err != nil {
+		http.Error(sw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := d.validate(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(sw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	allowed := canCreate
 	if len(d.Labels)+len(d.Assignees) > 0 {
 		allowed = canCreateWithMetadata
 	}
-	s.submit(w, r, command{kind: "create", draft: &d, contentHash: contentHash(d.Title, d.Body), hasMetadata: len(d.Labels)+len(d.Assignees) > 0, assignees: d.Assignees, allowed: allowed})
+	s.submit(sw, r, command{kind: "create", draft: &d, contentHash: contentHash(d.Title, d.Body), hasMetadata: len(d.Labels)+len(d.Assignees) > 0, assignees: d.Assignees, allowed: allowed})
 }
 
 func (s *Service) update(w http.ResponseWriter, r *http.Request) {
+	sw := newSubmitWriter(w)
 	number, ok := pathID(r, "number")
 	if !ok {
-		http.Error(w, "not found", http.StatusNotFound)
+		http.Error(sw, "not found", http.StatusNotFound)
 		return
 	}
 	var d updateDraft
-	if err := decodeStrict(w, r, &d); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeStrict(sw, r, &d); err != nil {
+		http.Error(sw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err := d.validate(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(sw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	// GitHub lets an issue's author close and reopen it with read access alone; labels and assignees need triage.
 	stateOnly := len(d.Labels.Add)+len(d.Labels.Remove)+len(d.Assignees.Add)+len(d.Assignees.Remove) == 0
-	s.submit(w, r, command{kind: "update", issueNumber: number, draft: &d, assignees: d.Assignees.Add, allowed: canManage, authorMay: stateOnly})
+	s.submit(sw, r, command{kind: "update", issueNumber: number, draft: &d, assignees: d.Assignees.Add, allowed: canManage, authorMay: stateOnly})
 }
 
 // replay answers a reused idempotency key: the existing operation for the same request, 422 for a different one.
 // It reports false when the key is unused.
-func (s *Service) replay(w http.ResponseWriter, ctx context.Context, userID int64, key string, hash []byte, snap accessfence.Snapshot) bool {
+func (s *Service) replay(sw *submitWriter, ctx context.Context, userID int64, key string, hash []byte, snap accessfence.Snapshot) bool {
 	prior, err := s.Queries.GetWriteOperationByKey(ctx, db.GetWriteOperationByKeyParams{UserID: userID, IdempotencyKey: key})
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false
 	case err != nil:
-		s.internal(w, err)
+		sw.disposition = ""
+		s.internal(sw, err)
 	case !bytes.Equal(prior.RequestHash, hash):
-		http.Error(w, "idempotency key reused with a different request", http.StatusUnprocessableEntity)
+		sw.disposition = WriteDispositionNotRecorded
+		http.Error(sw, "idempotency key reused with a different request", http.StatusUnprocessableEntity)
 	default:
+		sw.disposition = WriteDispositionPossiblyRecorded
 		if err := s.Queries.FailStalePendingOperations(ctx, userID); err != nil {
-			s.internal(w, err)
+			s.internal(sw, err)
 			return true
 		}
-		s.respond(w, ctx, http.StatusOK, userID, prior.ID, snap)
+		s.respond(sw, ctx, http.StatusOK, userID, prior.ID, snap)
 	}
 	return true
 }
@@ -658,44 +541,44 @@ var errAccessMoved = errors.New("access changed")
 // submit records and sends one command: validate access and permission, check an update's expect against the live
 // issue, record the operation as pending, mark it unknown, send it with the actor's token, then record what GitHub
 // confirmed. A reused key is answered right after the access check, before the permission and expect checks. An
-// operation that is no longer pending when it is marked (a stale-pending recovery failed it) is sent nowhere and
-// answered as a replay.
-func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
+// operation that is no longer pending when it is marked (a stale-pending recovery failed it or the freshness guard
+// rejected it) is sent nowhere and answered as a replay.
+func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 	ctx := r.Context()
 	userID, ok := auth.SignedInUserID(ctx)
 	repoID, idOK := pathID(r, "id")
 	if !ok || !idOK {
-		http.Error(w, "not found", http.StatusNotFound)
+		http.Error(sw, "not found", http.StatusNotFound)
 		return
 	}
 	key := r.Header.Get("Idempotency-Key")
 	if !keyPattern.MatchString(key) {
-		http.Error(w, "an Idempotency-Key header of 1 to 128 letters, digits, or ._:- is required", http.StatusBadRequest)
+		http.Error(sw, "an Idempotency-Key header of 1 to 128 letters, digits, or ._:- is required", http.StatusBadRequest)
 		return
 	}
 	draft, err := json.Marshal(c.draft)
 	if err != nil {
-		s.internal(w, err)
+		s.internal(sw, err)
 		return
 	}
 	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%d\x00%d\x00%s", c.kind, repoID, c.issueNumber, draft))
 	hash := sum[:]
 
-	d, snap, ok := s.checkedAccess(w, r, userID, repoID)
+	d, snap, ok := s.checkedAccess(sw, r, userID, repoID)
 	if !ok {
 		return
 	}
-	if s.replay(w, ctx, userID, key, hash, snap) {
+	if s.replay(sw, ctx, userID, key, hash, snap) {
 		return
 	}
 	denied := func() {
-		http.Error(w, "your current GitHub permission does not allow this action", http.StatusForbidden)
+		http.Error(sw, "your current GitHub permission does not allow this action", http.StatusForbidden)
 	}
 	if !c.allowed(d.Repo) && !c.authorMay {
 		denied()
 		return
 	}
-	token, ok := s.token(w, ctx, userID)
+	token, ok := s.token(sw, ctx, userID)
 	if !ok {
 		return
 	}
@@ -703,17 +586,17 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 		issue, err := s.GitHub.FetchIssue(ctx, token, d.Repo.FullName, c.issueNumber)
 		var api *githubapp.APIError
 		if errors.As(err, &api) && api.NotFound() || err == nil && issue.PullRequest != nil {
-			http.Error(w, "issue not found", http.StatusNotFound)
+			http.Error(sw, "issue not found", http.StatusNotFound)
 			return
 		}
 		if err != nil {
-			s.upstream(w, ctx, userID, err)
+			s.upstream(sw, ctx, userID, err)
 			return
 		}
 		if !c.allowed(d.Repo) {
 			actor, err := s.Queries.GetUserGithubID(ctx, userID)
 			if err != nil {
-				s.internal(w, err)
+				s.internal(sw, err)
 				return
 			}
 			if issue.User == nil || issue.User.ID != actor || !canCreate(d.Repo) {
@@ -723,7 +606,7 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 		}
 		if e := c.draft.(*updateDraft).Expect; e != nil {
 			if live := viewIssue(issue); !e.matches(live) {
-				writeJSON(w, http.StatusConflict, map[string]any{"error": "changed on GitHub", "current": map[string]any{"state": live.State,
+				writeJSON(sw, http.StatusConflict, map[string]any{"error": "changed on GitHub", "current": map[string]any{"state": live.State,
 					"labels": live.Labels, "assignees": live.Assignees, "status": boardStatus(live.State, live.Labels), "updatedAt": issue.UpdatedAt}})
 				return
 			}
@@ -733,7 +616,7 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 	for _, login := range c.assignees {
 		ok, err := s.GitHub.IsAssignable(ctx, token, d.Repo.FullName, login)
 		if err != nil {
-			s.upstream(w, ctx, userID, err)
+			s.upstream(sw, ctx, userID, err)
 			return
 		}
 		if !ok {
@@ -741,12 +624,13 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 		}
 	}
 	if len(ineligible) > 0 {
-		http.Error(w, "cannot be assigned in this repository: "+strings.Join(ineligible, ", "), http.StatusUnprocessableEntity)
+		http.Error(sw, "cannot be assigned in this repository: "+strings.Join(ineligible, ", "), http.StatusUnprocessableEntity)
 		return
 	}
 
 	// Once recording starts, a client disconnect must not strand the row between insert and mark-sent (or abandon the
-	// call and its recorded outcome later).
+	// call and its recorded outcome later). Clear the pre-insert disposition so an opaque DB commit failure stays uncertain.
+	sw.disposition = ""
 	ctx = context.WithoutCancel(ctx)
 	var opID int64
 	insert := func() error {
@@ -776,13 +660,14 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 		if attempt == 0 {
 			n, err := s.Queries.FailStalePendingCreate(ctx, db.FailStalePendingCreateParams(unresolved))
 			if err != nil {
-				s.internal(w, err)
+				s.internal(sw, err)
 				return
 			}
 			if n > 0 {
 				continue
 			}
 		}
+		sw.disposition = WriteDispositionNotRecorded
 		msg := "an earlier create of this issue is still unresolved; recheck it instead of resubmitting"
 		prior, err := s.Queries.FindUnresolvedCreate(ctx, unresolved)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -791,33 +676,39 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 		}
 		switch {
 		case err == nil:
-			writeJSON(w, http.StatusConflict, map[string]any{"error": msg, "operationId": prior})
+			writeJSON(sw, http.StatusConflict, map[string]any{"error": msg, "operationId": prior})
 		case errors.Is(err, pgx.ErrNoRows):
-			http.Error(w, "an earlier create of this issue changed while submitting; nothing was sent, retry", http.StatusServiceUnavailable)
+			http.Error(sw, "an earlier create of this issue changed while submitting; nothing was sent, retry", http.StatusServiceUnavailable)
 		default:
-			s.internal(w, err)
+			s.internal(sw, err)
 		}
 		return
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows): // the same key was recorded concurrently
-		if !s.replay(w, ctx, userID, key, hash, snap) {
-			s.internal(w, errors.New("idempotency key vanished"))
+		if !s.replay(sw, ctx, userID, key, hash, snap) {
+			s.internal(sw, errors.New("idempotency key vanished"))
 		}
 		return
 	case errors.Is(err, errAccessMoved):
-		http.Error(w, "access changed while submitting; nothing was sent", http.StatusServiceUnavailable)
+		sw.disposition = WriteDispositionNotRecorded
+		http.Error(sw, "access changed while submitting; nothing was sent", http.StatusServiceUnavailable)
 		return
 	case err != nil:
-		s.internal(w, err)
+		s.internal(sw, err)
 		return
 	}
+	sw.disposition = WriteDispositionPossiblyRecorded
 	// From here the request may reach GitHub: the row says unknown first, so a crash can never read as "not sent".
 	if n, err := s.Queries.MarkWriteOperationSent(ctx, opID); err != nil {
-		s.internal(w, fmt.Errorf("mark sent: %w", err))
+		s.internal(sw, fmt.Errorf("mark sent: %w", err))
 		return
-	} else if n == 0 { // no longer pending: a stale-pending recovery failed it first, so nothing is sent
-		s.respond(w, ctx, http.StatusOK, userID, opID, snap)
+	} else if n == 0 { // no longer pending or past freshness guard: settle stale pending rows and send nothing
+		if err := s.Queries.FailStalePendingOperations(ctx, userID); err != nil {
+			s.internal(sw, err)
+			return
+		}
+		s.respond(sw, ctx, http.StatusOK, userID, opID, snap)
 		return
 	}
 	switch c.kind {
@@ -841,10 +732,10 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 		s.revokeIfUnauthorized(ctx, userID, readErr) // only now: finish's transaction has released its connection
 	}
 	if err != nil {
-		s.internal(w, err)
+		s.internal(sw, err)
 		return
 	}
-	s.respond(w, ctx, http.StatusCreated, userID, opID, snap)
+	s.respond(sw, ctx, http.StatusCreated, userID, opID, snap)
 }
 
 // classify maps a failed write to an operation state and summary: an error raised before sending
@@ -1069,7 +960,7 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	userID, row, d, snap, ok := s.operation(w, r)
+	userID, row, d, snap, ok := s.loadOperation(w, r, true)
 	if !ok {
 		return
 	}

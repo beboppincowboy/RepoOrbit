@@ -2,6 +2,8 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEven
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
   IssueWriteError,
+  canReplayWithSameKey,
+  classifyWriteFailure,
   fetchWriteOperation,
   recheckWriteOperation,
   submitIssueCreate,
@@ -40,6 +42,8 @@ type StoredCreateDraft = {
   labels: string[];
   assignees: string[];
   idempotencyKey: string | null;
+  attemptedAt?: string | null;
+  submittedDraft?: IssueCreateDraft | null;
   keepKeyOnNextSubmit: boolean;
   lastError: string | null;
   lastOperation: WriteOperation | null;
@@ -56,6 +60,8 @@ type StoredUpdateDraft = {
   removeAssignees: string[];
   state: "" | "open" | "closed";
   idempotencyKey: string | null;
+  attemptedAt?: string | null;
+  submittedDraft?: IssueUpdateDraft | null;
   keepKeyOnNextSubmit: boolean;
   lastError: string | null;
   lastOperation: WriteOperation | null;
@@ -200,6 +206,10 @@ export function IssueEditor(props: IssueEditorProps) {
   // Write flow state
   const [step, setStep] = useState<Step>(() => (isCreate ? initialCreate?.step : initialUpdate?.step) ?? "edit");
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(() => (isCreate ? initialCreate?.idempotencyKey : initialUpdate?.idempotencyKey) ?? null);
+  const [attemptedAt, setAttemptedAt] = useState<string | null>(() => (isCreate ? initialCreate?.attemptedAt : initialUpdate?.attemptedAt) ?? null);
+  const [submittedDraft, setSubmittedDraft] = useState<IssueCreateDraft | IssueUpdateDraft | null>(
+    () => (isCreate ? initialCreate?.submittedDraft : initialUpdate?.submittedDraft) ?? null,
+  );
   const [keepKeyOnNextSubmit, setKeepKeyOnNextSubmit] = useState<boolean>(() => (isCreate ? initialCreate?.keepKeyOnNextSubmit : initialUpdate?.keepKeyOnNextSubmit) ?? false);
   const [lastError, setLastError] = useState<string | null>(() => (isCreate ? initialCreate?.lastError : initialUpdate?.lastError) ?? null);
   const [lastOperation, setLastOperation] = useState<WriteOperation | null>(() => (isCreate ? initialCreate?.lastOperation : initialUpdate?.lastOperation) ?? null);
@@ -242,20 +252,30 @@ export function IssueEditor(props: IssueEditorProps) {
     ? Boolean(title.trim() || body.trim() || createLabels.length || createAssignees.length || lastError || lastOperation || duplicateOperationId)
     : Boolean(addLabels.length || removeLabels.length || addAssignees.length || removeAssignees.length || targetState || lastError || lastOperation);
 
-  const saveDraft = useCallback((status: Pick<StoredCreateDraft,
-    "step" | "idempotencyKey" | "keepKeyOnNextSubmit" | "lastError" | "lastOperation" | "duplicateOperationId"
-  >) => {
-    const { duplicateOperationId, ...writeState } = status;
+  const saveDraft = useCallback((status: {
+    step: Exclude<Step, "submitting" | "confirmed">;
+    idempotencyKey: string | null;
+    attemptedAt: string | null;
+    submittedDraft: IssueCreateDraft | IssueUpdateDraft | null;
+    keepKeyOnNextSubmit: boolean;
+    lastError: string | null;
+    lastOperation: WriteOperation | null;
+    duplicateOperationId: number | null;
+  }): boolean => {
+    const { duplicateOperationId, submittedDraft: draftPayload, ...writeState } = status;
     if (isCreate) {
-      writeStorage(storageKey, {
+      return writeStorage(storageKey, {
         version: 1, title, body, labels: createLabels, assignees: createAssignees,
-        duplicateOperationId, ...writeState,
+        duplicateOperationId,
+        submittedDraft: draftPayload as IssueCreateDraft | null,
+        ...writeState,
       } satisfies StoredCreateDraft);
-      return;
     }
-    writeStorage(storageKey, {
+    return writeStorage(storageKey, {
       version: 1, issueNumber, addLabels, removeLabels, addAssignees, removeAssignees,
-      state: targetState, ...writeState,
+      state: targetState,
+      submittedDraft: draftPayload as IssueUpdateDraft | null,
+      ...writeState,
     } satisfies StoredUpdateDraft);
   }, [
     isCreate, storageKey, title, body, createLabels, createAssignees,
@@ -268,10 +288,10 @@ export function IssueEditor(props: IssueEditorProps) {
       removeStorage(storageKey);
       return;
     }
-    saveDraft({ step, idempotencyKey, keepKeyOnNextSubmit, lastError, lastOperation, duplicateOperationId });
+    saveDraft({ step, idempotencyKey, attemptedAt, submittedDraft, keepKeyOnNextSubmit, lastError, lastOperation, duplicateOperationId });
   }, [
-    demo, isCreate, hasAnyDraft, storageKey, step, idempotencyKey, keepKeyOnNextSubmit,
-    lastError, lastOperation, duplicateOperationId, saveDraft,
+    demo, isCreate, hasAnyDraft, storageKey, step, idempotencyKey, attemptedAt, submittedDraft,
+    keepKeyOnNextSubmit, lastError, lastOperation, duplicateOperationId, saveDraft,
   ]);
 
   // Escape closes dialog unless a request is currently in flight.
@@ -414,6 +434,8 @@ export function IssueEditor(props: IssueEditorProps) {
     setLastOperation(null);
     setDuplicateOperationId(null);
     setIdempotencyKey(null);
+    setAttemptedAt(null);
+    setSubmittedDraft(null);
     setKeepKeyOnNextSubmit(false);
     setRecheckNumber("");
     setRecheckError(null);
@@ -496,52 +518,80 @@ export function IssueEditor(props: IssueEditorProps) {
     setStep("review");
   }
 
+  function buildCurrentDraft(): IssueCreateDraft | IssueUpdateDraft {
+    if (isCreate) {
+      const draft: IssueCreateDraft = { title: title.trim() };
+      if (body) draft.body = body;
+      if (createLabels.length) draft.labels = createLabels;
+      if (createAssignees.length) draft.assignees = createAssignees;
+      return draft;
+    }
+    const draft: IssueUpdateDraft = {};
+    if (addLabels.length || removeLabels.length) {
+      draft.labels = {
+        ...(addLabels.length ? { add: addLabels } : {}),
+        ...(removeLabels.length ? { remove: removeLabels } : {}),
+      };
+    }
+    if (addAssignees.length || removeAssignees.length) {
+      draft.assignees = {
+        ...(addAssignees.length ? { add: addAssignees } : {}),
+        ...(removeAssignees.length ? { remove: removeAssignees } : {}),
+      };
+    }
+    if (targetState) draft.state = targetState;
+    return draft;
+  }
+
   async function submitWrite(reuseExistingKey = false) {
-    if (submittingRef.current || demo || !canEditAnything) return;
+    if (submittingRef.current || demo) return;
+    // Explicit recovery of an already-attempted write is allowed even after archival or permission changes
+    // while read access survives, provided the attempt timestamp is still within the server's retention window.
+    const existingKey = (reuseExistingKey || keepKeyOnNextSubmit) ? idempotencyKey : null;
+    if (reuseExistingKey) {
+      if (!existingKey || !canReplayWithSameKey(attemptedAt)) return;
+    } else if (!canEditAnything) {
+      return;
+    }
+
+    const key = existingKey ?? generateIdempotencyKey();
+    const attemptStamp = existingKey ? (attemptedAt ?? new Date().toISOString()) : new Date().toISOString();
+    const payload = existingKey && submittedDraft ? submittedDraft : buildCurrentDraft();
+
+    // Persist reviewed body, key, and original attempt timestamp before the first send; if browser storage rejects
+    // the write, keep the draft editable and send nothing so a lost response can never leave an unrecoverable create.
+    const persisted = saveDraft({
+      step: "unknown",
+      idempotencyKey: key,
+      attemptedAt: attemptStamp,
+      submittedDraft: payload,
+      keepKeyOnNextSubmit: true,
+      lastError: null,
+      lastOperation: null,
+      duplicateOperationId: null,
+    });
+    if (!existingKey && !persisted) {
+      setValidationError("Could not save the recovery key in browser storage, so nothing was sent to GitHub. Check browser storage space or site permissions, then try again.");
+      setStep("edit");
+      return;
+    }
+
     submittingRef.current = true;
     setStep("submitting");
+    setValidationError(null);
     setLastError(null);
     setRecheckError(null);
     setDuplicateOperationId(null);
-
-    // Only reuse an existing idempotency key when explicitly replaying after an ambiguous transport/503 failure.
-    // A fresh submit after a definite failure (4xx or recorded failed op) gets a new key so GitHub/API won't replay the old failure.
-    const existingKey = (reuseExistingKey || keepKeyOnNextSubmit) ? idempotencyKey : null;
-    const key = existingKey ?? generateIdempotencyKey();
-    // A reload can interrupt the response before React persists the next state.
-    saveDraft({
-      step: "unknown", idempotencyKey: key, keepKeyOnNextSubmit: true,
-      lastError: null, lastOperation: null, duplicateOperationId: null,
-    });
     setLastOperation(null);
     setIdempotencyKey(key);
+    setAttemptedAt(attemptStamp);
+    setSubmittedDraft(payload);
     setKeepKeyOnNextSubmit(false);
 
     try {
-      let op: WriteOperation;
-      if (isCreate) {
-        const draft: IssueCreateDraft = { title: title.trim() };
-        if (body) draft.body = body;
-        if (createLabels.length) draft.labels = createLabels;
-        if (createAssignees.length) draft.assignees = createAssignees;
-        op = await submitIssueCreate(repositoryId, key, draft);
-      } else {
-        const draft: IssueUpdateDraft = {};
-        if (addLabels.length || removeLabels.length) {
-          draft.labels = {
-            ...(addLabels.length ? { add: addLabels } : {}),
-            ...(removeLabels.length ? { remove: removeLabels } : {}),
-          };
-        }
-        if (addAssignees.length || removeAssignees.length) {
-          draft.assignees = {
-            ...(addAssignees.length ? { add: addAssignees } : {}),
-            ...(removeAssignees.length ? { remove: removeAssignees } : {}),
-          };
-        }
-        if (targetState) draft.state = targetState;
-        op = await submitIssueUpdate(repositoryId, issueNumber, key, draft);
-      }
+      const op = isCreate
+        ? await submitIssueCreate(repositoryId, key, payload as IssueCreateDraft)
+        : await submitIssueUpdate(repositoryId, issueNumber, key, payload as IssueUpdateDraft);
 
       setLastOperation(op);
       onOperationRecorded(op);
@@ -557,33 +607,29 @@ export function IssueEditor(props: IssueEditorProps) {
         if (isCreate && op.issueNumber) {
           removeStorage(storageKey);
         }
+        setAttemptedAt(null);
+        setSubmittedDraft(null);
         setLastError(op.outcome?.error || "GitHub did not apply every requested change.");
         setStep("failed");
       }
     } catch (error: unknown) {
-      if (error instanceof IssueWriteError) {
-        if (error.kind === "duplicate_create" && error.operationId) {
-          setDuplicateOperationId(error.operationId);
-          setLastError(error.message);
-          setStep("unknown");
-        } else if (
-          error.kind === "transport"
-          || (error.kind === "unverified" && (existingKey || /same Idempotency-Key/i.test(error.message)))
-          || (error.kind === "server" && existingKey)
-        ) {
-          // Ambiguous outcome: preserve exact idempotency key, never resend automatically.
-          setKeepKeyOnNextSubmit(true);
-          setLastError(error.message);
-          setStep("unknown");
-        } else {
-          // Definite rejection before recording (400/401/403/404/422/503 before send).
-          setLastError(error.message);
-          setStep("failed");
-        }
-      } else {
-        setKeepKeyOnNextSubmit(true);
-        setLastError(error instanceof Error ? error.message : "Could not submit to GitHub.");
+      const classified = classifyWriteFailure(error, { isReplay: Boolean(existingKey) });
+      if (classified.outcome === "duplicate_create") {
+        setDuplicateOperationId(classified.operationId);
+        setLastError(classified.message);
         setStep("unknown");
+      } else if (classified.outcome === "possibly_recorded") {
+        // Ambiguous outcome: preserve exact idempotency key, payload, and original attempt timestamp.
+        setKeepKeyOnNextSubmit(true);
+        setLastError(classified.message);
+        setStep("unknown");
+      } else {
+        // Definite rejection before recording (first attempt only): next reviewed submit gets a fresh key.
+        setKeepKeyOnNextSubmit(false);
+        setAttemptedAt(null);
+        setSubmittedDraft(null);
+        setLastError(classified.message);
+        setStep("failed");
       }
     } finally {
       submittingRef.current = false;
@@ -1117,14 +1163,23 @@ export function IssueEditor(props: IssueEditorProps) {
               )}
 
               {!lastOperation && !duplicateOperationId && keepKeyOnNextSubmit && idempotencyKey && (
-                <div className="flex flex-col gap-2 rounded-[10px] border border-border bg-muted p-3 text-[13px]">
-                  <p className="m-0 text-xs text-muted-foreground">
-                    The server may have already recorded this request under your idempotency key. Retrying with the same key lets the server return any operation it already recorded for this request.
-                  </p>
-                  <div>
-                    <Button variant="outline" size="sm" onClick={() => void submitWrite(true)}>Check recorded status with same key</Button>
+                canReplayWithSameKey(attemptedAt) ? (
+                  <div className="flex flex-col gap-2 rounded-[10px] border border-border bg-muted p-3 text-[13px]">
+                    <p className="m-0 text-xs text-muted-foreground">
+                      The server may have already recorded this request under your idempotency key. Retrying with the same key lets the server return any operation it already recorded for this request.
+                    </p>
+                    <div>
+                      <Button variant="outline" size="sm" onClick={() => void submitWrite(true)}>Check recorded status with same key</Button>
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5 rounded-[10px] border border-warning bg-warning-soft p-3 text-[13px]">
+                    <div className="font-medium">Manual reconciliation required</div>
+                    <p className="m-0 text-xs text-muted-foreground">
+                      This unresolved attempt is outside the 30-day idempotency retention window or has no verified attempt time, so same-key recovery is disabled to avoid creating a duplicate issue. Check GitHub and Write history manually before discarding or re-entering this draft.
+                    </p>
+                  </div>
+                )
               )}
 
               {recheckError && (
