@@ -7,3 +7,7 @@ test-results/
 secrets/
 apps/web/dist/
 apps/web/.tanstack/
+
+# Local-only docs
+docs/
+GLOSSARY.md
