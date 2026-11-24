@@ -408,9 +408,12 @@ export type IssueWriteErrorKind =
   | "server"
   | "changed_on_github"; // a Board update's expect no longer matches GitHub; current holds the live state
 
+export type WriteDisposition = "not-recorded" | "possibly-recorded" | null;
+
 export class IssueWriteError extends Error {
   readonly status: number;
   readonly kind: IssueWriteErrorKind;
+  readonly disposition: WriteDisposition;
   readonly retryAfter: string | null;
   readonly operationId: number | null;
   readonly operation: WriteOperation | null;
@@ -421,6 +424,7 @@ export class IssueWriteError extends Error {
     opts: {
       status: number;
       kind: IssueWriteErrorKind;
+      disposition?: WriteDisposition;
       retryAfter?: string | null;
       operationId?: number | null;
       operation?: WriteOperation | null;
@@ -430,6 +434,7 @@ export class IssueWriteError extends Error {
     super(message);
     this.status = opts.status;
     this.kind = opts.kind;
+    this.disposition = opts.disposition ?? null;
     this.retryAfter = opts.retryAfter ?? null;
     this.operationId = opts.operationId ?? null;
     this.operation = opts.operation ?? null;
@@ -437,13 +442,66 @@ export class IssueWriteError extends Error {
   }
 }
 
-// Whether a failed issue write may have been recorded, and so sent: a lost response (transport, 502, 504), a 500, a
-// 503 whose operation was already recorded, or any answer this module does not recognize. Such a write is resolved only
-// by resending the identical body under the same Idempotency-Key, which replays the recorded operation and sends nothing
-// new. Any other error is a definite rejection: nothing was recorded, and a retry takes a new key.
-export function mayHaveBeenRecorded(error: unknown): boolean {
+// Completed write operations are deleted on the server after 30 days. Use a 29-day cutoff in the browser
+// to allow clock skew before suppressing automatic same-key recovery POSTs.
+export const WRITE_RECOVERY_WINDOW_MS = 29 * 24 * 60 * 60 * 1000;
+const WRITE_RECOVERY_FUTURE_SKEW_MS = 5 * 60 * 1000;
+
+// Pure query: whether an unresolved attempt's timestamp is reliably within the server's idempotency retention window.
+// Undated legacy drafts, malformed dates, expired attempts, and implausible future timestamps require manual reconciliation.
+export function canReplayWithSameKey(attemptedAt: string | null | undefined, now: number = Date.now()): boolean {
+  if (!attemptedAt) return false;
+  const parsed = Date.parse(attemptedAt);
+  if (!Number.isFinite(parsed)) return false;
+  const age = now - parsed;
+  return age >= -WRITE_RECOVERY_FUTURE_SKEW_MS && age <= WRITE_RECOVERY_WINDOW_MS;
+}
+
+export type WriteFailureClassification =
+  | { outcome: "duplicate_create"; operationId: number; message: string }
+  | { outcome: "changed_on_github"; current: BoardSnapshot; message: string }
+  | { outcome: "recheck_unresolved"; operation: WriteOperation | null; message: string }
+  | { outcome: "possibly_recorded"; message: string }
+  | { outcome: "not_recorded"; message: string };
+
+// Pure classifier: whether a failed issue write may have been recorded, and so sent.
+// Relies on HTTP status, structured error kind, and the server's RepoOrbit-Write-Disposition header rather than
+// human-readable error prose. On a replay (isReplay=true), a precheck rejection cannot disprove the earlier attempt.
+// Unmarked 503 responses (proxies or older servers) default safely to uncertain.
+export function mayHaveBeenRecorded(error: unknown, opts: { isReplay?: boolean } = {}): boolean {
   if (!(error instanceof IssueWriteError)) return true;
-  return error.kind === "transport" || error.kind === "server" || (error.status === 503 && /same Idempotency-Key/i.test(error.message));
+  if (error.kind === "duplicate_create" || error.kind === "recheck_unresolved") return false;
+  if (opts.isReplay) return true;
+  if (error.kind === "transport" || error.kind === "server") return true;
+  if (error.disposition === "possibly-recorded") return true;
+  if (error.disposition === "not-recorded") return false;
+  if (error.status === 503) return true;
+  return false;
+}
+
+// Pure classifier mapping any failed submit or recheck error to the next recovery action.
+export function classifyWriteFailure(error: unknown, opts: { isReplay?: boolean } = {}): WriteFailureClassification {
+  const message = error instanceof Error ? error.message : "Could not submit to GitHub.";
+  if (error instanceof IssueWriteError) {
+    if (error.kind === "duplicate_create" && error.operationId) {
+      return { outcome: "duplicate_create", operationId: error.operationId, message };
+    }
+    if (error.kind === "changed_on_github" && error.current) {
+      return { outcome: "changed_on_github", current: error.current, message };
+    }
+    if (error.kind === "recheck_unresolved") {
+      return { outcome: "recheck_unresolved", operation: error.operation, message };
+    }
+  }
+  return mayHaveBeenRecorded(error, opts)
+    ? { outcome: "possibly_recorded", message }
+    : { outcome: "not_recorded", message };
+}
+
+function parseWriteDisposition(header: string | null): WriteDisposition {
+  const value = header?.trim().toLowerCase();
+  if (value === "not-recorded" || value === "possibly-recorded") return value;
+  return null;
 }
 
 function parseRetryAfter(header: string | null): string | null {
@@ -458,6 +516,7 @@ function parseRetryAfter(header: string | null): string | null {
 
 async function toIssueWriteError(response: Response): Promise<IssueWriteError> {
   const retryAfter = parseRetryAfter(response.headers.get("Retry-After"));
+  const disposition = parseWriteDisposition(response.headers.get("RepoOrbit-Write-Disposition"));
   const text = (await response.text().catch(() => "")).trim();
   let parsed: Record<string, unknown> | null = null;
   if (text.startsWith("{")) {
@@ -467,16 +526,17 @@ async function toIssueWriteError(response: Response): Promise<IssueWriteError> {
   }
   if (response.status === 409) {
     if (parsed && parsed.current && typeof parsed.current === "object") {
-      return new IssueWriteError("This issue changed on GitHub after the change was staged.", { status: 409, kind: "changed_on_github", current: parsed.current as BoardSnapshot });
+      return new IssueWriteError("This issue changed on GitHub after the change was staged.", { status: 409, kind: "changed_on_github", disposition, current: parsed.current as BoardSnapshot });
     }
     if (parsed && typeof parsed.operationId === "number") {
       const msg = typeof parsed.error === "string" && parsed.error ? parsed.error : "An earlier create of this issue is still unresolved; recheck it instead of resubmitting.";
-      return new IssueWriteError(msg, { status: 409, kind: "duplicate_create", operationId: parsed.operationId });
+      return new IssueWriteError(msg, { status: 409, kind: "duplicate_create", disposition, operationId: parsed.operationId });
     }
     if (parsed && typeof parsed.id === "number" && typeof parsed.state === "string") {
       return new IssueWriteError("The issue on GitHub could not be confirmed as matching this operation yet.", {
         status: 409,
         kind: "recheck_unresolved",
+        disposition,
         operation: parsed as unknown as WriteOperation,
       });
     }
@@ -492,7 +552,7 @@ async function toIssueWriteError(response: Response): Promise<IssueWriteError> {
     504: ["transport", "The request timed out before a reliable answer arrived. Your draft is preserved; check Write history before retrying."],
   };
   const [kind, defaultMessage] = fallback[response.status] ?? ["server", "Could not complete the issue request."];
-  return new IssueWriteError(text || defaultMessage, { status: response.status, kind, retryAfter });
+  return new IssueWriteError(text || defaultMessage, { status: response.status, kind, disposition, retryAfter });
 }
 
 // Fetches imported issues for one repository, including number, labels, assignees, author and URL.

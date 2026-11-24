@@ -339,18 +339,23 @@ func TestWriteOperationRetention(t *testing.T) {
 	f.user(1)
 	f.repo(10)
 	now := time.Now()
-	old, recent := now.Add(-31*24*time.Hour), now.Add(-29*24*time.Hour)
+	old, recent, stalePending := now.Add(-31*24*time.Hour), now.Add(-29*24*time.Hour), now.Add(-2*time.Minute)
 	f.exec(`INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, content_hash, draft, state, outcome, created_at) VALUES
 	 (1, 10, 'old-unknown', 'create', '\x00', '\x01', '{"title":"secret"}', 'unknown', '{"issue":{"number":1,"title":"secret"}}', $1),
 	 (1, 10, 'old-failed', 'create', '\x00', '\x02', NULL, 'failed', '{}', $1),
 	 (1, 10, 'old-succeeded', 'update', '\x00', NULL, NULL, 'succeeded', '{}', $1),
-	 (1, 10, 'recent', 'create', '\x00', '\x03', '{"title":"recent"}', 'failed', '{}', $2)`, old, recent)
+	 (1, 10, 'recent', 'create', '\x00', '\x03', '{"title":"recent"}', 'failed', '{}', $2),
+	 (1, 10, 'stale-pending', 'update', '\x00', NULL, '{"state":"closed"}', 'pending', '{}', $3)`, old, recent, stalePending)
 	noErr(t, SchedulerDeps{Pool: f.pool}.expireWriteOperations(context.Background(), now))
-	rows, err := f.pool.Query(context.Background(), `SELECT idempotency_key || ':' || (draft IS NULL)::text || ':' || (outcome ? 'redacted')::text || ':' || (outcome::text LIKE '%secret%')::text || ':' || (content_hash IS NOT NULL)::text FROM write_operations ORDER BY idempotency_key`)
+	rows, err := f.pool.Query(context.Background(), `SELECT idempotency_key || ':' || state || ':' || (draft IS NULL)::text || ':' || (outcome ? 'redacted')::text || ':' || (outcome::text LIKE '%secret%')::text || ':' || (content_hash IS NOT NULL)::text FROM write_operations ORDER BY idempotency_key`)
 	noErr(t, err)
 	got, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	noErr(t, err)
-	if want := []string{"old-unknown:true:true:false:true", "recent:false:false:false:true"}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if want := []string{
+		"old-unknown:unknown:true:true:false:true",
+		"recent:failed:false:false:false:true",
+		"stale-pending:failed:false:false:false:false",
+	}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("kept %v, want %v", got, want)
 	}
 }

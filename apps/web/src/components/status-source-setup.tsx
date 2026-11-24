@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { generateIdempotencyKey } from "@/components/issue-editor";
 import { statusLabelsQueryKey, writeOperationsQueryKey } from "@/components/write-history";
-import { IssueWriteError, disableStatusLabels, enableStatusLabels, fetchStatusLabels, type WriteOperation } from "@/lib/api";
+import { canReplayWithSameKey, disableStatusLabels, enableStatusLabels, fetchStatusLabels, mayHaveBeenRecorded, type WriteOperation } from "@/lib/api";
 
 // The three labels and the Board state each stands for (ADR 0003). Backlog is an open issue without one; Done is closed.
 const columns: Record<string, string> = { "status:todo": "Todo", "status:in-progress": "In Progress", "status:review": "In Review" };
@@ -19,8 +19,9 @@ export function StatusSourceSetup({ repositoryId, viewerKey, demo, frozen }: { r
   const [step, setStep] = useState<Step>("idle");
   const [result, setResult] = useState<WriteOperation | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Kept after an answerless submit so a retry replays the same operation instead of recording a second one.
+  // Kept after an uncertain submit so a retry replays the same operation instead of recording a second one.
   const [retryKey, setRetryKey] = useState<string | null>(null);
+  const [retryAttemptedAt, setRetryAttemptedAt] = useState<string | null>(null);
 
   function settle() {
     void queryClient.invalidateQueries({ queryKey });
@@ -28,18 +29,22 @@ export function StatusSourceSetup({ repositoryId, viewerKey, demo, frozen }: { r
   }
 
   async function turnOn() {
-    const key = retryKey ?? generateIdempotencyKey();
+    const activeRetryKey = retryKey && canReplayWithSameKey(retryAttemptedAt) ? retryKey : null;
+    const key = activeRetryKey ?? generateIdempotencyKey();
+    const attemptStamp = activeRetryKey ? retryAttemptedAt! : new Date().toISOString();
     setStep("submitting");
     setError(null);
     try {
       const op = await enableStatusLabels(repositoryId, key);
       setRetryKey(null);
+      setRetryAttemptedAt(null);
       setResult(op);
       setStep("idle");
       settle();
     } catch (err: unknown) {
-      const ambiguous = err instanceof IssueWriteError && (err.kind === "transport" || err.kind === "unverified" || err.kind === "server");
-      setRetryKey(ambiguous ? key : null);
+      const uncertain = mayHaveBeenRecorded(err, { isReplay: Boolean(activeRetryKey) });
+      setRetryKey(uncertain ? key : null);
+      setRetryAttemptedAt(uncertain ? attemptStamp : null);
       setError(err instanceof Error ? err.message : "Could not turn status labels on.");
       setStep("review");
     }
@@ -128,7 +133,7 @@ export function StatusSourceSetup({ repositoryId, viewerKey, demo, frozen }: { r
             <Button size="sm" onClick={() => void turnOn()} disabled={step === "submitting"}>
               {step === "submitting" ? "Submitting…" : retryKey ? "Retry submit" : "Submit"}
             </Button>
-            <Button variant="outline" size="sm" onClick={() => { setStep("idle"); setError(null); setRetryKey(null); }} disabled={step === "submitting"}>Cancel</Button>
+            <Button variant="outline" size="sm" onClick={() => { setStep("idle"); setError(null); setRetryKey(null); setRetryAttemptedAt(null); }} disabled={step === "submitting"}>Cancel</Button>
           </div>
         </div>
       )}
