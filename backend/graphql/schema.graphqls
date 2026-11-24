@@ -98,7 +98,8 @@ type RepositoryOverview {
 # reviewBacklog sums unreviewedOpenPullRequests. kind is "pr_awaiting_review", "issue_no_response" or "stale_issue".
 extend type Query { crossRepositoryOverview(days: Int! = 30): CrossRepositoryOverview }
 type AttentionItem { kind: String!, repositoryId: ID!, fullName: String!, number: Int64!, title: String!, url: String!, since: Time! }
-type AssignedIssue { repositoryId: ID!, fullName: String!, number: Int64!, title: String!, url: String!, updatedAt: Time! }
+# status is the issue's Board status, as repositoryBoard reports it; null when the repository's status labels are off.
+type AssignedIssue { repositoryId: ID!, fullName: String!, number: Int64!, title: String!, url: String!, updatedAt: Time!, status: String }
 type CrossDailyPoint { day: Time!, issuesOpened: Int64, pullRequestsMerged: Int64 }
 type CrossRepositoryOverview {
   days: Int!
@@ -114,3 +115,13 @@ type CrossRepositoryOverview {
   assignedToMe: [AssignedIssue!]!
   daily: [CrossDailyPoint!]!
 }
+
+# One selected repository's Board snapshot (R15): its open issues (the 500 most recently updated), its closed issues
+# (the 50 most recently closed) and the issue numbers in include (at most 100, for staged cards), each once.
+# truncated is true when a cap left issues out. At most one repositoryBoard per request.
+# Missing, unselected, and denied repos return null; unverified access returns null with ACCESS_UNVERIFIED and an optional retryAt.
+extend type Query { repositoryBoard(id: ID!, include: [Int!]): RepositoryBoard }
+type RepositoryBoard { statusLabels: Boolean!, truncated: Boolean!, issues: [BoardIssue!]! }
+# status is "backlog", "todo", "in_progress", "in_review" or "done", null when statusLabels is false. multipleStatus
+# flags an open issue carrying more than one status label (its status is the furthest-along one). updatedAt is RFC 3339.
+type BoardIssue { number: Int!, title: String!, url: String!, state: String!, updatedAt: String!, authorLogin: String, labels: [String!]!, assignees: [String!]!, status: String, multipleStatus: Boolean! }

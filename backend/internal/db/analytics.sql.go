@@ -279,8 +279,9 @@ func (q *Queries) ListAllSelectedIDs(ctx context.Context, userID int64) ([]int64
 }
 
 const listAssignedOpenIssues = `-- name: ListAssignedOpenIssues :many
-SELECT i.repository_id, r.name AS full_name, i.number, i.title, i.html_url AS url, i.updated_at
+SELECT i.repository_id, r.name AS full_name, i.number, i.title, i.html_url AS url, i.updated_at, b.status
 FROM activity_issues i JOIN repositories r ON r.id = i.repository_id
+LEFT JOIN issue_board_states b ON b.issue_id = i.source_id AND r.status_labels
 WHERE i.repository_id = ANY($1::bigint[]) AND i.state = 'open'
   AND EXISTS (SELECT 1 FROM activity_issue_assignees a WHERE a.issue_id = i.source_id AND a.source_id = $2::bigint)
 ORDER BY i.updated_at DESC, i.source_id DESC
@@ -299,9 +300,11 @@ type ListAssignedOpenIssuesRow struct {
 	Title        string
 	Url          string
 	UpdatedAt    pgtype.Timestamptz
+	Status       pgtype.Text
 }
 
-// Up to 25 open issues assigned to the GitHub user ID assignee_github_id (activity_issue_assignees.source_id), most recently updated first.
+// Up to 25 open issues assigned to the GitHub user ID assignee_github_id (activity_issue_assignees.source_id), most recently updated first,
+// with the Board status ListRepositoryBoard reports (null when the repository's status labels are off).
 func (q *Queries) ListAssignedOpenIssues(ctx context.Context, arg ListAssignedOpenIssuesParams) ([]ListAssignedOpenIssuesRow, error) {
 	rows, err := q.db.Query(ctx, listAssignedOpenIssues, arg.RepositoryIds, arg.AssigneeGithubID)
 	if err != nil {
@@ -318,6 +321,7 @@ func (q *Queries) ListAssignedOpenIssues(ctx context.Context, arg ListAssignedOp
 			&i.Title,
 			&i.Url,
 			&i.UpdatedAt,
+			&i.Status,
 		); err != nil {
 			return nil, err
 		}

@@ -25,6 +25,19 @@ type ActivityStatus struct {
 	Archived        bool                    `json:"archived"`
 }
 
+type BoardIssue struct {
+	Number         int      `json:"number"`
+	Title          string   `json:"title"`
+	URL            string   `json:"url"`
+	State          string   `json:"state"`
+	UpdatedAt      string   `json:"updatedAt"`
+	AuthorLogin    *string  `json:"authorLogin,omitempty"`
+	Labels         []string `json:"labels"`
+	Assignees      []string `json:"assignees"`
+	Status         *string  `json:"status,omitempty"`
+	MultipleStatus bool     `json:"multipleStatus"`
+}
+
 type ChildResourceStatus struct {
 	Complete        bool    `json:"complete"`
 	PendingChildren int     `json:"pendingChildren"`
@@ -173,6 +186,12 @@ type Repository struct {
 	SyncState      string          `json:"syncState"`
 	MetadataStatus *MetadataStatus `json:"metadataStatus,omitempty"`
 	Activity       *ActivityStatus `json:"activity"`
+}
+
+type RepositoryBoard struct {
+	StatusLabels bool          `json:"statusLabels"`
+	Truncated    bool          `json:"truncated"`
+	Issues       []*BoardIssue `json:"issues"`
 }
 
 type RepositoryConnection struct {

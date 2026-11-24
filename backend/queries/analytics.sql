@@ -235,9 +235,11 @@ ORDER BY since ASC, kind ASC, repository_id ASC, number ASC
 LIMIT 25;
 
 -- name: ListAssignedOpenIssues :many
--- Up to 25 open issues assigned to the GitHub user ID assignee_github_id (activity_issue_assignees.source_id), most recently updated first.
-SELECT i.repository_id, r.name AS full_name, i.number, i.title, i.html_url AS url, i.updated_at
+-- Up to 25 open issues assigned to the GitHub user ID assignee_github_id (activity_issue_assignees.source_id), most recently updated first,
+-- with the Board status ListRepositoryBoard reports (null when the repository's status labels are off).
+SELECT i.repository_id, r.name AS full_name, i.number, i.title, i.html_url AS url, i.updated_at, b.status
 FROM activity_issues i JOIN repositories r ON r.id = i.repository_id
+LEFT JOIN issue_board_states b ON b.issue_id = i.source_id AND r.status_labels
 WHERE i.repository_id = ANY(sqlc.arg(repository_ids)::bigint[]) AND i.state = 'open'
   AND EXISTS (SELECT 1 FROM activity_issue_assignees a WHERE a.issue_id = i.source_id AND a.source_id = sqlc.arg(assignee_github_id)::bigint)
 ORDER BY i.updated_at DESC, i.source_id DESC

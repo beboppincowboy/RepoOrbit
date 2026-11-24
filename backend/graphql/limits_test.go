@@ -93,6 +93,29 @@ func TestCrossOverviewCountsAsOneOverview(t *testing.T) {
 	}
 }
 
+// Aliases cannot multiply the bounded Board read; one Board beside one overview is fine.
+func TestRepositoryBoardAtMostOnePerOperation(t *testing.T) {
+	run := func(query string) string {
+		body, _ := json.Marshal(map[string]string{"query": query})
+		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		Server(&Resolver{}).ServeHTTP(w, req)
+		return w.Body.String()
+	}
+	for _, q := range []string{
+		`query { a: repositoryBoard(id: 1) { truncated } b: repositoryBoard(id: 2) { truncated } }`,
+		`query { a: repositoryBoard(id: 1) { truncated } ...B } fragment B on Query { b: repositoryBoard(id: 1, include: [2]) { truncated } }`,
+	} {
+		if got := run(q); !strings.Contains(got, "request at most one repository board") {
+			t.Fatalf("expected operation limit for %s, got %s", q, got)
+		}
+	}
+	if got := run(`query { repositoryBoard(id: 1) { truncated } repositoryOverview(id: 1) { days } }`); strings.Contains(got, "at most one") || strings.Contains(got, "GRAPHQL_VALIDATION_FAILED") {
+		t.Fatalf("board beside an overview rejected: %s", got)
+	}
+}
+
 func TestUnauthenticatedEmptyRepositoryIDsAndDemoEvidenceNilSafety(t *testing.T) {
 	run := func(r *Resolver, query string) string {
 		t.Helper()

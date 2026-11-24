@@ -111,6 +111,10 @@ func remoteLabels(e *env, repoID, number int64) []string {
 	return nil
 }
 
+func listBoard(e *env, repoID int64) ([]db.ListRepositoryBoardRow, error) {
+	return db.New(e.pool).ListRepositoryBoard(context.Background(), db.ListRepositoryBoardParams{RepositoryID: repoID})
+}
+
 // Each issue's Board state comes from its synced labels and open/closed state (R15).
 func TestBoardStateFromSyncedLabels(t *testing.T) {
 	e := setup(t)
@@ -122,13 +126,13 @@ func TestBoardStateFromSyncedLabels(t *testing.T) {
 		statusIssue(5, "closed", "status:review"),
 		statusIssue(6, "closed"),
 		statusIssue(7, "open", "status:blocked"))
-	rows, err := db.New(e.pool).ListBoardIssues(context.Background(), repoID)
+	rows, err := listBoard(e, repoID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := map[int64]string{}
 	for _, r := range rows {
-		got[r.Number] = r.Status
+		got[r.Number] = r.Status.String
 		if r.MultipleStatus != (r.Number == 4) {
 			t.Errorf("#%d multiple_status=%v", r.Number, r.MultipleStatus)
 		}
@@ -147,14 +151,15 @@ func TestBoardStateFromSyncedLabels(t *testing.T) {
 	for range 3 {
 		_ = e.deps.SyncIssues(context.Background(), jobs.Job{Key: fmt.Sprintf("repo:%d", repoID)}, txFence{pool: e.pool})
 	}
-	rows, _ = db.New(e.pool).ListBoardIssues(context.Background(), repoID)
-	if i := slices.IndexFunc(rows, func(r db.ListBoardIssuesRow) bool { return r.Number == 1 }); i < 0 || rows[i].Status != "in_review" {
+	rows, _ = listBoard(e, repoID)
+	if i := slices.IndexFunc(rows, func(r db.ListRepositoryBoardRow) bool { return r.Number == 1 }); i < 0 || rows[i].Status.String != "in_review" {
 		t.Fatalf("label change not synced: %+v", rows)
 	}
 	if _, err := e.pool.Exec(context.Background(), `UPDATE repositories SET status_labels=false WHERE id=$1`, repoID); err != nil {
 		t.Fatal(err)
 	}
-	if rows, _ := db.New(e.pool).ListBoardIssues(context.Background(), repoID); len(rows) != 0 {
+	rows, _ = listBoard(e, repoID)
+	if len(rows) == 0 || slices.ContainsFunc(rows, func(r db.ListRepositoryBoardRow) bool { return r.Status.Valid || r.MultipleStatus }) {
 		t.Fatalf("repository without status labels has columns: %+v", rows)
 	}
 }
@@ -201,8 +206,8 @@ func TestClosedIssueLosesStatusLabelThroughApp(t *testing.T) {
 	if err := e.pool.QueryRow(ctx, `SELECT array_agg(l.name ORDER BY l.name) FROM activity_issue_labels l JOIN activity_issues i ON i.source_id=l.issue_id WHERE i.repository_id=$1 AND i.number=1`, repoID).Scan(&local); err != nil || !slices.Equal(local, []string{"status:blocked"}) {
 		t.Fatalf("local labels of #1: %v err=%v", local, err)
 	}
-	rows, _ := db.New(e.pool).ListBoardIssues(ctx, repoID)
-	if rows[len(rows)-1].Number != 1 || rows[len(rows)-1].Status != "done" {
+	rows, _ := listBoard(e, repoID)
+	if rows[len(rows)-1].Number != 1 || rows[len(rows)-1].Status.String != "done" {
 		t.Fatalf("board: %+v", rows)
 	}
 	if e.labelDeletes() != 1 {
@@ -231,7 +236,7 @@ func TestStatusCleanupWritesNothingWithoutAuthority(t *testing.T) {
 		if err := e.runCleanup(repoID); err != nil || e.labelDeletes() != 0 || !slices.Equal(remoteLabels(e, repoID, 1), []string{"status:review"}) {
 			t.Fatalf("err=%v writes=%v", err, e.gh.WriteTokens())
 		}
-		if rows, _ := db.New(e.pool).ListBoardIssues(context.Background(), repoID); len(rows) != 1 || rows[0].Status != "done" {
+		if rows, _ := listBoard(e, repoID); len(rows) != 1 || rows[0].Status.String != "done" {
 			t.Fatalf("board: %+v", rows)
 		}
 	})
@@ -250,7 +255,7 @@ func TestStatusCleanupWritesNothingWithoutAuthority(t *testing.T) {
 		if err := e.runCleanup(repoID); err != nil || e.labelDeletes() != 0 {
 			t.Fatalf("err=%v writes=%v", err, e.gh.WriteTokens())
 		}
-		if rows, _ := db.New(e.pool).ListBoardIssues(context.Background(), repoID); len(rows) != 1 || rows[0].Status != "in_review" {
+		if rows, _ := listBoard(e, repoID); len(rows) != 1 || rows[0].Status.String != "in_review" {
 			t.Fatalf("reopened issue not refreshed: %+v", rows)
 		}
 	})

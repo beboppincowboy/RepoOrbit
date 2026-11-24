@@ -30,6 +30,7 @@ type AssignedIssue struct {
 	Title        string
 	URL          string
 	UpdatedAt    time.Time
+	Status       *string // Board status (issue_board_states); nil when the repository's status labels are off
 }
 
 // CrossDailyPoint is one UTC day summed over the counted repositories; a column is nil when none was counted.
@@ -146,9 +147,13 @@ func LoadCrossRepositoryOverview(ctx context.Context, pool *pgxpool.Pool, reposi
 			return nil, err
 		}
 		for _, r := range rows {
-			out.AssignedToMe = append(out.AssignedToMe, AssignedIssue{
+			issue := AssignedIssue{
 				RepositoryID: r.RepositoryID, FullName: r.FullName, Number: r.Number, Title: r.Title, URL: r.Url, UpdatedAt: r.UpdatedAt.Time,
-			})
+			}
+			if r.Status.Valid {
+				issue.Status = &r.Status.String
+			}
+			out.AssignedToMe = append(out.AssignedToMe, issue)
 		}
 	}
 	return out, tx.Commit(ctx)
