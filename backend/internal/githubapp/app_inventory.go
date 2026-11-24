@@ -139,7 +139,7 @@ func (c *Client) inventoryRequest(ctx context.Context, method, token, path strin
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("github app: request failed")
+		return false, fmt.Errorf("github app: request failed: %w", err) // keeps *url.Error matchable for callers that defer on transport failures
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
