@@ -334,6 +334,22 @@ func TestCredentialThrottleKeepsTheLaterTimeAndIgnoresThePast(t *testing.T) {
 
 // Terminal issue-write operations are deleted after the 30-day retention period. An unresolved create is kept past
 // it, redacted, so a retry of the same content still finds it and cannot create a second issue.
+// The stale-pending sweep decides on the database clock, as MarkWriteOperationSent does: a worker whose clock runs two
+// minutes fast must not fail a write recorded a moment ago, before its sender marks it.
+func TestStalePendingSweepUsesDatabaseClock(t *testing.T) {
+	f := newFixture(t)
+	f.user(1)
+	f.repo(10)
+	f.exec(`INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, draft, state, outcome)
+	 VALUES (1, 10, 'just-recorded', 'update', '\x00', '{"state":"closed"}', 'pending', '{}')`)
+	noErr(t, SchedulerDeps{Pool: f.pool}.expireWriteOperations(context.Background(), time.Now().Add(2*time.Minute)))
+	var state string
+	noErr(t, f.pool.QueryRow(context.Background(), `SELECT state FROM write_operations WHERE idempotency_key = 'just-recorded'`).Scan(&state))
+	if state != "pending" {
+		t.Fatalf("a fresh pending write was settled as %q by a fast worker clock", state)
+	}
+}
+
 func TestWriteOperationRetention(t *testing.T) {
 	f := newFixture(t)
 	f.user(1)
