@@ -1,24 +1,23 @@
 package issues
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
-
-// stalePendingTimeout matches the 1-minute freshness guard on MarkWriteOperationSent.
-// GET handlers project older pending rows as failed purely on read without mutating write_operations.
-const stalePendingTimeout = time.Minute
 
 var (
 	abandonedPendingOutcome         = json.RawMessage(`{"error":"abandoned before sending; nothing was sent to GitHub"}`)
@@ -28,7 +27,7 @@ var (
 func (s *Service) view(row db.GetWriteOperationRow) opView {
 	state := row.State
 	rawOutcome := row.Outcome
-	if state == "pending" && row.CreatedAt.Valid && time.Since(row.CreatedAt.Time) > stalePendingTimeout {
+	if state == "pending" && row.CreatedAt.Valid && time.Since(row.CreatedAt.Time) > ingestion.StalePendingTimeout {
 		state = "failed"
 		if len(row.Draft) == 0 {
 			rawOutcome = abandonedPendingRedactedOutcome
@@ -51,8 +50,6 @@ func (s *Service) view(row db.GetWriteOperationRow) opView {
 	}
 	return v
 }
-
-// --- query handlers (read-only; zero business-state mutations on write_operations) -------------
 
 func (s *Service) capabilities(w http.ResponseWriter, r *http.Request) {
 	userID, ok := auth.SignedInUserID(r.Context())
@@ -97,9 +94,6 @@ func (s *Service) assignees(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string][]string{"assignees": logins})
 }
 
-// list returns the viewer's own operations on one repository, merged newest first with the app's own writes there
-// (status label cleanup, kind "cleanup"); other users' operations are never listed.
-// Performs zero mutations on write_operations; stale pending rows are projected as failed purely on read.
 func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 	userID, ok := auth.SignedInUserID(r.Context())
 	repoID, idOK := pathID(r, "id")
@@ -137,10 +131,7 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"operations": out})
 }
 
-// loadOperation reads one of the viewer's operations under a fresh access check of its repository, withholding it when
-// access changed while it loaded. Another user's id, a missing id and lost access all answer 404. Performs zero
-// writes to write_operations; callers on command paths settle stale pending rows explicitly.
-func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request, settleStale bool) (int64, db.GetWriteOperationRow, repositories.Decision, accessfence.Snapshot, bool) {
+func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request) (int64, db.GetWriteOperationRow, repositories.Decision, accessfence.Snapshot, bool) {
 	userID, ok := auth.SignedInUserID(r.Context())
 	opID, idOK := pathID(r, "id")
 	if !ok || !idOK {
@@ -167,12 +158,6 @@ func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request, settleSt
 	if !ok {
 		return 0, row, d, snap, false
 	}
-	if settleStale {
-		if err := s.Queries.FailStalePendingOperations(r.Context(), userID); err != nil {
-			s.internal(w, err)
-			return 0, row, d, snap, false
-		}
-	}
 	if row, ok = load(); !ok || !s.fenceHolds(w, r.Context(), snap) {
 		return 0, row, d, snap, false
 	}
@@ -180,7 +165,7 @@ func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request, settleSt
 }
 
 func (s *Service) get(w http.ResponseWriter, r *http.Request) {
-	if _, row, _, _, ok := s.loadOperation(w, r, false); ok {
+	if _, row, _, _, ok := s.loadOperation(w, r); ok {
 		writeJSON(w, http.StatusOK, s.view(row))
 	}
 }
@@ -218,14 +203,32 @@ func (s *Service) statusLabelState(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		for _, l := range statusLabels {
-			exists, err := s.GitHub.LabelExists(r.Context(), token, d.Repo.FullName, l.name)
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		labels := make([]label, len(statusLabels))
+		errs := make([]error, len(statusLabels))
+		var wg sync.WaitGroup
+		for i, l := range statusLabels {
+			wg.Add(1)
+			go func(idx int, name string) {
+				defer wg.Done()
+				exists, err := s.GitHub.LabelExists(ctx, token, d.Repo.FullName, name)
+				if err != nil {
+					errs[idx] = err
+					cancel()
+					return
+				}
+				labels[idx] = label{name, exists}
+			}(i, l.name)
+		}
+		wg.Wait()
+		for _, err := range errs {
 			if err != nil {
 				s.upstream(w, r.Context(), userID, err)
 				return
 			}
-			out.Labels = append(out.Labels, label{l.name, exists})
 		}
+		out.Labels = labels
 	}
 	writeJSON(w, http.StatusOK, out)
 }

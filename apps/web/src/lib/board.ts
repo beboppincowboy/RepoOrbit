@@ -48,7 +48,6 @@ export function loadBoardCards(viewerKey: string, repositoryId: string): BoardCa
     .sort((a, b) => a.number - b.number);
 }
 
-// Stores one card under its own key, writing a pending card as unknown. Returns whether browser storage accepted it.
 export function saveBoardCard(viewerKey: string, repositoryId: string, card: BoardCard): boolean {
   return writeStorage(issueDraftStorageKey(viewerKey, repositoryId, { board: card.number }), card.phase === "pending" ? { ...card, phase: "unknown" } : card);
 }
