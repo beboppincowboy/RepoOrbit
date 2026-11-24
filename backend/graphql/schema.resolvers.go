@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/analytics"
@@ -160,7 +161,7 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 }
 
 // Issues is the resolver for the issues field.
-func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, first int, after *string) (*model.IssueConnection, error) {
+func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, first int, after *string, number *int) (*model.IssueConnection, error) {
 	n, err := pageLimit(first)
 	if err != nil {
 		return nil, err
@@ -212,7 +213,11 @@ func (r *queryResolver) Issues(ctx context.Context, repositoryIds []string, firs
 			return result, nil
 		}
 	}
-	rows, err := r.Queries.ListIssues(ctx, db.ListIssuesParams{Demo: r.Demo, RepositoryIds: ids, After: id, PageSize: int32(n + 1)})
+	var issueNumber pgtype.Int8
+	if number != nil {
+		issueNumber = pgtype.Int8{Int64: int64(*number), Valid: true}
+	}
+	rows, err := r.Queries.ListIssues(ctx, db.ListIssuesParams{Demo: r.Demo, RepositoryIds: ids, After: id, Number: issueNumber, PageSize: int32(n + 1)})
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}

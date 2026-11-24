@@ -1,0 +1,883 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+================================================================================
+RepoOrbit U5–U7 UI prototype (D2) — overview for agents
+================================================================================
+WHAT THIS IS
+  A single-file, self-contained clickable mock of the RepoOrbit frontend that
+  the team chose as the UI direction for U5 onward. Open it in any browser; it
+  needs no server. All data is fictional and hard-coded in the <script> below.
+  Published copy: https://claude.ai/artifact/NbQu7dutgs6BnchhquHedP
+
+  It is a SPEC BY EXAMPLE, not code to port. The real frontend is React +
+  TanStack Start, shadcn/ui + Tailwind, TanStack Query/Table, ECharts
+  (docs/adr/0002-u5-frontend-stack.md). Copy behaviour, layout and wording;
+  do not copy this vanilla-JS implementation.
+
+AUTHORITATIVE SOURCES (if this file disagrees with them, they win)
+  docs/plans/2026-11-16-1846-feat-repoorbit-intelligence-plan.md  (R1–R18, U5–U8)
+  docs/adr/0003-board-status-from-github.md
+  docs/adr/0004-read-only-actions-monitoring.md
+  GLOSSARY.md  (use its terms: Repository, Selection, Task, Board, Status source,
+                Workflow run, Deployment, Unverified, Withheld, ...)
+
+LAYOUT RULES
+  - Light-first, data-dense "engineering command center". Tokens on :root below:
+    bg #F8FAFC, surface #FFFFFF, text #0F172A, primary #4F46E5, success #16A34A.
+    Font: Geist / Geist Mono. 8px spacing, thin borders, few shadows.
+  - Left sidebar nav (Overview, Repositories, Discover, Saved issues, then the
+    selected repositories) | top bar (breadcrumb, repo jump, avatar) | view.
+    There is NO top-level Board or CI/CD page: both are repository tabs.
+  - The PAGE NEVER SCROLLS. The app fits the viewport; only cards, tables,
+    board columns, lists and drawers scroll inside themselves.
+  - One shared SyncStatus component, reused on every screen.
+  - Concrete "Needs attention" lists instead of any health score.
+
+SCREENS / WORKFLOW (in order) — and the plan unit that ships each
+  1. Sign in (U5a)         GitHub sign-in, or Demo mode (labelled banner, writes off).
+  2. Get started (U5a)     Checkbox list of own / starred repositories, nothing
+                           pre-checked, search, select-all. Free until "Start
+                           syncing N repositories"; then sync progress, enter.
+                           Skills are NOT asked here.
+  3. Overview (U5d)        KPIs, 7/30/90-day window, Needs attention list,
+                           "Assigned to me" (grouped by status from U6d). U7d
+                           adds failing-workflow and success-rate tiles and
+                           failed runs under Needs attention.
+  4. Repositories (U5a)    Same checkbox list with a pending-changes bar
+                           (N to add / M to remove, Apply / Discard); removal
+                           note; per-repository result, one failure stays
+                           unchecked with its reason.
+  5. Workspace (U5c)       Fixed header (name, GitHub link, sync, 7/30/90) and
+                           tabs: overview/activity analytics; Board tab (U6d);
+                           CI/CD tab (U7d). New issue (U6b).
+  6. Board tab (U6d)       Kanban of one repository's GitHub issues, plus List view.
+  7. CI/CD tab (U7d)       Actions success rate, failed/running jobs, p50/p95
+                           duration, queue wait, runs-per-day chart, run drawer
+                           with failing job, deployments when GitHub has them.
+  8. Discover (U7b)        Skills asked only here; every match explained
+                           (breakdown), unknown labels shown as unknown.
+  9. Saved issues (U7b)    Saved issues persist after unfollowing while access lasts.
+
+BEHAVIOUR THAT MUST CARRY OVER
+  - Writes (new issue, labels, card moves): Edit -> Review -> Submit -> Confirmed.
+    On timeout the outcome is UNKNOWN: show Recheck, never a blind retry.
+  - Board columns come ONLY from a Status source: a linked GitHub Project's
+    Status field, or status:todo / status:in-progress / status:review labels
+    (Backlog = open with no status label, Done = closed). Never inferred from
+    open/closed. Repos without a source sit in "No status source".
+  - A card move is Pending until GitHub confirms; on failure it rolls back and
+    the board resyncs. The confirmation names the exact change
+    (e.g. "status:todo removed, status:in-progress added", "issue closed").
+  - Permission gating by GitHub role: Read = view only (drag refused with the
+    reason, drawer controls disabled); Triage/Write = move and assign;
+    Admin/Maintain = also choose the Status source.
+  - Linking a Project asks for the Projects permission at that moment only.
+    Creating status labels goes through Review.
+  - CI/CD is read-only GitHub Actions. A green workflow is never a Deployment;
+    without GitHub Deployment records show "unavailable".
+  - Unverified access = content withheld + retry message, not an empty list.
+
+PROTOTYPE-ONLY CONTROLS (NOT product features — do not build these)
+  - Dashed "Prototype" box in the top bar: "Viewing as" (role switch) and
+    "Release" (show only what ships up to U5 / U6b / U6d / U7b / U7d / everything).
+  - The workspace "State" menu (forces sync states), the "next write fails" and
+    timeout toggles, "one repository fails to verify", the floating Guide
+    checklist, and "Restart workflow".
+================================================================================
+-->
+<title>RepoOrbit Command Center</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: engineering command center (light-first, minimal, data-dense). Sidebar nav | top bar + view. One screen, no page scroll; boards, tables, lists and drawers scroll inside. 8px spacing, thin borders, few shadows. */
+:root{
+  --bg:#F8FAFC; --surface:#FFFFFF; --sunk:#F1F5F9; --line:#E2E8F0; --line2:#CBD5E1;
+  --fg:#0F172A; --soft:#334155; --muted:#64748B;
+  --primary:#4F46E5; --primary-soft:#EEF2FF; --primary-fg:#FFFFFF;
+  --success:#16A34A; --success-soft:#DCFCE7; --success-fg:#15803D;
+  --warn:#B45309; --warn-soft:#FEF3C7; --crit:#B91C1C; --crit-soft:#FEE2E2; --run:#2563EB; --run-soft:#DBEAFE;
+  --demo:#6D28D9; --demo-soft:#EDE9FE; --chart2:#16A34A; --hatch:#E2E8F0; --scrim:rgba(15,23,42,.35);
+  --f:'Geist','Inter',system-ui,-apple-system,sans-serif; --mono:'Geist Mono',ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0B0F19; --surface:#111827; --sunk:#0F1522; --line:#1F2937; --line2:#334155;
+  --fg:#E5E7EB; --soft:#CBD5E1; --muted:#94A3B8;
+  --primary:#818CF8; --primary-soft:#1E1B4B; --primary-fg:#0B0F19;
+  --success:#4ADE80; --success-soft:#052E16; --success-fg:#4ADE80;
+  --warn:#FBBF24; --warn-soft:#3A2A06; --crit:#F87171; --crit-soft:#3B0D0D; --run:#60A5FA; --run-soft:#172554;
+  --demo:#C4B5FD; --demo-soft:#2E1065; --chart2:#4ADE80; --hatch:#1F2937; --scrim:rgba(0,0,0,.55); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0B0F19; --surface:#111827; --sunk:#0F1522; --line:#1F2937; --line2:#334155;
+  --fg:#E5E7EB; --soft:#CBD5E1; --muted:#94A3B8;
+  --primary:#818CF8; --primary-soft:#1E1B4B; --primary-fg:#0B0F19;
+  --success:#4ADE80; --success-soft:#052E16; --success-fg:#4ADE80;
+  --warn:#FBBF24; --warn-soft:#3A2A06; --crit:#F87171; --crit-soft:#3B0D0D; --run:#60A5FA; --run-soft:#172554;
+  --demo:#C4B5FD; --demo-soft:#2E1065; --chart2:#4ADE80; --hatch:#1F2937; --scrim:rgba(0,0,0,.55); color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;overflow:hidden;background:var(--bg);color:var(--fg);font:13.5px/1.5 var(--f);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:12px}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--primary)}
+:focus-visible{outline:2px solid var(--primary);outline-offset:2px;border-radius:6px}
+h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.01em;text-wrap:balance}
+.num{font-variant-numeric:tabular-nums}
+.muted{color:var(--muted)}
+.mono{font-family:var(--mono);font-size:12px}
+.scroll{overflow:auto;min-height:0;scrollbar-width:thin}
+.hatch{background:repeating-linear-gradient(135deg,var(--hatch) 0 4px,transparent 4px 8px)}
+.sr{position:absolute;left:-9999px}
+
+.app{height:100%;display:grid;grid-template-columns:216px minmax(0,1fr);gap:12px;max-width:1600px;margin:0 auto}
+aside.nav{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 12px;display:flex;flex-direction:column;gap:2px;min-height:0;overflow:auto}
+.logo{display:flex;align-items:center;gap:8px;font-weight:600;font-size:15px;padding:0 8px 12px}
+.logo i{width:26px;height:26px;border-radius:7px;background:var(--primary);display:grid;place-items:center}
+.navlabel{font:500 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding:12px 8px 4px}
+.navbtn{display:flex;align-items:center;gap:10px;border:0;background:transparent;border-radius:8px;padding:7px 8px;cursor:pointer;color:var(--soft);text-align:left;width:100%}
+.navbtn:hover{background:var(--sunk)}
+.navbtn[aria-current="page"]{background:var(--primary-soft);color:var(--primary);font-weight:600}
+.navbtn[disabled]{opacity:.4;cursor:not-allowed}
+.navbtn .ct{margin-left:auto;font:12px var(--mono);color:var(--muted)}
+.navbtn .ct.bad{color:var(--crit)}
+.navbtn svg{flex:none}
+.nav .foot{margin-top:auto;padding:8px}
+
+.main{min-width:0;min-height:0;display:flex;flex-direction:column;gap:12px}
+.topbar{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:8px 12px}
+.crumb{display:flex;align-items:center;gap:6px;color:var(--muted);min-width:0}
+.crumb b{color:var(--fg);font-weight:600}
+.tright{margin-left:auto;display:flex;align-items:center;gap:8px}
+.search{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:8px;padding:5px 10px;color:var(--muted);background:var(--bg);min-width:200px}
+.search input{border:0;background:transparent;outline:0;width:100%;color:var(--fg)}
+.av{width:24px;height:24px;border-radius:50%;background:var(--primary-soft);color:var(--primary);display:inline-grid;place-items:center;font-weight:600;font-size:10px;flex:none}
+.demo-bar{flex:none;background:var(--demo-soft);color:var(--demo);border:1px solid var(--demo);border-radius:10px;padding:6px 12px;font-weight:500;font-size:13px}
+#view{flex:1;min-height:0;display:flex;flex-direction:column;gap:12px}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;min-width:0;min-height:0}
+.pad{padding:16px}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:6px 12px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;text-decoration:none;color:var(--fg)}
+.btn:hover{border-color:var(--line2);background:var(--sunk)}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:var(--primary-fg);font-weight:500}
+.btn.dark{background:var(--fg);border-color:var(--fg);color:var(--bg);font-weight:500}
+.btn.sm{padding:3px 9px;font-size:12px}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px;gap:2px;background:var(--surface)}
+.seg button{border:0;background:transparent;border-radius:999px;padding:3px 11px;cursor:pointer;color:var(--muted);font-size:12px}
+.seg button[aria-pressed="true"]{background:var(--primary-soft);color:var(--primary);font-weight:600}
+.tabs{display:flex;flex-wrap:wrap;gap:2px 20px;border-bottom:1px solid var(--line)}
+.tabs button{border:0;background:transparent;padding:8px 0;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button[aria-current="page"]{color:var(--fg);font-weight:600;border-color:var(--fg)}
+.chip{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:2px 10px;font-size:12px;cursor:pointer;color:var(--soft)}
+.chip[aria-pressed="true"]{border-color:var(--primary);background:var(--primary-soft);color:var(--primary);font-weight:500}
+.label{display:inline-block;font-size:11.5px;border:1px solid var(--line);border-radius:999px;padding:0 8px;color:var(--soft);background:var(--sunk);margin:0 4px 2px 0}
+select.sel{border:1px solid var(--line);border-radius:8px;padding:3px 8px;background:var(--surface);font-size:12.5px}
+
+/* SyncStatus + run status */
+.sync{display:inline-flex;align-items:center;gap:6px;font-size:12px;border-radius:999px;padding:2px 9px;white-space:nowrap;border:1px solid transparent}
+.sync .d{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+.sync.ok{color:var(--success-fg);background:var(--success-soft)}
+.sync.syncing,.sync.running{color:var(--run);background:var(--run-soft)}
+.sync.syncing .d,.sync.running .d{animation:pulse 1.2s ease-in-out infinite}
+.sync.partial,.sync.ratelimited,.sync.warn{color:var(--warn);background:var(--warn-soft)}
+.sync.awaiting,.sync.none,.sync.skipped{color:var(--muted);background:var(--sunk)}
+.sync.awaiting .d{background:transparent;border:1.5px dashed currentColor}
+.sync.unverified,.sync.failed{color:var(--crit);background:var(--crit-soft)}
+.sync.demo{color:var(--demo);background:var(--demo-soft)}
+@keyframes pulse{50%{opacity:.3}}
+.minibar{width:48px;height:4px;border-radius:2px;background:var(--line);overflow:hidden;display:inline-block}
+.minibar span{display:block;height:100%;background:var(--primary)}
+.note{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13px;background:var(--surface)}
+.note.warn{border-color:var(--warn);background:var(--warn-soft);color:var(--fg)}
+
+/* tables */
+table{width:100%;border-collapse:collapse}
+th{font-weight:500;font-size:12px;color:var(--muted);text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap;position:sticky;top:0;background:var(--surface);z-index:1}
+th button{border:0;background:transparent;padding:0;cursor:pointer;color:inherit;font-weight:inherit}
+td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tbody tr[data-open-task],tbody tr[data-issue],tbody tr[data-run]{cursor:pointer}
+tbody tr:hover{background:var(--sunk)}
+tbody tr.on{background:var(--primary-soft)}
+td.r,th.r{text-align:right}
+
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;flex:none}
+.kpi{padding:12px 16px;text-align:left}
+button.kpi{cursor:pointer;font:inherit;color:inherit}
+button.kpi:hover{border-color:var(--line2)}
+.kpi small{display:flex;justify-content:space-between;color:var(--muted);font-size:12px}
+.kpi b{display:block;font-size:26px;font-weight:600;letter-spacing:-.02em;line-height:1.25}
+.kpi span{font-size:12px;color:var(--muted)}
+.kpi span.good{color:var(--success-fg)} .kpi span.part{color:var(--warn)} .kpi span.bad{color:var(--crit)}
+
+.chart{position:relative;flex:1;min-height:120px}
+.chart svg{position:absolute;inset:0;width:100%;height:100%}
+.cols{position:absolute;inset:0;display:flex}
+.cols button{flex:1 1 0;border:0;background:transparent;padding:0;cursor:crosshair;min-width:0}
+.gl{position:absolute;top:0;bottom:0;border-left:1px dashed var(--muted);pointer-events:none}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+.bars{position:relative;flex:1;min-height:140px;display:flex;align-items:flex-end;gap:10px;border-bottom:1px solid var(--line2);padding:0 4px}
+.bars .b{flex:1 1 0;display:flex;flex-direction:column;justify-content:flex-end;gap:2px;height:100%;border:0;background:transparent;padding:0;cursor:pointer;min-width:0;border-radius:4px}
+.bars .b:hover,.bars .b.on{background:var(--sunk)}
+.bars .b span{display:block;border-radius:3px 3px 0 0}
+
+.lrow{display:flex;align-items:center;gap:12px;padding:10px 12px;border:0;border-bottom:1px solid var(--line);background:transparent;width:100%;text-align:left;cursor:pointer;color:inherit;text-decoration:none}
+.lrow:hover{background:var(--sunk)}
+.lrow:last-child{border-bottom:0}
+.ico{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;flex:none;background:var(--sunk);color:var(--muted)}
+.ico.crit{background:var(--crit-soft);color:var(--crit)} .ico.warn{background:var(--warn-soft);color:var(--warn)} .ico.ok{background:var(--success-soft);color:var(--success-fg)} .ico.run{background:var(--run-soft);color:var(--run)}
+
+.split{flex:1;min-height:0;display:flex;gap:12px}
+.drawer{flex:none;width:380px;display:flex;flex-direction:column}
+.modal{position:fixed;inset:0;background:var(--scrim);display:grid;place-items:center;z-index:50;padding:16px}
+.modal .box{width:min(560px,100%);max-height:calc(100% - 32px);display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:0 20px 50px rgba(15,23,42,.18)}
+.steps{display:flex;gap:6px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.steps span{padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+.steps span.on{border-color:var(--primary);color:var(--primary);background:var(--primary-soft);font-weight:600}
+.steps span.done{color:var(--success-fg);border-color:var(--success)}
+.field{display:flex;flex-direction:column;gap:4px}
+.field>label{font-size:12px;color:var(--muted);font-weight:500}
+.field input,.field textarea,.field select{border:1px solid var(--line);border-radius:8px;padding:7px 10px;background:var(--bg)}
+.diff{font:12px/1.6 var(--mono);background:var(--sunk);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.diff .add{color:var(--success-fg)} .diff .del{color:var(--crit)}
+.option{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:12px;cursor:pointer;text-align:left;background:var(--surface);width:100%}
+.option:hover{border-color:var(--primary)}
+
+/* board */
+.board{flex:1;min-height:0;overflow-x:auto;display:flex;gap:12px;padding-bottom:4px}
+.kcol{flex:0 0 268px;display:flex;flex-direction:column;background:var(--sunk);border:1px solid transparent;border-radius:12px;min-height:0}
+.kcol.over{border-color:var(--primary);background:var(--primary-soft)}
+.kcol.nosrc{background:transparent;border:1px dashed var(--line2)}
+.kcol header{display:flex;align-items:center;gap:8px;padding:10px 12px;font-weight:600;font-size:13px}
+.kcol header .dt{width:8px;height:8px;border-radius:50%}
+.kcol header .ct{font:12px var(--mono);color:var(--muted);font-weight:400}
+.klist{flex:1;overflow:auto;padding:0 8px 8px;display:flex;flex-direction:column;gap:8px;min-height:60px}
+.kcard{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px;cursor:grab;display:flex;flex-direction:column;gap:6px;text-align:left;width:100%}
+.kcard:hover{border-color:var(--line2);box-shadow:0 2px 8px rgba(15,23,42,.06)}
+.kcard.pending{border-style:dashed;border-color:var(--primary)}
+.kcard.dragging{opacity:.35}
+.kcard.on{border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-soft)}
+.kcard .meta{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:12px;color:var(--muted)}
+.kchips{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.mini{display:inline-flex;align-items:center;gap:4px;font-size:11px;border-radius:999px;padding:0 7px;border:1px solid var(--line);color:var(--soft)}
+.mini.failed{color:var(--crit);border-color:var(--crit-soft);background:var(--crit-soft)} .mini.ok{color:var(--success-fg);background:var(--success-soft);border-color:var(--success-soft)} .mini.running{color:var(--run);background:var(--run-soft);border-color:var(--run-soft)} .mini.pend{color:var(--primary);background:var(--primary-soft);border-color:var(--primary-soft)}
+
+/* lifecycle */
+.life{display:flex;flex-direction:column;gap:0}
+.life .st{display:grid;grid-template-columns:28px 1fr;gap:10px;align-items:start;padding:8px 0;position:relative}
+.life .st:not(:last-child)::after{content:"";position:absolute;left:13.5px;top:38px;bottom:-6px;border-left:1.5px solid var(--line2)}
+.life .st.unk::after{border-left-style:dashed}
+.life button.st{border:0;background:transparent;text-align:left;cursor:pointer;border-radius:8px;width:100%;color:inherit}
+.life button.st:hover{background:var(--sunk)}
+.job{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.job>button{display:flex;align-items:center;gap:10px;border:0;background:var(--surface);padding:9px 12px;cursor:pointer;text-align:left}
+.job ol{margin:0;padding:6px 12px 10px 40px;font:12px/1.7 var(--mono);color:var(--soft);background:var(--sunk)}
+.job ol li.f{color:var(--crit)}
+
+/* discover */
+.rec{padding:16px;display:flex;flex-direction:column;gap:8px;min-height:auto}
+.match{font-size:12px;font-weight:500;border-radius:999px;padding:1px 9px}
+.match.strong{background:var(--success-soft);color:var(--success-fg)} .match.possible{background:var(--sunk);color:var(--soft)}
+.why{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;font-size:13px}
+.why li{display:flex;gap:8px;align-items:flex-start}
+.brk{display:grid;grid-template-columns:150px 1fr 70px;gap:6px 10px;align-items:center;font-size:12px;background:var(--sunk);border-radius:8px;padding:10px 12px}
+.brk .t{height:6px;border-radius:3px;background:var(--line);overflow:hidden}
+.brk .t span{display:block;height:100%;background:var(--primary)}
+
+/* guide */
+.guide{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:16px;width:min(340px,calc(100vw - 32px));max-height:calc(100% - 100px);display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 44px rgba(15,23,42,.16);z-index:40}
+.guide header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.tasks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px}
+.tasks li{display:grid;grid-template-columns:18px 1fr;gap:9px;font-size:13px}
+.tasks .bx{width:16px;height:16px;border:1.5px solid var(--line2);border-radius:4px;margin-top:2px;display:grid;place-items:center;color:#fff}
+.tasks li.done .bx{background:var(--success);border-color:var(--success)}
+.tasks li.done .tx{color:var(--muted);text-decoration:line-through}
+.prog{height:4px;background:var(--line);border-radius:2px;overflow:hidden}
+.prog span{display:block;height:100%;background:var(--success);transition:width .3s}
+.principle{font-size:12.5px;color:var(--soft);background:var(--sunk);border-radius:8px;padding:9px 11px}
+.principle b{color:var(--fg)}
+.guide-fab{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:16px;z-index:40;box-shadow:0 8px 24px rgba(15,23,42,.15)}
+.toast{position:fixed;left:50%;top:18px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:9px 14px;border-radius:10px;font-size:13px;z-index:70;max-width:calc(100vw - 32px)}
+
+.center{flex:1;display:grid;place-items:center;min-height:0}
+.onb{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:12px;flex:1;min-height:0}
+.stepline{display:flex;gap:8px;flex-wrap:wrap;font-size:12px}
+.stepline span{display:flex;align-items:center;gap:6px;color:var(--muted)}
+.stepline b{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;background:var(--sunk);font:600 11px var(--mono)}
+.stepline span.on{color:var(--fg);font-weight:600} .stepline span.on b{background:var(--primary);color:var(--primary-fg)}
+.stepline span.done b{background:var(--success);color:#fff}
+.pillars{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.pillars div{border:1px solid var(--line);border-radius:10px;padding:8px;text-align:center;font-size:12px}
+.pillars b{display:block;font-size:13px}
+
+@media (max-width:900px){
+  body{padding-block:8px}
+  .app{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}
+  aside.nav{flex-direction:row;flex-wrap:nowrap;overflow-x:auto;padding:8px;gap:2px;align-items:center}
+  aside.nav .logo,aside.nav .navlabel,aside.nav .foot,aside.nav .wsl{display:none}
+  .navbtn{width:auto;white-space:nowrap}
+  #view{overflow:auto}
+  .split,.onb{flex-direction:column;display:flex}
+  .drawer{width:auto}
+  .search{display:none}
+  .board{min-height:420px}
+}
+@media (prefers-reduced-motion:reduce){.sync .d{animation:none!important}.prog span{transition:none}}
+/* overview: stat strip + foldable panels */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));flex:none}
+.stat{padding:12px 16px;border-left:1px solid var(--line);display:flex;flex-direction:column;gap:2px}
+.stat:first-child{border-left:0}
+.stat b{font-size:24px;font-weight:600;line-height:1.2;letter-spacing:-.02em}
+.stat .lbl{font-weight:500;font-size:12.5px}.stat .sub{font-size:11.5px;color:var(--muted)}
+.stat .si{color:var(--muted)}.stat .si.crit{color:var(--crit)}.stat .si.warn{color:var(--warn)}
+.ovgrid{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:12px}
+.ovcol{display:flex;flex-direction:column;gap:12px;min-height:0}
+.ovp{flex:1 1 0;min-height:0;display:flex;flex-direction:column}
+.ovp.folded{flex:none}
+.ovp>header{display:flex;align-items:center;gap:8px;padding:8px 14px 8px 8px;flex:none}
+.ovbody{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column}
+.foldbtn{display:flex;align-items:center;gap:8px;flex:1;min-width:0;border:0;background:none;padding:4px 6px;border-radius:6px;font:inherit;color:inherit;cursor:pointer;text-align:left}
+.foldbtn:hover{background:var(--sunk)}
+.foldbtn>svg{transition:transform .15s;transform:rotate(90deg);color:var(--muted);flex:none}
+.foldbtn[aria-expanded="false"]>svg{transform:none}
+.grp{display:flex;align-items:center;justify-content:space-between;padding:8px 14px 2px;font-size:12px;color:var(--muted)}
+.meter{height:8px;border-radius:4px;background:var(--sunk);overflow:hidden}.meter span{display:block;height:100%;background:var(--success)}
+@media (max-width:900px){.ovgrid{display:flex;flex-direction:column}.ovp{flex:none}.ovbody{max-height:320px}}
+@media (prefers-reduced-motion:reduce){.foldbtn>svg{transition:none}}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <aside class="nav" aria-label="Main" id="nav"></aside>
+  <div class="main">
+    <div class="topbar" id="topbar"></div>
+    <div class="demo-bar" id="demoBar" hidden>Demo mode · fictional sample data under a demo identity. GitHub writes are disabled.</div>
+    <div id="view"></div>
+  </div>
+</div>
+<div id="modal"></div>
+<div id="guideWrap"></div>
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script>
+(function(){
+var $=function(id){return document.getElementById(id)};
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function rng(seed){var s=seed;return function(){s=(s*9301+49297)%233280;return s/233280}}
+function seedOf(t){var h=11;for(var i=0;i<t.length;i++)h=(h*31+t.charCodeAt(i))%9973;return h}
+function date(d){return new Date(Date.UTC(2026,10,17)-d*864e5).toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})}
+function dur(s){return s>=60?Math.floor(s/60)+'m '+String(s%60).padStart(2,'0')+'s':s+'s'}
+function toast(t){var el=$('toast');el.textContent=t;el.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(function(){el.hidden=true},3400)}
+function sv(p,w){return '<svg width="'+(w||16)+'" height="'+(w||16)+'" viewBox="0 0 16 16" aria-hidden="true">'+p+'</svg>'}
+var I={
+  grid:sv('<path d="M2 2h5v5H2zM9 2h5v5H9zM2 9h5v5H2zM9 9h5v5H9z" fill="none" stroke="currentColor" stroke-width="1.4"/>'),
+  repo:sv('<path d="M3 2.5h8.5v10H4.5A1.5 1.5 0 0 1 3 11zM3 11a1.5 1.5 0 0 1 1.5-1.5h7" fill="none" stroke="currentColor" stroke-width="1.4"/>'),
+  board:sv('<rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6 2.5v11M10 2.5v11" stroke="currentColor" stroke-width="1.4"/>'),
+  ci:sv('<circle cx="4" cy="4" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="9.5" y="9.5" width="4" height="4" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 5.8V9a2 2 0 0 0 2 2h3.5" fill="none" stroke="currentColor" stroke-width="1.4"/>'),
+  compass:sv('<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 5.5l-1.5 3.5-3.5 1.5 1.5-3.5z" fill="none" stroke="currentColor" stroke-width="1.3"/>'),
+  bookmark:sv('<path d="M4 2.5h8v11l-4-2.8-4 2.8z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>'),
+  pr:sv('<circle cx="4" cy="3.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="4" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12" cy="12.5" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 5.3v5.4M12 10.7V6a2 2 0 0 0-2-2H7.5" fill="none" stroke="currentColor" stroke-width="1.4"/>',14),
+  issue:sv('<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="8" r="1.4" fill="currentColor"/>',14),
+  tag:sv('<path d="M2.5 2.5h5.3l5.7 5.7-5.3 5.3-5.7-5.7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="5.5" cy="5.5" r="1" fill="currentColor"/>',14),
+  rocket:sv('<path d="M9.5 2.5c2 0 4 2 4 4L9 11l-4-4zM5 7L3 7.5 2 10l3-.5M9 11l-.5 2-2.5 1 .5-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>',14),
+  ext:sv('<path d="M9 3h4v4M13 3L7 9M11 9.5V13H3V5h3.5" fill="none" stroke="currentColor" stroke-width="1.5"/>',12),
+  chev:sv('<path d="M6 3.5l4.5 4.5L6 12.5" fill="none" stroke="currentColor" stroke-width="1.5"/>',14),
+  check:sv('<path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="1.8"/>',14),
+  x:sv('<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.8"/>',14),
+  info:sv('<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 7v4M8 5v.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',14),
+  spin:sv('<circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="20 14"/>',14)
+};
+
+/* ---------- data ---------- */
+function seedRepos(){return [
+  {id:'enigma-kit',owner:'ada-demo',kind:'own',priv:false,desc:'Rotor machine simulator',lang:'Go',issues:31,prs:11,merged:22,reply:'4.1h',merge:'1.8d'},
+  {id:'orbit-notes',owner:'ada-demo',kind:'own',priv:false,desc:'Notes and scripts',lang:'TypeScript',issues:18,prs:5,merged:14,reply:'7.5h',merge:'2.6d'},
+  {id:'analytical-engine',owner:'ada-demo',kind:'own',priv:true,desc:'Private experiments',lang:'Go',issues:9,prs:2,merged:5,reply:'6h',merge:'1.2d'},
+  {id:'api-server',owner:'acme',kind:'star',priv:false,desc:'HTTP API for the acme platform',lang:'Go',issues:64,prs:14,merged:38,reply:'8.4h',merge:'2.3d'},
+  {id:'dashboard',owner:'acme',kind:'star',priv:false,desc:'Admin dashboard (React)',lang:'TypeScript',issues:27,prs:8,merged:19,reply:'11h',merge:'3.0d'},
+  {id:'tidal',owner:'harbor-labs',kind:'star',priv:false,desc:'Tide prediction library',lang:'Python',issues:57,prs:6,merged:11,reply:'3.2h',merge:'1.5d'}
+].map(function(r){r.sel=false;r.sync='none';r.p=0;r.t=0;r.res='Issues';r.err=null;r.pushed={'enigma-kit':1,'orbit-notes':12,'analytical-engine':4,'api-server':0,'dashboard':2,'tidal':9}[r.id];return r})}
+var COLS=[['Backlog','#94A3B8'],['Todo','#64748B'],['In Progress','#D97706'],['In Review','#4F46E5'],['Done','#16A34A']];
+function seedTasks(){return [
+  {repo:'acme/api-server',n:124,t:'Add pagination to /orders',st:'Todo',as:'ada-demo',labels:['backend'],prio:'P2'},
+  {repo:'acme/api-server',n:118,t:'Optimize slow order queries',st:'In Progress',as:'alex',labels:['database'],prio:'P1'},
+  {repo:'acme/api-server',n:121,t:'Add response caching',st:'In Review',as:'sam-k',labels:['backend'],prio:null,pr:{n:142,state:'Awaiting review'},ci:{run:238,status:'failed',wf:'Integration Tests',dur:192},deploy:null},
+  {repo:'acme/api-server',n:182,t:'Optimize database connection pooling',st:'Backlog',as:'',labels:['performance','help wanted'],prio:null},
+  {repo:'acme/api-server',n:109,t:'Rotate signing keys',st:'Done',as:'priya',labels:['security'],prio:'P1',pr:{n:131,state:'Merged'},ci:{run:229,status:'success',wf:'Build & Test',dur:134},deploy:{env:'production',state:'success',at:'Nov 15'}},
+  {repo:'acme/dashboard',n:130,t:'Fix token refresh loop',st:'Todo',as:'jo-r',labels:['bug'],prio:'P1'},
+  {repo:'acme/dashboard',n:133,t:'Update dashboard charts',st:'In Progress',as:'ada-demo',labels:['frontend'],prio:null,pr:{n:128,state:'Draft'},ci:{run:77,status:'running',wf:'Build & Test',dur:92}},
+  {repo:'acme/dashboard',n:126,t:'Table keyboard navigation',st:'In Review',as:'lee',labels:['accessibility'],prio:null,pr:{n:127,state:'Changes requested'},ci:{run:75,status:'success',wf:'Build & Test',dur:241},deploy:null},
+  {repo:'acme/dashboard',n:120,t:'Dark mode tokens',st:'Done',as:'jo-r',labels:['frontend'],prio:null,pr:{n:119,state:'Merged'},ci:{run:70,status:'success',wf:'Deploy Production',dur:242},deploy:'none'},
+  {repo:'ada-demo/enigma-kit',n:64,t:'Support SSH signing keys',st:null,as:'',labels:['enhancement'],prio:null},
+  {repo:'ada-demo/enigma-kit',n:91,t:'Rotor wiring table drifts on reload',st:null,as:'ada-demo',labels:['bug'],prio:null,pr:{n:233,state:'Awaiting review'},ci:{run:51,status:'success',wf:'CI',dur:88}},
+  {repo:'harbor-labs/tidal',n:93,t:'Vectorize harmonic sums',st:null,as:'ada-demo',labels:['performance'],prio:null}
+]}
+var ASSIGNABLE=['alex','sam-k','priya','jo-r','lee','ada-demo'];
+var LABELS=['bug','backend','frontend','database','docs','enhancement','performance','help wanted'];
+var WFS={'acme/api-server':['Build & Test','Integration Tests','Deploy Production'],'acme/dashboard':['Build & Test','Deploy Production'],'ada-demo/enigma-kit':['CI'],'ada-demo/orbit-notes':['Lint'],'harbor-labs/tidal':['Tests','Docs'],'ada-demo/analytical-engine':['CI']};
+var RECS=[
+  {id:'r1',repo:'acme/api-server',n:182,t:'Optimize database connection pooling',labels:['Go','Database','Help Wanted'],sum:'Improve PostgreSQL connection reuse under concurrent requests.',skills:['Go','PostgreSQL'],interest:['Backend'],diff:null,resp:.8,checked:'12 minutes ago'},
+  {id:'r2',repo:'acme/api-server',n:176,t:'Document rate-limit headers',labels:['docs','good first issue'],sum:'Explain X-RateLimit headers in the API guide with examples.',skills:['Docs'],interest:['Backend'],diff:'beginner',resp:.8,checked:'12 minutes ago'},
+  {id:'r3',repo:'harbor-labs/tidal',n:93,t:'Vectorize harmonic constituent sums',labels:['performance','python'],sum:'Replace the per-constituent loop with numpy operations.',skills:['Python'],interest:['Data'],diff:'intermediate',resp:.9,checked:'40 minutes ago'},
+  {id:'r4',repo:'acme/dashboard',n:61,t:'Table keyboard navigation',labels:['accessibility','React'],sum:'Arrow-key navigation and focus ring for data tables.',skills:['React','TypeScript'],interest:['Frontend'],diff:null,resp:.55,checked:'1 hour ago'}
+];
+
+var S,TASKS;
+function reset(){TASKS=seedTasks();S={view:'login',mode:null,repos:seedRepos(),win:30,repo:null,tab:'overview',done:{},guide:true,
+  src:{'acme/api-server':{kind:'project',name:'Platform Roadmap'},'acme/dashboard':{kind:'labels'}},role:'maintain',scope:'all',permProjects:false,afterDone:null,
+  bRepo:'all',bAs:'all',bLab:'all',bQ:'',bView:'board',task:null,pending:{},failNext:false,dragKey:null,
+  ciWin:7,ciRepo:'all',run:null,openJob:null,ciDay:null,fh:null,override:null,
+  profile:null,skillsDraft:{Go:true,PostgreSQL:true,Backend:true},diff:'any',open:{},saved:{},dismissed:{},installed:false,repTab:'own',fold:{},stage:{},rq:'',failOne:false,ciSeen:{}}}
+reset();
+function R(key){return S.repos.filter(function(r){return r.owner+'/'+r.id===key})[0]}
+function sel(){return S.repos.filter(function(r){return r.sel})}
+function selKeys(){return sel().map(function(r){return r.owner+'/'+r.id})}
+function key(t){return t.repo+'#'+t.n}
+function T(k){return TASKS.filter(function(t){return key(t)===k})[0]}
+function mark(k){if(!S.done[k]){S.done[k]=true;renderGuide()}}
+
+/* ---------- release scope + GitHub permission gating ---------- */
+var UNITS=['U5','U6b','U6d','U7b','U7d'],UNAME={U5:'U5 · Analytics',U6b:'U6b · Issue writes',U6d:'U6d · Board',U7b:'U7b · Discover',U7d:'U7d · CI/CD'};
+function inScope(u){return S.scope==='all'||UNITS.indexOf(u)<=UNITS.indexOf(S.scope)}
+function viewIn(v){return (v==='discover'||v==='saved')?inScope('U7b'):true}
+function ub(u){return S.scope==='all'?' <span class="mini" style="margin-left:2px">'+u+'</span>':''}
+var ROLES={admin:'Admin',maintain:'Maintain',write:'Write',triage:'Triage',read:'Read'};
+function can(a){var r=S.role;if(S.mode==='demo')return false;if(a==='setup')return r==='admin'||r==='maintain';if(a==='move'||a==='assign')return r!=='read';return true}
+function why(a){return S.mode==='demo'?'Writes are disabled in demo mode.':a==='setup'?'Only people with Admin or Maintain permission on this repository can change its status source. You are viewing as '+ROLES[S.role]+'.':'Your GitHub permission here is Read: you can see the board, but moving or assigning issues needs Triage or higher.'}
+function lab(s){return s==='Todo'?'status:todo':s==='In Progress'?'status:in-progress':s==='In Review'?'status:review':null}
+function labelMsg(from,to){var p=[];if(lab(from))p.push(lab(from)+' removed');if(lab(to))p.push(lab(to)+' added');if(to==='Done')p.push('issue closed');if(from==='Done')p.push('issue reopened');return (p.join(', ')||'no label change')+'.'}
+function protoCtl(){return '<span style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;border:1px dashed var(--line2);border-radius:8px;padding:3px 8px" class="mono muted">Prototype <label>Viewing as <select id="roleSel" class="sel">'+Object.keys(ROLES).map(function(k){return '<option value="'+k+'"'+(S.role===k?' selected':'')+'>'+ROLES[k]+'</option>'}).join('')+'</select></label><label>Release <select id="scopeSel" class="sel">'+UNITS.map(function(u){return '<option value="'+u+'"'+(S.scope===u?' selected':'')+'>up to '+UNAME[u]+'</option>'}).join('')+'<option value="all"'+(S.scope==='all'?' selected':'')+'>Everything</option></select></label></span>'}
+
+/* ---------- CI data (derived, deterministic) ---------- */
+function runsFor(repo,days){
+  var r=rng(seedOf(repo)+days),wfs=WFS[repo]||['CI'],out=[];
+  for(var d=0;d<days;d++){var n=Math.round((d%7===5||d%7===6?2:6)*(repo.indexOf('acme')===0?1.6:.6)*(.6+r()));for(var i=0;i<n;i++){var wf=wfs[Math.floor(r()*wfs.length)];var fail=r()<(wf==='Integration Tests'?.18:.05);out.push({repo:repo,wf:wf,day:d,status:fail?'failed':'success',dur:Math.round((wf.indexOf('Deploy')>=0?220:wf==='Integration Tests'?180:110)*(.7+r()*.8)),queue:Math.round(4+r()*40)})}}
+  return out;
+}
+var RECENT=[
+  {id:238,repo:'acme/api-server',wf:'Integration Tests',branch:'cache-layer',pr:142,status:'failed',dur:192,queue:18,ago:'2m ago',jobs:[{name:'setup',status:'success',dur:21,steps:['Checkout','Set up Go 1.23','Start Postgres service']},{name:'integration',status:'failed',dur:158,steps:['go test ./internal/... -tags=integration','FAIL TestCacheInvalidation (3.2s)','expected 200, got 304'],fail:1},{name:'report',status:'skipped',dur:0,steps:['Upload junit report']}]},
+  {id:77,repo:'acme/dashboard',wf:'Build & Test',branch:'charts-v2',pr:128,status:'running',dur:92,queue:6,ago:'1m ago',jobs:[{name:'lint',status:'success',dur:31,steps:['pnpm lint']},{name:'test',status:'running',dur:61,steps:['pnpm test --run']}]},
+  {id:70,repo:'acme/dashboard',wf:'Deploy Production',branch:'main',status:'success',dur:242,queue:9,ago:'3h ago',jobs:[{name:'build',status:'success',dur:120,steps:['pnpm build']},{name:'publish',status:'success',dur:122,steps:['Upload artifact','Notify']}]},
+  {id:236,repo:'acme/api-server',wf:'Build & Test',branch:'main',status:'success',dur:134,queue:11,ago:'4h ago',jobs:[{name:'build',status:'success',dur:52,steps:['go build ./...']},{name:'unit',status:'success',dur:82,steps:['go test ./...']}]},
+  {id:51,repo:'ada-demo/enigma-kit',wf:'CI',branch:'wiring-fix',pr:233,status:'success',dur:88,queue:4,ago:'6h ago',jobs:[{name:'test',status:'success',dur:88,steps:['go test ./...']}]},
+  {id:235,repo:'acme/api-server',wf:'Deploy Production',branch:'main',status:'success',dur:251,queue:22,ago:'1d ago',deploy:{env:'production',state:'success'},jobs:[{name:'deploy',status:'success',dur:251,steps:['Build image','Push to registry','Roll out to production']}]}
+];
+var DEPLOYS={'acme/api-server':[{env:'production',state:'success',at:'Nov 16 18:02',ref:'v1.4.0'},{env:'staging',state:'success',at:'Nov 16 15:40',ref:'main@9f2c1'},{env:'production',state:'failed',at:'Nov 12 10:11',ref:'v1.3.2'}]};
+
+/* ---------- SyncStatus ---------- */
+function effSync(r){var k=r.owner+'/'+r.id;if(S.override&&S.repo===k)return S.override;if(S.mode==='demo')return r.sync==='ok'?'demo':r.sync;return r.sync}
+function SyncStatus(r){
+  var s=effSync(r);
+  var map={ok:['ok','Synced 8m ago','Last synced 8 minutes ago.'],syncing:['syncing','Syncing · '+r.res+' '+Math.round(r.p)+'%','Importing '+r.res.toLowerCase()+'.'],partial:['partial','Partial coverage','Issue events before Nov 3 unavailable; reviews 62% imported.'],awaiting:['awaiting','Awaiting sync','First sync has not run. Figures show —, not 0.'],none:['none','Not synchronized','Connect or follow to synchronize.'],ratelimited:['ratelimited','Rate limited · retry 14:32','Showing last good data until 14:32.'],unverified:['unverified','Access unverified','Protected content hidden until re-verified.'],demo:['demo','Demo data','Fictional sample data.']}[s];
+  return '<span class="sync '+map[0]+'" title="'+esc(map[2])+'"><span class="d"></span>'+map[1]+(s==='syncing'?' <span class="minibar"><span style="width:'+r.p+'%"></span></span>':'')+'</span>';
+}
+function known(r){var s=effSync(r);return s==='ok'||s==='demo'||s==='partial'||s==='ratelimited'}
+function runPill(st){return '<span class="sync '+(st==='success'?'ok':st)+'"><span class="d"></span>'+({success:'Success',failed:'Failed',running:'Running',skipped:'Skipped'}[st])+'</span>'}
+
+/* ---------- guide ---------- */
+var GUIDE={
+  login:{t:'Sign in',tasks:[['login','Sign in with GitHub (simulated) or open demo mode']],p:['<b>Engineering command center:</b> Analyze → Plan → Track → Monitor, from spotting a problem to assigning it, merging the fix and watching delivery.']},
+  onboard:{t:'Choose repositories',tasks:[['own','Check one of your repositories'],['star','Check a starred repository'],['uncheck','Uncheck one again (nothing has synced yet)'],['confirm','Start syncing'],['watch','Watch sync progress'],['enter','Enter the app']],p:['<b>Free until you confirm:</b> nothing is pre-checked, and checking or unchecking creates nothing until Start syncing.','<b>One SyncStatus component</b> is reused on every screen. Skills are asked only in Discover.']},
+  repos:{t:'Repositories',tasks:[['apply','Uncheck a repository, read the note, then Apply'],['partial','Turn on “one fails to verify”, check two repositories and Apply']],p:['<b>Same checkbox list as onboarding,</b> with a pending-changes bar.','<b>Each repository reports its own result.</b> One failure stays unchecked with its reason; the others still sync.']},
+  overview:{t:'Engineering overview',tasks:[['win','Switch the window'],['attn','Open an item from Needs attention'],['mine','Open an issue from Assigned to me'],['fold','Fold a panel, then unfold it'],['scope','Set Release to “up to U5” to see what ships first']],p:['<b>Act first:</b> Needs attention and your assigned issues lead; activity and CI/CD summarize. Every panel folds; rearranging them is a later step.','<b>Concrete problems, not a health score:</b> failed builds, PRs waiting for review, stale issues.']},
+  board:{t:'Board',tasks:[['wsboard','Open a repository’s Board tab'],['role','View as Read and try to drag a card'],['setupperm','As Maintain, set up a status source (Project asks for permission; labels go through Review)'],['drag','Drag a card to another column'],['pendingseen','Watch it go Pending → Confirmed'],['fail','Turn on “next write fails” and drag again (it rolls back)'],['nosrc','In enigma-kit (no status source), drag a card'],['life','Open a card to see Issue → PR → CI → Deployment'],['list','Switch to List view and filter']],p:['<b>Inside each repository.</b> There is no cross-repository board; the overview lists issues assigned to you.','<b>No second task database.</b> Cards are GitHub issues. Column = the GitHub Project <b>Status</b> field when a Project is linked, otherwise configured <b>status:*</b> labels.','<b>Never inferred:</b> open/closed alone does not decide a column. Repositories without a source sit in “No status source”.','<b>Pending until GitHub confirms.</b> On failure the card returns and the board resyncs.']},
+  cicd:{t:'CI/CD',tasks:[['wsci','Open a repository’s CI/CD tab'],['cikpi','Read success rate, p50/p95 duration and queue time'],['ciday','Click a day in the runs chart'],['run','Open a failed run and its failing job'],['deploy','Open CI/CD for api-server and for dashboard (deployment data vs unavailable)']],p:['<b>Inside each repository;</b> the overview shows failing workflows and the success rate.','<b>GitHub Actions first</b>, read-only. Durations come from run and job timestamps.','<b>CI success is not deployment success.</b> Without GitHub Deployment data the UI says “unavailable” instead of guessing.']},
+  workspace:{t:'Repository workspace',tasks:[['tabs','Visit the workspace tabs'],['states','Try a sync state from the State menu'],['newissue','Create an issue (Edit → Review → Submit)'],['unknown','Simulate a timeout and Recheck']],p:['<b>Header stays fixed:</b> name, GitHub link, sync status, 7/30/90.','<b>Writes:</b> Edit → Review → Submit → Confirmed. Timeout = outcome unknown; Recheck, never blind retry.']},
+  discover:{t:'Discover',tasks:[['skills','Pick your skills (asked only now)'],['breakdown','Open a match breakdown'],['save','Save an issue']],p:['<b>Explain every match.</b> Missing labels are unknown; no made-up probabilities.']},
+  saved:{t:'Saved issues',tasks:[['savedview','Review saved issues and freshness']],p:['<b>Saved issues stay</b> after unfollowing, while GitHub still allows access.']}
+};
+function gkey(){return S.view==='workspace'&&(S.tab==='board'||S.tab==='cicd')?S.tab:S.view}
+function renderGuide(){
+  var w=$('guideWrap');
+  var g=GUIDE[gkey()]||GUIDE.overview,tot=0,dn=0;
+  Object.keys(GUIDE).forEach(function(k){GUIDE[k].tasks.forEach(function(t){tot++;if(S.done[t[0]])dn++})});
+  /* a side drawer is open: tuck the guide away so it never covers the drawer */
+  var drawerOpen=(S.task||S.run)&&!S.gOver;
+  if(!S.guide||drawerOpen){w.innerHTML='<button class="btn dark guide-fab" type="button" data-act="'+(drawerOpen&&S.guide?'gover':'guide')+'">Guide · '+dn+'/'+tot+'</button>';return}
+  w.innerHTML='<section class="guide" aria-label="Guide"><header><div><div class="mono muted" style="text-transform:uppercase;letter-spacing:.06em">Guide · '+dn+'/'+tot+'</div><h2 style="font-size:15px">'+g.t+'</h2></div><button class="btn sm" type="button" data-act="guide">Hide</button></header>'+
+    '<div class="scroll" style="padding:12px 14px;display:flex;flex-direction:column;gap:12px"><div class="prog"><span style="width:'+(dn/tot*100)+'%"></span></div>'+
+    '<ul class="tasks">'+g.tasks.map(function(t){var d=S.done[t[0]];return '<li class="'+(d?'done':'')+'"><span class="bx" aria-hidden="true">'+(d?I.check:'')+'</span><span class="tx">'+t[1]+(d?'<span class="sr"> (done)</span>':'')+'</span></li>'}).join('')+'</ul>'+
+    g.p.map(function(p){return '<div class="principle">'+p+'</div>'}).join('')+
+    '<button class="btn sm" type="button" data-act="reset" style="align-self:flex-start">Restart workflow</button></div></section>';
+}
+
+/* ---------- shell ---------- */
+function failingCount(){return RECENT.filter(function(r){return r.status==='failed'&&selKeys().indexOf(r.repo)>=0}).length}
+function renderNav(){
+  var dis=!S.mode;
+  var item=function(v,ic,label,ct,bad){return '<button type="button" class="navbtn" data-nav="'+v+'"'+(S.view===v?' aria-current="page"':'')+(dis?' disabled':'')+'>'+ic+label+(ct?'<span class="ct'+(bad?' bad':'')+'">'+ct+'</span>':'')+'</button>'};
+  var savedN=Object.keys(S.saved).filter(function(k){return S.saved[k]}).length,f=failingCount();
+  var wsList=sel().map(function(r){var k=r.owner+'/'+r.id;return '<button type="button" class="navbtn wsl" data-ws="'+k+'"'+(S.view==='workspace'&&S.repo===k?' aria-current="page"':'')+' style="font-size:12.5px"><span class="sync '+effSync(r)+'" style="padding:0;background:none"><span class="d"></span></span>'+r.id+'</button>'}).join('');
+  $('nav').innerHTML='<div class="logo"><i><svg width="16" height="16" viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="4" fill="#fff"/><ellipse cx="13" cy="13" rx="10" ry="4.5" fill="none" stroke="#fff" stroke-width="2" transform="rotate(-25 13 13)"/></svg></i>RepoOrbit</div>'+
+    '<div class="navlabel">Workspace</div>'+item('overview',I.grid,'Overview')+item('repos',I.repo,'Repositories',sel().length||'')+(inScope('U7b')?item('discover',I.compass,'Discover'+ub('U7b'))+item('saved',I.bookmark,'Saved Issues',savedN||''):'')+
+    (wsList?'<div class="navlabel wsl">Repositories</div>'+wsList:'')+'<div class="foot"><span class="mono muted">Prototype D2 · command center</span></div>';
+}
+function renderTop(){
+  var crumb={login:'Sign in',onboard:'Get started',overview:'Engineering overview',repos:'Repositories',discover:'Discover issues',saved:'Saved issues'}[S.view];
+  var c=S.view==='workspace'?'<span>'+S.repo.split('/')[0]+' /</span> <b>'+S.repo.split('/')[1]+'</b>':'<b>'+crumb+'</b>';
+  $('topbar').innerHTML='<div class="crumb">'+c+'</div><div class="tright">'+(S.mode?protoCtl()+'<label class="search"><svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5"/></svg><input id="gsearch" placeholder="Jump to repository…" aria-label="Jump to repository" list="repolist"><datalist id="repolist">'+selKeys().map(function(k){return '<option value="'+k+'">'}).join('')+'</datalist></label><span class="av" style="width:28px;height:28px">'+(S.mode==='demo'?'DM':'AD')+'</span>':'')+'</div>';
+  $('demoBar').hidden=S.mode!=='demo';
+}
+function render(){renderNav();renderTop();renderGuide();$('view').innerHTML=VIEWS[S.view]()}
+
+/* ---------- views ---------- */
+var VIEWS={};
+VIEWS.login=function(){return '<div class="center"><div class="card pad" style="width:min(460px,100%);display:flex;flex-direction:column;gap:14px;padding:28px"><div class="logo" style="padding:0"><i><svg width="16" height="16" viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="4" fill="#fff"/><ellipse cx="13" cy="13" rx="10" ry="4.5" fill="none" stroke="#fff" stroke-width="2" transform="rotate(-25 13 13)"/></svg></i>RepoOrbit</div>'+
+  '<h1 style="font-size:22px">Your engineering command center</h1><p class="muted" style="margin:0">Repository analytics, issue boards and CI/CD status for the repositories you work on, built on GitHub.</p>'+
+  '<div class="pillars"><div>'+I.grid+'<b>Analyze</b><span class="muted">activity</span></div><div>'+I.board+'<b>Plan</b><span class="muted">board</span></div><div>'+I.pr+'<b>Track</b><span class="muted">PRs</span></div><div>'+I.ci+'<b>Monitor</b><span class="muted">CI/CD</span></div></div>'+
+  '<button class="btn dark" type="button" data-act="login" style="padding:10px">Continue with GitHub</button><button class="btn" type="button" data-act="demo" style="padding:10px">Explore demo mode</button><p class="muted mono" style="margin:0">Sign-in is simulated in this prototype.</p></div></div>'};
+
+function want(r){var k=r.owner+'/'+r.id;return k in S.stage?S.stage[k]:r.sel}
+function pickRows(kind){var q=(S.rq||'').toLowerCase();return S.repos.filter(function(r){return r.kind===kind&&(!q||(r.owner+'/'+r.id+' '+r.desc+' '+r.lang).toLowerCase().indexOf(q)>=0)}).sort(function(a,b){return a.pushed-b.pushed})}
+function repoTools(){var tab=S.repTab;return '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:none"><div class="seg" role="group" aria-label="Source"><button type="button" data-rt="own" aria-pressed="'+(tab==='own')+'">My repositories</button><button type="button" data-rt="star" aria-pressed="'+(tab==='star')+'">Starred</button></div><label class="search" style="min-width:200px"><input id="rq" placeholder="Filter by name or language" aria-label="Filter repositories" value="'+esc(S.rq)+'"></label><span class="muted" style="font-size:12px">Most recently pushed first</span></div>'}
+function repoTable(kind,first){
+  var rows=pickRows(kind),dis=S.mode==='demo',all=rows.length&&rows.every(want);
+  return '<div class="card scroll" style="flex:1"><table><thead><tr><th style="width:36px"><input type="checkbox" data-pickall="'+kind+'" aria-label="Select all shown"'+(all?' checked':'')+(dis||!rows.length?' disabled':'')+'></th><th>Repository</th><th>Language</th><th>Last push</th>'+(first?'':'<th>Board status source</th>')+'<th>Sync status</th></tr></thead><tbody>'+(rows.length?rows.map(function(r){var k=r.owner+'/'+r.id,src=S.src[k],w=want(r),ch=k in S.stage;
+    return '<tr'+(w?' class="on"':'')+'><td><input type="checkbox" data-pick="'+k+'" aria-label="Select '+k+'"'+(w?' checked':'')+(dis?' disabled':'')+'></td><td><div style="font-weight:500">'+k+(r.priv?' <span class="label">Private</span>':'')+'</div><div class="muted" style="font-size:12px">'+esc(r.desc)+'</div></td><td><span class="label">'+r.lang+'</span></td><td class="muted">'+(r.pushed?r.pushed+'d ago':'today')+'</td>'+(first?'':'<td>'+(src?(src.kind==='project'?'<span class="mini">Project · '+src.name+'</span>':'<span class="mini">status:* labels</span>'):'<span class="muted" style="font-size:12px">None</span>')+'</td>')+'<td>'+(r.err?'<span class="sync unverified"><span class="d"></span>'+r.err+'</span>':ch?'<span class="mini'+(w?'':' pend')+'">'+(w?'Will start syncing':'Will stop syncing')+'</span>':SyncStatus(r))+'</td></tr>'}).join(''):'<tr><td colspan="6" class="muted" style="text-align:center;padding:24px">No repositories match this filter.</td></tr>')+'</tbody></table></div>';
+}
+function pickBar(first){
+  var add=0,rem=0;Object.keys(S.stage).forEach(function(k){if(S.stage[k])add++;else rem++});
+  if(S.mode==='demo')return '';
+  var tog='<label class="mono muted" style="display:flex;gap:6px;align-items:center;border:1px dashed var(--line2);border-radius:8px;padding:3px 8px"><input type="checkbox" id="failOne"'+(S.failOne?' checked':'')+'> Prototype: one repository fails to verify</label>';
+  var box=function(inner){return '<div class="card pad" style="flex:none;display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center">'+inner+'</div>'};
+  if(first)return box('<span style="font-weight:500">'+(add?add+' selected':'Pick at least one repository')+'</span><span class="muted" style="font-size:12px">Nothing syncs until you start.</span>'+tog+'<button class="btn primary" type="button" data-act="apply" style="margin-left:auto"'+(add?'':' disabled')+'>Start syncing '+(add||'')+' repositor'+(add===1?'y':'ies')+'</button>');
+  if(!add&&!rem)return '';
+  return box('<span style="font-weight:500">'+add+' to add · '+rem+' to remove</span>'+(rem?'<span class="muted" style="font-size:12px;flex:1 1 320px">Removing stops syncing for you. Saved issues stay while you still have access, and anyone else who selected the repository keeps their data.</span>':'')+tog+'<span style="margin-left:auto;display:flex;gap:8px"><button class="btn" type="button" data-act="discard">Discard</button><button class="btn primary" type="button" data-act="apply">Apply</button></span>');
+}
+VIEWS.onboard=function(){
+  var s=sel(),first=!s.length;
+  return '<div class="card pad" style="flex:none;display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;align-items:center"><div><h1 style="font-size:18px">Choose what RepoOrbit keeps in sync</h1><p class="muted" style="margin:2px 0 0">Check repositories you own or starred ones you work on, then start syncing. You can change this later under Repositories.</p></div><div class="stepline"><span class="done"><b>✓</b>Login</span><span class="'+(s.length?'done':'on')+'"><b>'+(s.length?'✓':'2')+'</b>Choose</span><span class="'+(s.length?'on':'')+'"><b>3</b>Sync progress</span><span><b>4</b>Workspace</span></div></div>'+
+    '<div class="onb"><div style="display:flex;flex-direction:column;gap:12px;min-height:0">'+repoTools()+repoTable(S.repTab,true)+pickBar(first)+'</div>'+
+    '<div class="card pad" style="display:flex;flex-direction:column;gap:10px;min-height:0"><h2 style="font-size:14px">Sync progress</h2>'+(s.length?'<div class="scroll" style="flex:1;display:flex;flex-direction:column;gap:8px">'+s.map(function(r){return '<div style="display:flex;flex-direction:column;gap:4px;padding:8px 10px;background:var(--sunk);border-radius:8px"><span style="font-weight:500;font-size:13px">'+r.owner+'/'+r.id+'</span>'+SyncStatus(r)+'</div>'}).join('')+'</div>':'<p class="muted" style="flex:1">Check repositories and press Start syncing.</p>')+
+    '<button class="btn primary" type="button" data-act="enter"'+(s.length?'':' disabled')+'>Go to overview →</button></div></div>';
+};
+VIEWS.repos=function(){return '<div style="flex:none"><h1 style="font-size:20px">Repositories</h1><p class="muted" style="margin:0">Check or uncheck what RepoOrbit keeps in sync, then Apply.</p></div>'+repoTools()+repoTable(S.repTab,false)+pickBar(false)};
+
+/* chart helpers */
+function series(seed,n){var r=rng(seed),a=[],b=[];for(var i=0;i<n;i++){var wk=(i%7>4)?.4:1;a.push((2+r()*6)*wk);b.push((1+r()*4)*wk)}var sm=function(x){return x.map(function(v,i){return (x[Math.max(0,i-1)]+v+x[Math.min(x.length-1,i+1)])/3})};return [sm(a),sm(b)]}
+function lineChart(a,b,unk,labels){
+  var n=a.length,mx=Math.max.apply(null,a.concat(b))*1.15,X=function(i){return (i*600/(n-1)).toFixed(1)},Y=function(v){return (198-v/mx*190).toFixed(1)};
+  var pl=function(arr){return arr.map(function(v,i){return i<unk?null:X(i)+','+Y(v)}).filter(Boolean).join(' ')};
+  return '<div class="chart">'+(unk>0?'<div class="hatch" style="position:absolute;left:0;top:0;bottom:0;width:'+(unk/(n-1)*100).toFixed(1)+'%"></div>':'')+
+    '<svg viewBox="0 0 600 200" preserveAspectRatio="none" role="img" aria-label="'+labels[0]+' and '+labels[1]+' per day"><line x1="0" x2="600" y1="66" y2="66" stroke="var(--line)" vector-effect="non-scaling-stroke"/><line x1="0" x2="600" y1="132" y2="132" stroke="var(--line)" vector-effect="non-scaling-stroke"/><line x1="0" x2="600" y1="199" y2="199" stroke="var(--line2)" vector-effect="non-scaling-stroke"/>'+
+    '<polyline points="'+pl(a)+'" fill="none" stroke="var(--primary)" stroke-width="2.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><polyline points="'+pl(b)+'" fill="none" stroke="var(--chart2)" stroke-width="2.2" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>'+
+    (S.fh!=null&&S.fh<n?'<div class="gl" style="left:'+(S.fh/(n-1)*100).toFixed(2)+'%"></div>':'')+
+    '<div class="cols">'+a.map(function(_,i){return '<button type="button" data-fh="'+i+'" aria-label="'+date(n-1-i)+'"></button>'}).join('')+'</div></div>';
+}
+function readout(a,b,unk,labels){var n=a.length,h=S.fh;if(h==null||h>=n)return '<span class="muted">Hover or focus the chart to read a day.</span>';return '<b>'+date(n-1-h)+'</b> · '+(h<unk?'<span class="muted">not imported yet</span>':Math.round(a[h])+' '+labels[0]+' · '+Math.round(b[h])+' '+labels[1])}
+function winSeg(attr,cur,opts){return '<div class="seg" role="group" aria-label="Time window">'+(opts||[7,30,90]).map(function(w){return '<button type="button" data-'+attr+'="'+w+'" aria-pressed="'+(cur===w)+'">'+w+'d</button>'}).join('')+'</div>'}
+
+/* overview: a stat strip, then foldable panels. Left column = act now (Needs attention, Activity); right = my work and delivery. */
+function panel(id,title,count,tone,body,extra){
+  var f=!!S.fold[id];
+  return '<section class="card ovp'+(f?' folded':'')+'" aria-label="'+esc(title.replace(/<[^>]*>/g,'').trim())+'"><header><button type="button" class="foldbtn" data-fold="'+id+'" aria-expanded="'+!f+'">'+I.chev+'<h2 style="font-size:14px">'+title+'</h2>'+(count!=null?'<span class="mini'+(tone?' '+tone:'')+'">'+count+'</span>':'')+'<span class="sr">'+(f?' (folded, press to expand)':' (press to fold)')+'</span></button>'+(extra&&!f?extra:'')+'</header>'+(f?'':'<div class="ovbody">'+body+'</div>')+'</section>';
+}
+function stat(icon,tone,num,label,sub){return '<div class="stat"><span class="si'+(tone?' '+tone:'')+'">'+icon+'</span><b class="num">'+num+'</b><div class="lbl">'+label+'</div><div class="sub">'+sub+'</div></div>'}
+var ME='ada-demo';
+function mineList(keys){return TASKS.filter(function(t){return t.as===ME&&keys.indexOf(t.repo)>=0&&t.st!=='Done'})}
+function mineBody(mine){
+  var g=inScope('U6d'),order=['In Progress','In Review','Todo','Backlog',null];
+  var row=function(t){return '<button type="button" class="lrow" data-mine="'+key(t)+'"><span style="flex:1;min-width:0"><span style="display:block;font-weight:500">'+esc(t.t)+'</span><span class="muted" style="font-size:12px">'+t.repo.split('/')[1]+' · #'+t.n+(t.pr?' · PR #'+t.pr.n+' '+t.pr.state.toLowerCase():'')+'</span></span>'+I.chev+'</button>'};
+  if(!mine.length)return '<p class="muted pad">No open issues are assigned to you.</p>';
+  if(!g)return mine.map(row).join('');
+  return order.map(function(st){var l=mine.filter(function(t){return (t.st||null)===st});return l.length?'<div class="grp"><span>'+(st||'No status source')+'</span><span class="mini">'+l.length+'</span></div>'+l.map(row).join(''):''}).join('');
+}
+VIEWS.overview=function(){
+  var s=sel(),ok=s.filter(known),keys=selKeys(),ci=inScope('U7d');
+  if(!s.length)return '<div class="center"><div class="card pad" style="text-align:center;max-width:420px"><h2>No repositories yet</h2><p class="muted">Check repositories to sync under Repositories.</p><button class="btn primary" type="button" data-nav="repos">Choose repositories</button></div></div>';
+  var openIssues=ok.reduce(function(x,r){return x+r.issues},0),awaiting=TASKS.filter(function(t){return t.pr&&t.pr.state==='Awaiting review'&&keys.indexOf(t.repo)>=0}).length+Math.round(ok.reduce(function(x,r){return x+r.prs},0)/5);
+  var runs=[];keys.forEach(function(k){runs=runs.concat(runsFor(k,7))});var done=runs.filter(function(r){return r.status!=='running'}),succ=done.length?done.filter(function(r){return r.status==='success'}).length/done.length*100:0,fc=failingCount();
+  var ser=series(5+S.win,S.win),mine=mineList(keys);
+  var attn=[];
+  RECENT.forEach(function(r){if(ci&&r.status==='failed'&&keys.indexOf(r.repo)>=0)attn.push(['ci:'+r.id,r.repo.split('/')[1]+' · Build failed',r.branch+' · '+r.wf,'crit',I.x,'CI'])});
+  TASKS.forEach(function(t){if(t.pr&&t.pr.state==='Awaiting review'&&keys.indexOf(t.repo)>=0)attn.push(['task:'+key(t),t.repo.split('/')[1]+' · PR #'+t.pr.n,'Awaiting first review','warn',I.pr,'Review'])});
+  ok.forEach(function(r){if(r.issues>40)attn.push(['ws:'+r.owner+'/'+r.id,r.id+' · '+Math.round(r.issues/9)+' stale issues','Open, 30+ days quiet','warn',I.issue,'Issues'])});
+  var crit=attn.filter(function(a){return a[3]==='crit'}).length;
+
+  var head='<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:8px;flex:none"><div><h1 style="font-size:20px">Engineering overview</h1><p class="muted" style="margin:0">Activity and delivery across '+s.length+' repositories'+(s.length-ok.length?' · '+(s.length-ok.length)+' still syncing (left out)':'')+'</p></div>'+winSeg('w',S.win)+'</div>';
+  var strip='<div class="card stats">'+stat(I.issue,'',openIssues,'Open issues','across repositories')+stat(I.pr,awaiting?'warn':'',awaiting,'Review backlog','PRs awaiting review')+(ci?stat(I.info,fc?'crit':'',fc,'Failing workflows'+ub('U7d'),fc?'latest run failed':'all passing')+stat(I.check,'',done.length?succ.toFixed(1)+'%':'—','Build success'+ub('U7d'),'completed runs, last 7 days'):'')+'</div>';
+
+  var pAttn=panel('attn','Needs attention',attn.length,crit?'failed':'',attn.length?attn.map(function(a){return '<button type="button" class="lrow" data-go="'+a[0]+'"><span class="ico '+a[3]+'">'+a[4]+'</span><span style="flex:1;min-width:0"><span style="display:block;font-weight:500">'+esc(a[1])+'</span><span class="muted" style="font-size:12px">'+esc(a[2])+'</span></span><span class="mini">'+a[5]+'</span>'+I.chev+'</button>'}).join(''):'<p class="muted pad">Nothing needs attention right now.</p>');
+  var pAct=panel('act','Engineering activity',null,'','<div style="display:flex;flex-direction:column;gap:6px;padding:0 14px 12px;height:100%"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;font-size:12.5px"><span aria-live="polite">'+readout(ser[0],ser[1],0,['PRs merged','issues opened'])+'</span><span class="legend"><span><i style="background:var(--primary)"></i>PRs merged</span><span><i style="background:var(--chart2)"></i>Issues opened</span></span></div>'+lineChart(ser[0],ser[1],0,['PRs merged','Issues opened'])+'<div class="mono muted" style="display:flex;justify-content:space-between"><span>'+date(S.win-1)+'</span><span>Nov 17</span></div></div>','<span class="muted" style="font-size:12px">last '+S.win+' days</span>');
+  var pMine=panel('mine','Assigned to me'+(inScope('U6d')?ub('U6d'):''),mine.length,'',mineBody(mine));
+  var pCi='';
+  if(ci){var per=keys.map(function(k){var rs=runsFor(k,7).filter(function(r){return r.status!=='running'}),sc=rs.filter(function(r){return r.status==='success'}).length,fl=RECENT.filter(function(r){return r.repo===k&&r.status==='failed'}).length;return [k,rs.length?sc/rs.length*100:null,fl]}).sort(function(a,b){return b[2]-a[2]||(a[1]==null)-(b[1]==null)||a[1]-b[1]});
+    pCi=panel('ci','CI/CD summary'+ub('U7d'),fc?fc+' failing':null,fc?'failed':'','<div style="padding:0 14px 10px;display:flex;flex-direction:column;gap:6px"><div style="display:flex;justify-content:space-between;align-items:baseline"><span>Build success rate</span><b class="num" style="font-size:18px">'+(done.length?succ.toFixed(1)+'%':'—')+'</b></div><div class="meter"><span style="width:'+succ+'%"></span></div><span class="muted" style="font-size:12px">GitHub Actions, completed runs in the last 7 days. Open a repository for runs and jobs.</span></div>'+
+      per.map(function(p){return '<button type="button" class="lrow" data-go="cis:'+p[0]+'"><span style="flex:1;min-width:0;font-weight:500">'+p[0].split('/')[1]+'</span>'+(p[2]?'<span class="mini failed">'+p[2]+' failing</span>':'')+'<span class="mono muted" style="min-width:52px;text-align:right">'+(p[1]==null?'no runs':p[1].toFixed(0)+'%')+'</span>'+I.chev+'</button>'}).join(''));}
+  return head+strip+'<div class="ovgrid"><div class="ovcol">'+pAttn+pAct+'</div><div class="ovcol">'+pMine+pCi+'</div></div>';
+};
+
+/* ---------- BOARD ---------- */
+function boardTasks(scope){
+  var keys=scope?[scope]:selKeys();
+  return TASKS.filter(function(t){return keys.indexOf(t.repo)>=0&&(scope||S.bRepo==='all'||t.repo===S.bRepo)&&(S.bAs==='all'||(S.bAs==='none'?!t.as:t.as===S.bAs))&&(S.bLab==='all'||t.labels.indexOf(S.bLab)>=0)&&(!S.bQ||(t.t+' #'+t.n).toLowerCase().indexOf(S.bQ.toLowerCase())>=0)});
+}
+function srcOf(repo){return S.src[repo]||null}
+function srcText(repo){var s=srcOf(repo);return s?(s.kind==='project'?'GitHub Project “'+s.name+'” · Status field':'Labels status:todo / status:in-progress / status:review'):'No status source'}
+function kcard(t){
+  var k=key(t),p=S.pending[k],ci=t.ci;
+  return '<div class="kcard'+(p?' pending':'')+(S.task===k?' on':'')+'" draggable="'+(S.mode==='demo'?'false':'true')+'" data-card="'+k+'" tabindex="0" role="button" aria-label="'+esc(t.repo+' #'+t.n+' '+t.t)+'">'+
+    '<div class="meta"><span class="mono">'+t.repo.split('/')[1]+' · #'+t.n+'</span>'+(t.prio?'<span class="mini">'+t.prio+'</span>':'')+'</div>'+
+    '<div style="font-weight:500;line-height:1.35">'+esc(t.t)+'</div>'+
+    '<div class="kchips">'+t.labels.map(function(l){return '<span class="label" style="margin:0">'+l+'</span>'}).join('')+'</div>'+
+    '<div class="meta"><span class="kchips">'+(t.pr?'<span class="mini">'+I.pr+' #'+t.pr.n+'</span>':'')+(ci?'<span class="mini '+(ci.status==='success'?'ok':ci.status)+'">CI '+ci.status+'</span>':'')+(p?'<span class="mini pend">'+I.spin+' Pending · '+p.to+'</span>':'')+'</span>'+(t.as?'<span class="av" title="'+t.as+'">'+t.as.slice(0,2).toUpperCase()+'</span>':'<span class="muted" style="font-size:11px">Unassigned</span>')+'</div></div>';
+}
+function boardComp(scope){
+  var tasks=boardTasks(scope),repos=scope?[scope]:selKeys();
+  var nosrc=tasks.filter(function(t){return !srcOf(t.repo)});
+  var toolbar='<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:none">'+
+    (scope?'':'<select class="sel" id="bRepo" aria-label="Repository"><option value="all">All repositories</option>'+repos.map(function(k){return '<option'+(S.bRepo===k?' selected':'')+'>'+k+'</option>'}).join('')+'</select>')+
+    '<select class="sel" id="bAs" aria-label="Assignee"><option value="all">Any assignee</option><option value="none"'+(S.bAs==='none'?' selected':'')+'>Unassigned</option>'+ASSIGNABLE.map(function(a){return '<option'+(S.bAs===a?' selected':'')+'>'+a+'</option>'}).join('')+'</select>'+
+    '<select class="sel" id="bLab" aria-label="Label"><option value="all">Any label</option>'+LABELS.map(function(l){return '<option'+(S.bLab===l?' selected':'')+'>'+l+'</option>'}).join('')+'</select>'+
+    '<label class="search" style="min-width:180px"><input id="bQ" placeholder="Search tasks" aria-label="Search tasks" value="'+esc(S.bQ)+'"></label>'+
+    '<label class="mono muted" style="display:flex;gap:6px;align-items:center;border:1px dashed var(--line2);border-radius:8px;padding:3px 8px"><input type="checkbox" id="failNext"'+(S.failNext?' checked':'')+'> Prototype: next write fails</label>'+
+    '<span style="margin-left:auto;display:flex;gap:8px"><div class="seg" role="group" aria-label="View"><button type="button" data-bv="board" aria-pressed="'+(S.bView==='board')+'">Board</button><button type="button" data-bv="list" aria-pressed="'+(S.bView==='list')+'">List</button></div><button class="btn dark sm" type="button" data-act="newissue"'+(S.mode==='demo'?' disabled':'')+'>+ New issue</button></span></div>'+
+    '<div class="muted" style="font-size:12px;flex:none;display:flex;flex-wrap:wrap;gap:4px 14px">'+repos.map(function(k){var s=srcOf(k);return '<span>'+k.split('/')[1]+': '+(s?(s.kind==='project'?'Project “'+s.name+'”':'status:* labels'):'<button class="btn sm" type="button" data-setup="'+k+'" style="padding:0 6px">Set up status source</button>')+'</span>'}).join('')+'</div>';
+  var body;
+  if(S.bView==='list'){
+    body='<div class="card scroll" style="flex:1"><table><thead><tr><th>Task</th><th>Repository</th><th>Status</th><th>Assignee</th><th>Linked PR</th><th>CI</th></tr></thead><tbody>'+tasks.map(function(t){var k=key(t);return '<tr data-open-task="'+k+'" class="'+(S.task===k?'on':'')+'"><td><span class="mono muted">#'+t.n+'</span> <span style="font-weight:500">'+esc(t.t)+'</span></td><td class="muted">'+t.repo+'</td><td>'+(t.st?'<span class="mini">'+t.st+'</span>':'<span class="muted" style="font-size:12px">No status source</span>')+(S.pending[k]?' <span class="mini pend">Pending</span>':'')+'</td><td>'+(t.as||'<span class="muted">—</span>')+'</td><td>'+(t.pr?'#'+t.pr.n+' · '+t.pr.state:'<span class="muted">—</span>')+'</td><td>'+(t.ci?runPill(t.ci.status):'<span class="muted">—</span>')+'</td></tr>'}).join('')+'</tbody></table></div>';
+  }else{
+    body='<div class="board" id="board">'+(nosrc.length?'<section class="kcol nosrc" aria-label="No status source"><header><span class="dt" style="border:1.5px dashed var(--muted)"></span>No status source <span class="ct">'+nosrc.length+'</span></header><p class="muted" style="font-size:12px;margin:0 12px 8px">These repositories have no linked Project or status labels, so their column is unknown. Drag one to set up a source.</p><div class="klist">'+nosrc.map(kcard).join('')+'</div></section>':'')+
+      COLS.map(function(c){var list=tasks.filter(function(t){var p=S.pending[key(t)];return srcOf(t.repo)&&(p?p.to===c[0]:t.st===c[0])});return '<section class="kcol" data-col="'+c[0]+'" aria-label="'+c[0]+'"><header><span class="dt" style="background:'+c[1]+'"></span>'+c[0]+' <span class="ct">'+list.length+'</span></header><div class="klist">'+list.map(kcard).join('')+(list.length?'':'<p class="muted" style="font-size:12px;text-align:center;margin:12px 0">Drop here</p>')+'</div></section>'}).join('')+'</div>';
+  }
+  var t=S.task&&T(S.task);
+  return toolbar+'<div class="split">'+'<div style="flex:1;min-width:0;display:flex;flex-direction:column;min-height:0">'+body+'</div>'+(t&&(!scope||t.repo===scope)?taskDrawer(t):'')+'</div>';
+}
+function lifeStep(icon,cls,title,sub,act,unk){return (act?'<button type="button" class="st'+(unk?' unk':'')+'" '+act+'>':'<div class="st'+(unk?' unk':'')+'">')+'<span class="ico '+cls+'">'+icon+'</span><span><span style="display:block;font-weight:500">'+title+'</span><span class="muted" style="font-size:12px">'+sub+'</span></span>'+(act?'</button>':'</div>')}
+function taskDrawer(t){
+  var k=key(t),dep=t.deploy,ci=t.ci,run=ci&&RECENT.filter(function(r){return r.id===ci.run})[0];
+  var depLine=!t.pr||t.pr.state!=='Merged'?['Not deployed yet','Pending or not yet observed','',true]:dep==='none'||!dep?['Deployment data unavailable','This repository reports no GitHub Deployments. A green workflow is not treated as a deployment.','',true]:['Deployed to '+dep.env,dep.state+' · '+dep.at,'ok',false];
+  return '<aside class="card drawer" aria-label="Task detail"><div class="pad" style="display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid var(--line)"><div style="min-width:0"><div class="mono muted">'+t.repo+' · #'+t.n+'</div><h2 style="font-size:15px">'+esc(t.t)+'</h2></div><button class="btn sm" type="button" data-act="closetask" aria-label="Close task detail">'+I.x+'</button></div>'+
+  '<div class="scroll pad" style="flex:1;display:flex;flex-direction:column;gap:14px">'+
+  '<div><div class="mono muted" style="text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px">Development lifecycle</div><div class="life">'+
+    lifeStep(I.issue,'run','GitHub Issue #'+t.n,(t.as?'Assigned to '+t.as:'Unassigned')+' · '+(t.st||'no status source'))+
+    (t.pr?lifeStep(I.pr,t.pr.state==='Merged'?'ok':t.pr.state==='Changes requested'?'warn':'run','Pull Request #'+t.pr.n,'Linked PR · '+t.pr.state,'data-gh="1"'):lifeStep(I.pr,'','No linked pull request','Shown only when GitHub reports a link','',true))+
+    (ci?lifeStep(I.ci,ci.status==='success'?'ok':ci.status==='failed'?'crit':'run','CI Run #'+ci.run+' · '+ci.status,ci.wf+' · '+dur(ci.dur),run?'data-run="'+run.id+'"':'data-gh="1"'):lifeStep(I.ci,'','No CI run observed','','',true))+
+    lifeStep(I.rocket,depLine[2],depLine[0],depLine[1],'',depLine[3])+'</div></div>'+
+  (can('move')?'':'<div class="note">'+I.info+'<span>'+why('move')+'</span></div>')+
+  '<div class="field"><label for="dSt">Status</label><select id="dSt"'+(srcOf(t.repo)&&can('move')?'':' disabled')+'>'+(t.st?'':'<option>No status source</option>')+COLS.map(function(c){return '<option'+(t.st===c[0]?' selected':'')+'>'+c[0]+'</option>'}).join('')+'</select><span class="muted" style="font-size:11.5px">'+srcText(t.repo)+'. Keyboard alternative to dragging.</span></div>'+
+  '<div class="field"><label for="dAs">Assignee</label><select id="dAs"'+(can('assign')?'':' disabled')+'><option value="">Unassigned</option>'+ASSIGNABLE.map(function(a){return '<option'+(t.as===a?' selected':'')+'>'+a+'</option>'}).join('')+'</select><span class="muted" style="font-size:11.5px">Only GitHub-eligible assignees. Changes go through Review → Submit.</span></div>'+
+  '<a href="#gh" data-gh="1" class="btn sm" style="align-self:flex-start">Open issue on GitHub '+I.ext+'</a></div></aside>';
+}
+
+/* ---------- CI/CD ---------- */
+function ciComp(scope){
+  var keys=scope?[scope]:(S.ciRepo==='all'?selKeys():[S.ciRepo]),days=S.ciWin,runs=[];
+  keys.forEach(function(k){runs=runs.concat(runsFor(k,days))});
+  var done=runs.filter(function(r){return r.status!=='running'}),succ=done.filter(function(r){return r.status==='success'}).length,fail=done.length-succ;
+  var ds=runs.map(function(r){return r.dur}).sort(function(a,b){return a-b}),q=runs.map(function(r){return r.queue}).sort(function(a,b){return a-b});
+  var pct=function(a,p){return a.length?a[Math.min(a.length-1,Math.floor(a.length*p))]:0};
+  var nb=Math.min(days,14),bucket=Math.ceil(days/nb),byDay=[];
+  for(var i=0;i<nb;i++){var lo=days-(i+1)*bucket,hi=days-i*bucket;var rs=runs.filter(function(r){return r.day>=lo&&r.day<hi});byDay.unshift({s:rs.filter(function(r){return r.status==='success'}).length,f:rs.filter(function(r){return r.status==='failed'}).length,label:bucket===1?date(lo):date(hi-1)+'–'})}
+  var mx=Math.max.apply(null,byDay.map(function(b){return b.s+b.f}).concat([1]));
+  var byWf={};runs.forEach(function(r){var k=(scope?'':r.repo.split('/')[1]+' · ')+r.wf;byWf[k]=byWf[k]||{n:0,f:0};byWf[k].n++;if(r.status==='failed')byWf[k].f++});
+  var wfRows=Object.keys(byWf).map(function(k){return [k,byWf[k].n,byWf[k].f]}).sort(function(a,b){return b[2]-a[2]});
+  var recent=RECENT.filter(function(r){return keys.indexOf(r.repo)>=0});
+  var cd=S.ciDay!=null&&byDay[S.ciDay];
+  var depRepos=keys.map(function(k){return [k,DEPLOYS[k]]});
+  var run=S.run&&RECENT.filter(function(r){return r.id===S.run})[0];
+  var main='<div class="kpis"><div class="card kpi"><small>Build success rate</small><b class="num">'+(done.length?(succ/done.length*100).toFixed(1)+'%':'—')+'</b><span>'+done.length+' completed runs</span></div><div class="card kpi"><small>Duration p50 / p95</small><b class="num">'+dur(pct(ds,.5))+'</b><span>p95 '+dur(pct(ds,.95))+' · from run timestamps</span></div><div class="card kpi"><small>Failed runs</small><b class="num">'+fail+'</b><span class="'+(fail?'bad':'good')+'">across '+wfRows.filter(function(w){return w[2]}).length+' workflows</span></div><div class="card kpi"><small>Queue wait p50</small><b class="num">'+dur(pct(q,.5))+'</b><span>waiting for a runner</span></div></div>'+
+  '<div class="split"><div style="flex:999 1 520px;display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0"><section class="card pad" style="flex:1;display:flex;flex-direction:column;gap:8px;min-height:200px"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><h2 style="font-size:14px">Workflow runs over time</h2><div class="legend"><span><i style="background:var(--run)"></i>Successful</span><span><i style="background:var(--crit)"></i>Failed</span></div></div>'+
+    '<div style="font-size:12.5px;min-height:20px">'+(cd?'<b>'+cd.label+'</b> · '+cd.s+' successful · '+cd.f+' failed':'<span class="muted">Click a bar to read it.</span>')+'</div>'+
+    '<div class="bars">'+byDay.map(function(b,i){return '<button type="button" class="b'+(S.ciDay===i?' on':'')+'" data-ciday="'+i+'" aria-label="'+b.label+': '+b.s+' successful, '+b.f+' failed"><span style="height:'+(b.f/mx*100)+'%;background:var(--crit)"></span><span style="height:'+(b.s/mx*100)+'%;background:var(--run)"></span></button>'}).join('')+'</div>'+
+    '<div class="mono muted" style="display:flex;justify-content:space-between"><span>'+byDay[0].label+'</span><span>'+byDay[byDay.length-1].label+'</span></div></section>'+
+    '<section class="card" style="flex:none;max-height:42%;display:flex;flex-direction:column"><div class="pad" style="padding-bottom:6px"><h2 style="font-size:14px">Failure by workflow</h2></div><div class="scroll"><table><thead><tr><th>Workflow</th><th class="r">Runs</th><th class="r">Failed</th><th>Failure rate</th></tr></thead><tbody>'+wfRows.map(function(w){var rt=w[1]?w[2]/w[1]:0;return '<tr><td>'+esc(w[0])+'</td><td class="r num">'+w[1]+'</td><td class="r num">'+w[2]+'</td><td><span style="display:inline-block;width:80px;height:6px;background:var(--line);border-radius:3px;vertical-align:middle;overflow:hidden"><span style="display:block;height:100%;width:'+(rt*100)+'%;background:var(--crit)"></span></span> <span class="mono muted">'+(rt*100).toFixed(0)+'%</span></td></tr>'}).join('')+'</tbody></table></div></section></div>'+
+  '<div style="flex:1 1 360px;display:flex;flex-direction:column;gap:12px;min-height:0">'+(run?runDrawer(run):
+    '<section class="card" style="flex:1;display:flex;flex-direction:column;min-height:0"><div class="pad" style="padding-bottom:6px"><h2 style="font-size:14px">Recent workflow runs</h2></div><div class="scroll" style="flex:1">'+(recent.length?recent.map(function(r){return '<button type="button" class="lrow" data-run="'+r.id+'"><span class="ico '+(r.status==='success'?'ok':r.status==='failed'?'crit':'run')+'">'+I.ci+'</span><span style="flex:1;min-width:0"><span style="display:block;font-weight:500">'+r.wf+'</span><span class="muted" style="font-size:12px">'+(scope?'':r.repo.split('/')[1]+' · ')+r.branch+' · '+r.ago+'</span></span>'+runPill(r.status)+'<span class="mono muted">'+dur(r.dur)+'</span>'+I.chev+'</button>'}).join(''):'<p class="muted pad">No runs observed.</p>')+'</div></section>'+
+    '<section class="card pad" style="flex:none;display:flex;flex-direction:column;gap:8px"><h2 style="font-size:14px">Deployments</h2>'+depRepos.map(function(d){return '<div style="display:flex;flex-direction:column;gap:4px;padding:8px 10px;background:var(--sunk);border-radius:8px"><span style="font-weight:500;font-size:12.5px">'+d[0]+'</span>'+(d[1]?d[1].map(function(x){return '<span style="display:flex;justify-content:space-between;gap:8px;font-size:12px"><span>'+x.env+' · <span class="mono">'+x.ref+'</span></span><span>'+runPill(x.state==='success'?'success':'failed')+' <span class="muted">'+x.at+'</span></span></span>'}).join(''):'<span class="muted" style="font-size:12px">Deployment data unavailable. This repository reports no GitHub Deployments, so green workflows are not shown as deployments.</span>')+'</div>'}).join('')+'</section>')+'</div></div>';
+  return '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;flex:none">'+(scope?'':'<select class="sel" id="ciRepo" aria-label="Repository"><option value="all">All repositories</option>'+selKeys().map(function(k){return '<option'+(S.ciRepo===k?' selected':'')+'>'+k+'</option>'}).join('')+'</select>')+'<span class="muted" style="font-size:12px">GitHub Actions · read-only</span><span style="margin-left:auto">'+winSeg('ciw',S.ciWin,[7,30])+'</span></div>'+main;
+}
+function runDrawer(r){
+  return '<section class="card" style="flex:1;display:flex;flex-direction:column;min-height:0"><div class="pad" style="border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px"><div style="min-width:0"><div class="mono muted">'+r.repo+' · run #'+r.id+'</div><h2 style="font-size:15px">'+r.wf+'</h2><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">'+runPill(r.status)+'<span class="muted" style="font-size:12px">'+r.branch+(r.pr?' · PR #'+r.pr:'')+' · '+dur(r.dur)+' · queued '+dur(r.queue)+'</span></div></div><button class="btn sm" type="button" data-act="closerun" aria-label="Close run">'+I.x+'</button></div>'+
+  '<div class="scroll pad" style="flex:1;display:flex;flex-direction:column;gap:8px"><div class="mono muted" style="text-transform:uppercase;letter-spacing:.06em">Jobs</div>'+r.jobs.map(function(j,i){var open=S.openJob===r.id+':'+i||(S.openJob==null&&j.status==='failed');return '<div class="job"><button type="button" data-job="'+r.id+':'+i+'" aria-expanded="'+open+'"><span class="ico '+(j.status==='success'?'ok':j.status==='failed'?'crit':j.status==='running'?'run':'')+'" style="width:22px;height:22px">'+(j.status==='success'?I.check:j.status==='failed'?I.x:j.status==='running'?I.spin:I.info)+'</span><span style="flex:1;font-weight:500">'+j.name+'</span><span class="mono muted">'+(j.dur?dur(j.dur):'—')+'</span></button>'+(open?'<ol>'+j.steps.map(function(s,si){return '<li class="'+(j.fail&&si>=j.fail?'f':'')+'">'+esc(s)+'</li>'}).join('')+'</ol>':'')+'</div>'}).join('')+
+  (r.status==='failed'?'<a href="#gh" data-gh="1" class="btn dark sm" style="align-self:flex-start">View failing job logs on GitHub '+I.ext+'</a>':'')+
+  '<p class="muted" style="font-size:12px;margin:4px 0 0">Re-run and cancel are not available: CI/CD is read-only in the first version.</p></div></section>';
+}
+
+/* ---------- workspace ---------- */
+VIEWS.workspace=function(){
+  var r=R(S.repo);if(!r)return '<p>Pick a repository.</p>';
+  var st=effSync(r),k=S.repo;
+  var head='<section class="card pad" style="flex:none;display:flex;flex-direction:column;gap:10px;padding-bottom:0"><div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px"><span class="ico">'+I.repo+'</span><div style="min-width:0"><div class="muted" style="font-size:12px">'+r.owner+' /</div><h1 style="font-size:19px;line-height:1.2">'+r.id+'</h1></div><a href="#gh" class="btn sm" data-gh="1">View on GitHub '+I.ext+'</a>'+SyncStatus(r)+
+    '<div style="margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><label class="mono muted" style="display:flex;align-items:center;gap:6px">State <select id="stateSel" class="sel">'+[['','Live'],['ok','Synced'],['syncing','Syncing'],['partial','Partial coverage'],['awaiting','Awaiting sync'],['ratelimited','Rate limited'],['unverified','Access unverified']].map(function(o){return '<option value="'+o[0]+'"'+((S.override||'')===o[0]?' selected':'')+'>'+o[1]+'</option>'}).join('')+'</select></label>'+winSeg('w',S.win)+
+    (inScope('U6b')?'<button class="btn dark" type="button" data-act="newissue"'+(S.mode==='demo'||st==='unverified'?' disabled':'')+'>+ New Issue</button>':'')+'</div></div>'+
+    '<nav class="tabs" aria-label="Workspace sections">'+[['overview','Overview'],['board','Board'],['prs','Pull Requests'],['cicd','CI/CD'],['contributors','Contributors'],['activity','Activity']].filter(function(t){return t[0]==='board'?inScope('U6d'):t[0]==='cicd'?inScope('U7d'):true}).map(function(t){return '<button type="button" data-tab="'+t[0]+'"'+(S.tab===t[0]?' aria-current="page"':'')+'>'+t[1]+'</button>'}).join('')+'</nav></section>';
+  if(st==='unverified')return head+'<div class="center"><div class="card pad" style="max-width:440px;text-align:center;display:flex;flex-direction:column;gap:10px;align-items:center"><span class="ico crit">'+I.info+'</span><h2 style="font-size:16px">Access could not be verified</h2><p class="muted" style="margin:0">Protected content is hidden, not deleted.</p><button class="btn primary" type="button" data-act="reverify">Re-verify access</button></div></div>';
+  var banner=st==='ratelimited'?'<div class="note warn" style="flex:none">'+I.info+'<span>Rate limited. Showing the last good data from 2 hours ago; next retry 14:32.</span></div>':st==='partial'?'<div class="note warn" style="flex:none">'+I.info+'<span><b>Partial coverage.</b> Issue events before Nov 3 were never recorded; reviews are 62% imported.</span></div>':st==='awaiting'||st==='syncing'?'<div class="note" style="flex:none">'+I.info+'<span>'+(st==='awaiting'?'First sync has not started. Figures show — until data exists.':'Syncing '+r.res.toLowerCase()+' ('+Math.round(r.p)+'%).')+'</span></div>':'';
+  return head+banner+WS[S.tab](r,st);
+};
+var WS={};
+WS.overview=function(r,st){
+  var has=st==='ok'||st==='demo'||st==='partial'||st==='ratelimited',f={7:.25,30:1,90:2.7}[S.win];
+  var ser=series(seedOf(r.id)+S.win,S.win),unk=st==='syncing'?Math.round(S.win*(1-r.p/100)):st==='awaiting'?S.win:0,dash='—';
+  var tl=[['pr','PR #142 merged','alex','2h ago'],['issue','Issue #89 reopened','sam','6h ago'],['tag','v1.4 released','maintainer','1d ago'],['pr','PR #140 merged','dependabot','2d ago'],['issue','Issue #179 assigned to alex','priya','3d ago']];
+  return '<div class="kpis"><div class="card kpi"><small>Median first response</small><b class="num">'+(has?r.reply:dash)+'</b><span class="'+(st==='partial'?'part':'good')+'">'+(st==='partial'?'Partial: comments importing':has?'Issue responsiveness':'Awaiting data')+'</span></div><div class="card kpi"><small>Median merge time</small><b class="num">'+(has?r.merge:dash)+'</b><span>Merged PRs</span></div><div class="card kpi"><small>Open issues</small><b class="num">'+(has?r.issues:dash)+'</b><span>'+(has?Math.round(r.issues/9)+' stale':'')+'</span></div><div class="card kpi"><small>Merged PRs</small><b class="num">'+(has?Math.round(r.merged*f):dash)+'</b><span>last '+S.win+' days</span></div></div>'+
+  '<div class="split"><section class="card pad" style="flex:999 1 520px;display:flex;flex-direction:column;gap:8px"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><h2 style="font-size:14px">Opened vs merged</h2><div class="legend"><span><i style="background:var(--primary)"></i>Issues opened</span><span><i style="background:var(--chart2)"></i>PRs merged</span></div></div><div style="font-size:12.5px;min-height:20px" aria-live="polite">'+readout(ser[0],ser[1],unk,['opened','merged'])+'</div>'+lineChart(ser[0],ser[1],unk,['Issues opened','PRs merged'])+'<div class="mono muted" style="display:flex;justify-content:space-between"><span>'+date(S.win-1)+'</span><span>Nov 17</span></div></section>'+
+  '<section class="card" style="flex:1 1 300px;display:flex;flex-direction:column"><div class="pad" style="padding-bottom:6px;display:flex;justify-content:space-between"><h2 style="font-size:14px">Recent activity</h2><button class="btn sm" type="button" data-tab="activity">All</button></div><div class="scroll" style="flex:1">'+(has?tl.map(function(t){return '<div class="lrow" style="cursor:default"><span class="ico">'+I[t[0]]+'</span><span style="flex:1"><span style="display:block;font-weight:500">'+t[1]+'</span><span class="muted" style="font-size:12px">'+t[2]+'</span></span><span class="muted" style="font-size:12px">'+t[3]+'</span></div>'}).join(''):'<p class="muted pad">No activity imported yet.</p>')+'</div></section></div>';
+};
+WS.board=function(r){mark('wsboard');return boardComp(r.owner+'/'+r.id)};
+WS.cicd=function(r){var k=r.owner+'/'+r.id;mark('wsci');mark('cikpi');S.ciSeen[!!DEPLOYS[k]]=1;if(S.ciSeen['true']&&S.ciSeen['false'])mark('deploy');return ciComp(k)};
+WS.prs=function(r){
+  var k=r.owner+'/'+r.id,rows=TASKS.filter(function(t){return t.repo===k&&t.pr});
+  return '<div class="card scroll" style="flex:1"><table><thead><tr><th>PR</th><th>Linked issue</th><th>Review</th><th>CI checks</th></tr></thead><tbody>'+(rows.length?rows.map(function(t){return '<tr data-open-task="'+key(t)+'"><td><span class="mono muted">#'+t.pr.n+'</span></td><td>#'+t.n+' '+esc(t.t)+'</td><td><span class="mini">'+t.pr.state+'</span></td><td>'+(t.ci?runPill(t.ci.status):'<span class="muted">—</span>')+'</td></tr>'}).join(''):'<tr><td colspan="4" class="muted" style="text-align:center;padding:24px">No pull requests linked to tracked issues.</td></tr>')+'</tbody></table></div>';
+};
+WS.contributors=function(){var ppl=[['alex',9,6,14],['jo-r',2,3,5],['lee',1,4,2],['priya',3,7,3],['sam-k',6,11,9]],mx=32;
+  return '<div class="card pad" style="flex:1;display:flex;flex-direction:column;gap:12px;min-height:0"><div><h2 style="font-size:14px">Participation · last '+S.win+' days</h2><p class="muted" style="margin:2px 0 0;font-size:12px">Alphabetical. Participation, not a productivity ranking.</p></div><div class="scroll" style="flex:1;display:flex;flex-direction:column;gap:10px">'+ppl.map(function(p){return '<div style="display:grid;grid-template-columns:28px 110px 1fr 170px;gap:10px;align-items:center"><span class="av">'+p[0].slice(0,2).toUpperCase()+'</span><span>'+p[0]+'</span><span style="display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--sunk)"><span style="width:'+(p[1]/mx*100)+'%;background:var(--primary)"></span><span style="width:'+(p[2]/mx*100)+'%;background:var(--chart2)"></span><span style="width:'+(p[3]/mx*100)+'%;background:var(--line2)"></span></span><span class="muted mono">'+p[1]+' PRs · '+p[2]+' rev · '+p[3]+' cmt</span></div>'}).join('')+'<div class="muted" style="font-size:12px;border-top:1px dashed var(--line);padding-top:10px">Bots counted separately: dependabot 9 PRs</div></div></div>'};
+WS.activity=function(){var all=[['pr','PR #142 merged · Fix pagination cursor','alex','Nov 17 09:14'],['issue','Issue #89 reopened','sam','Nov 17 03:40'],['tag','v1.4 released','maintainer','Nov 16'],['pr','PR #140 merged · Bump pgx','dependabot','Nov 15'],['issue','Issue #179 assigned to alex','priya','Nov 14'],['gap'],['tag','v1.3 released','maintainer','Oct 28']];
+  return '<div class="card scroll" style="flex:1">'+all.map(function(e){if(e[0]==='gap')return '<div class="hatch muted" style="text-align:center;font-size:12px;padding:10px;border-bottom:1px solid var(--line)">History gap · issue events before Nov 3 were never recorded</div>';return '<a href="#gh" data-gh="1" class="lrow"><span class="ico">'+I[e[0]]+'</span><span style="flex:1;min-width:0"><span style="display:block;font-weight:500">'+esc(e[1])+'</span><span class="muted" style="font-size:12px">'+e[2]+'</span></span><span class="mono muted">'+e[3]+'</span>'+I.ext+'</a>'}).join('')+'</div>'};
+
+/* ---------- discover / saved ---------- */
+function score(rec){var p=S.profile||{};var sk=rec.skills.filter(function(s){return p[s]}).length/rec.skills.length;var it=rec.interest.filter(function(s){return p[s]}).length?1:0;var df=rec.diff==null||S.diff==='any'?.5:(rec.diff===S.diff?1:.2);return {skill:sk,interest:it,diff:df,quality:.7,resp:rec.resp,total:.35*sk+.2*df+.2*.7+.15*it+.1*rec.resp}}
+VIEWS.discover=function(){
+  if(!S.profile){var opts=['Go','PostgreSQL','TypeScript','React','Python','Docs','Backend','Frontend','Data'];
+    return '<div class="center"><div class="card pad" style="width:min(520px,100%);display:flex;flex-direction:column;gap:14px;padding:24px"><div><h1 style="font-size:18px">What do you like to work on?</h1><p class="muted" style="margin:4px 0 0">Asked only now, the first time you open Discover.</p></div><div class="field"><label>Skills and interests</label><div style="display:flex;flex-wrap:wrap;gap:6px">'+opts.map(function(o){return '<button type="button" class="chip" data-skill="'+o+'" aria-pressed="'+!!S.skillsDraft[o]+'">'+o+'</button>'}).join('')+'</div></div><div class="field"><label>Difficulty (optional)</label><div class="seg" role="group" aria-label="Difficulty" style="align-self:flex-start">'+[['any','Any'],['beginner','Beginner'],['intermediate','Intermediate']].map(function(d){return '<button type="button" data-diff="'+d[0]+'" aria-pressed="'+(S.diff===d[0])+'">'+d[1]+'</button>'}).join('')+'</div></div><button class="btn primary" type="button" data-act="saveprofile">Show matching issues</button></div></div>'}
+  var p=S.profile,list=RECS.filter(function(r){return !S.dismissed[r.id]}).map(function(r){return {r:r,s:score(r)}}).sort(function(a,b){return b.s.total-a.s.total});
+  var lvl=function(v){return v>=.75?'Strong':v>=.45?'Medium':'Weak'};
+  return '<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;align-items:center;flex:none"><div><h1 style="font-size:20px">Discover issues</h1><p class="muted" style="margin:0">Find contributions matching your skills</p></div><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+Object.keys(p).map(function(k){return '<span class="label">'+k+'</span>'}).join('')+'<button class="btn sm" type="button" data-act="editprofile">Filters</button></div></div>'+
+  '<div class="scroll" style="flex:1;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(420px,100%),1fr));grid-auto-rows:max-content;gap:12px;align-content:start">'+list.map(function(x){var r=x.r,s=x.s,strong=s.total>=.6,open=S.open[r.id],mk=r.skills.filter(function(k){return p[k]});
+    var why=[mk.length?['ok','Your '+mk.join(' and ')+' skills match the issue text and labels.']:['info','None of your listed skills appear in this issue.'],r.diff?['ok','Labeled '+r.diff+'.']:['info','Difficulty is unknown; no explicit difficulty label.'],['info','Unassigned on GitHub. That does not guarantee it is available.']];
+    return '<article class="card rec"><div style="display:flex;justify-content:space-between;gap:8px"><span class="mono muted">'+r.repo+' · #'+r.n+'</span><span class="match '+(strong?'strong':'possible')+'">'+(strong?'Strong match':'Possible match')+'</span></div><h2 style="font-size:15px">'+esc(r.t)+'</h2><div>'+r.labels.map(function(l){return '<span class="label">'+l+'</span>'}).join('')+'</div><p class="muted" style="margin:0">'+esc(r.sum)+'</p><div><div style="font-weight:500;font-size:12.5px;margin-bottom:4px">Why this matches</div><ul class="why">'+why.map(function(w){return '<li><span style="color:'+(w[0]==='ok'?'var(--success-fg)':'var(--muted)')+'">'+(w[0]==='ok'?I.check:I.info)+'</span>'+w[1]+'</li>'}).join('')+'</ul></div>'+
+    (open?'<div class="brk">'+[['Skill match',s.skill],['Interest match',s.interest],['Difficulty fit',s.diff],['Responsiveness',s.resp]].map(function(b){var u=b[0]==='Difficulty fit'&&b[1]===.5;return '<span>'+b[0]+'</span><span class="t'+(u?' hatch':'')+'"><span style="width:'+(u?0:b[1]*100)+'%"></span></span><span class="muted">'+(u?'unknown':lvl(b[1]))+'</span>'}).join('')+'<span class="muted" style="grid-column:1/-1;font-size:11.5px">Rule-based weights. A ranking aid, not a probability.</span></div>':'')+
+    '<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px"><span class="muted" style="font-size:12px">Checked '+r.checked+'</span><span style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn sm" type="button" data-brk="'+r.id+'">'+(open?'Hide':'Match')+' breakdown</button><button class="btn sm" type="button" data-dismiss="'+r.id+'">Dismiss</button><button class="btn sm" type="button" data-save="'+r.id+'">'+I.bookmark+(S.saved[r.id]?'Saved':'Save')+'</button><a href="#gh" data-gh="1" class="btn sm dark">View on GitHub '+I.ext+'</a></span></div></article>'}).join('')+'</div>';
+};
+VIEWS.saved=function(){var list=RECS.filter(function(r){return S.saved[r.id]});mark('savedview');
+  return '<div class="card pad" style="flex:none"><h1 style="font-size:18px">Saved issues</h1><p class="muted" style="margin:2px 0 0">They stay here after you unfollow a repository, while GitHub still allows access.</p></div>'+(list.length?'<div class="card scroll" style="flex:1"><table><thead><tr><th>Issue</th><th>Repository</th><th>State</th><th>Checked</th><th class="r"></th></tr></thead><tbody>'+list.map(function(r,i){return '<tr><td><span style="font-weight:500">'+esc(r.t)+'</span> <span class="mono muted">#'+r.n+'</span></td><td>'+r.repo+'</td><td>'+(i===1?'<span class="sync partial"><span class="d"></span>Assigned since saved</span>':'<span class="sync ok"><span class="d"></span>Open, unassigned</span>')+'</td><td class="muted">'+r.checked+'</td><td class="r"><button class="btn sm" type="button" data-save="'+r.id+'">Remove</button></td></tr>'}).join('')+'</tbody></table></div>':'<div class="center"><div class="card pad" style="text-align:center;max-width:380px"><h2 style="font-size:15px">Nothing saved yet</h2><button class="btn primary" type="button" data-nav="discover">Open Discover</button></div></div>')};
+
+/* ---------- write flow modal ---------- */
+var W=null;
+function renderModal(){
+  var m=$('modal');if(!W){m.innerHTML='';return}
+  if(W.kind==='perm'){m.innerHTML='<div class="modal" role="dialog" aria-modal="true" aria-labelledby="wh"><div class="box"><div class="pad" style="border-bottom:1px solid var(--line)"><h2 id="wh" style="font-size:16px">Allow RepoOrbit to use GitHub Projects</h2><p class="muted" style="margin:4px 0 0">Asked only now, because you chose to link a Project. Status labels never need this.</p></div><div class="pad" style="display:flex;flex-direction:column;gap:10px"><div class="diff"><div class="add">+ Projects: read and write</div><div>  (existing) Issues: write · Pull requests: read · Starring: read</div></div><p class="muted" style="margin:0;font-size:12.5px">GitHub opens its approval page. For a Project owned by an organization, an organization owner must approve the new permission before linking works.</p></div><div class="pad" style="border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap"><button class="btn" type="button" data-w2="cancel">Cancel</button><button class="btn primary" type="button" data-perm="1">Approve on GitHub (simulated)</button></div></div></div>';return}
+  if(W.kind==='setup'){m.innerHTML='<div class="modal" role="dialog" aria-modal="true" aria-labelledby="wh"><div class="box"><div class="pad" style="border-bottom:1px solid var(--line)"><h2 id="wh" style="font-size:16px">Set up a status source for '+W.repo+'</h2><p class="muted" style="margin:4px 0 0">The board never guesses a column from open/closed. Pick where status lives on GitHub. This is a repository setting, so everyone viewing '+W.repo+' sees the same board. Only Admin or Maintain can change it.</p></div><div class="pad" style="display:flex;flex-direction:column;gap:10px">'+
+    '<button type="button" class="option" data-src="project"><span class="ico">'+I.board+'</span><span><b>Link a GitHub Project (recommended)</b><br><span class="muted" style="font-size:12.5px">Uses the Project’s Status field as the source of truth. Asks GitHub for the Projects permission the first time.</span></span></button>'+
+    '<button type="button" class="option" data-src="labels"><span class="ico">'+I.tag+'</span><span><b>Use status labels</b><br><span class="muted" style="font-size:12.5px">Backlog = open with no status label · Todo, In Progress, In Review = status:todo, status:in-progress, status:review · Done = closed. You review the labels before they are created.</span></span></button></div><div class="pad" style="border-top:1px solid var(--line);display:flex;justify-content:flex-end"><button class="btn" type="button" data-w2="cancel">Not now</button></div></div></div>';return}
+  var steps=['Edit','Review','Submit','Confirmed result'],idx={edit:0,review:1,submitting:2,confirmed:3,unknown:3}[W.step],body='';
+  if(W.step==='edit')body='<div class="field"><label for="nTitle">Title</label><input id="nTitle" value="'+esc(W.data.title||'')+'" placeholder="Short summary"></div><div class="field"><label for="nBody">Description</label><textarea id="nBody" rows="3">'+esc(W.data.body||'')+'</textarea></div><div class="field"><label for="nRepo">Repository</label><select id="nRepo">'+selKeys().map(function(k){return '<option'+(W.data.repo===k?' selected':'')+'>'+k+'</option>'}).join('')+'</select></div><div class="field"><label for="nAs">Assignee (optional)</label><select id="nAs"><option value="">Unassigned</option>'+ASSIGNABLE.map(function(a){return '<option'+(W.data.as===a?' selected':'')+'>'+a+'</option>'}).join('')+'</select></div>';
+  if(W.step==='review')body='<p style="margin:0">Exactly what will be sent to GitHub:</p><div class="diff">'+(W.kind==='new'?'<div class="add">+ create issue in '+esc(W.data.repo)+': “'+esc(W.data.title)+'”</div>'+(W.data.as?'<div class="add">+ assignee: '+W.data.as+'</div>':'')+(srcOf(W.data.repo)?'<div class="add">+ status: Todo ('+(srcOf(W.data.repo).kind==='project'?'Project field':'label status:todo')+')</div>':''):W.diff)+'</div><p class="muted" style="margin:0;font-size:12px">Nothing else on the issue changes.</p><label style="display:flex;gap:8px;align-items:center;font-size:12.5px;border:1px dashed var(--line2);border-radius:8px;padding:8px 10px"><input type="checkbox" id="sim"'+(W.timeout?' checked':'')+'> Prototype: simulate a network timeout</label>';
+  if(W.step==='submitting')body='<span class="sync syncing"><span class="d"></span>Submitting to GitHub…</span>';
+  if(W.step==='confirmed')body='<div class="note" style="border-color:var(--success);background:var(--success-soft)">'+I.check+'<span><b>Confirmed on GitHub.</b> '+(W.kind==='new'?'Issue #215 was created':W.done)+'.</span></div>';
+  if(W.step==='unknown')body='<div class="note warn">'+I.info+'<span><b>Outcome unknown.</b> The request timed out. Your draft is kept. Recheck looks it up on GitHub instead of sending it again, so nothing is duplicated.</span></div>';
+  var foot={edit:'<button class="btn" type="button" data-w2="cancel">Cancel</button><button class="btn primary" type="button" data-w2="toreview">Review</button>',review:'<button class="btn" type="button" data-w2="cancel">Cancel</button><button class="btn dark" type="button" data-w2="submit">Submit to GitHub</button>',submitting:'',confirmed:'<button class="btn primary" type="button" data-w2="done">Done</button>',unknown:'<button class="btn" type="button" data-w2="keep">Keep draft and close</button><button class="btn primary" type="button" data-w2="recheck">Recheck</button>'}[W.step];
+  m.innerHTML='<div class="modal" role="dialog" aria-modal="true" aria-labelledby="wh"><div class="box"><div class="pad" style="border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:8px"><h2 id="wh" style="font-size:16px">'+W.title+'</h2><div class="steps">'+steps.map(function(s,i){return '<span class="'+(i===idx?'on':i<idx?'done':'')+'">'+(i<idx?'✓ ':'')+s+'</span>'}).join('')+'</div></div><div class="pad scroll" style="display:flex;flex-direction:column;gap:12px">'+body+'</div>'+(foot?'<div class="pad" style="border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">'+foot+'</div>':'')+'</div></div>';
+  var f=m.querySelector('input,textarea,button.primary,button.dark');f&&f.focus();
+}
+function readNew(){if(W&&W.step==='edit'&&W.kind==='new'){W.data.title=$('nTitle').value.trim();W.data.body=$('nBody').value;W.data.as=$('nAs').value;W.data.repo=$('nRepo').value}}
+function finishWrite(){if(W.kind==='new'){mark('newissue');S.newDraft=null;if(!TASKS.some(function(t){return t.n===215}))TASKS.unshift({repo:W.data.repo,n:215,t:W.data.title,st:srcOf(W.data.repo)?'Todo':null,as:W.data.as||'',labels:[],prio:null})}else W.apply()}
+
+function linkSource(rp,src,then){S.src[rp]=src;mark('setupperm');TASKS.forEach(function(x){if(x.repo===rp&&!x.st)x.st='Backlog'});toast((src.kind==='project'?'Linked GitHub Project “'+src.name+'”':'Status labels ready')+' for '+rp+'. Existing open issues start in Backlog.');render();if(then)moveTask(then.k,then.to)}
+/* ---------- board moves (pending → confirmed / rolled back) ---------- */
+function moveTask(k,to){
+  var t=T(k);if(!t||t.st===to||S.pending[k])return;
+  if(!can('move')){if(S.role==='read')mark('role');toast(why('move'));return}
+  if(!srcOf(t.repo)){mark('nosrc');if(!can('setup')){toast(why('setup'));return}W={kind:'setup',repo:t.repo,then:{k:k,to:to}};renderModal();return}
+  var from=t.st,src=srcOf(t.repo),fail=S.failNext;
+  S.pending[k]={to:to};mark('drag');render();
+  setTimeout(function(){
+    delete S.pending[k];
+    if(fail){S.failNext=false;mark('fail');toast('GitHub rejected the change (permission denied). Card returned to '+(from||'its column')+' and the board was resynced.')}
+    else{t.st=to;mark('pendingseen');toast('Confirmed by GitHub: '+(src.kind==='project'?'Project Status set to “'+to+'”.':labelMsg(from,to)))}
+    render();
+  },1300);
+}
+
+/* ---------- sync simulation ---------- */
+var RES=['Issues','Pull requests','Reviews','Comments','Releases','Workflow runs'];
+setInterval(function(){
+  if(S.mode!=='real')return;var ch=false;
+  S.repos.forEach(function(r){if(!r.sel||r.sync==='ok')return;ch=true;r.t++;
+    if(r.sync==='awaiting'&&r.t>2){r.sync='syncing';r.p=3}
+    else if(r.sync==='syncing'){r.p=Math.min(100,r.p+6+Math.random()*8);r.res=RES[Math.min(5,Math.floor(r.p/17))];if(r.p>=100){r.sync='ok';mark('watch')}}});
+  if(!ch||W||S.dragKey)return;
+  if(document.activeElement&&/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)&&document.activeElement.type!=='checkbox')return;
+  render();
+},800);
+
+/* ---------- events ---------- */
+function openWs(k,tab){S.repo=k;S.view='workspace';S.tab=tab||'overview';S.task=null;S.run=null;S.override=null;S.fh=null;render()}
+document.addEventListener('click',function(e){
+  var t=e.target.closest('button,a,tr,[data-card]');if(!t)return;var d=t.dataset;
+  if(d.gh||(t.tagName==='A'&&t.getAttribute('href')==='#gh')){e.preventDefault();toast('Would open on GitHub in a new tab.');return}
+  if(d.act==='login'){S.mode='real';mark('login');S.view='onboard';render();return}
+  if(d.act==='demo'){S.mode='demo';mark('login');S.repos.forEach(function(r){r.sel=true;r.sync=r.id==='analytical-engine'?'partial':'ok';r.p=100});S.view='overview';render();return}
+  if(d.rt){S.repTab=d.rt;render();return}
+  if(d.act==='enter'){mark('enter');S.view='overview';render();return}
+  if(d.nav){if(!S.mode)return;if(!viewIn(d.nav)){toast('Not part of this release yet.');return}S.view=d.nav;S.fh=null;S.task=null;S.run=null;render();return}
+  if(d.ws){openWs(d.ws);return}
+  if(d.go){mark('attn');var g=d.go.split(':');var rest=d.go.slice(g[0].length+1);if(g[0]==='ci'){var rn=RECENT.filter(function(x){return x.id===+rest})[0];openWs(rn.repo,'cicd');S.run=+rest;render()}else if(g[0]==='task'){if(inScope('U6d')){openWs(rest.split('#')[0],'board');S.task=rest;render()}else openWs(rest.split('#')[0])}else openWs(rest,g[0]==='cis'?'cicd':null);return}
+  if(d.fold){S.fold[d.fold]=!S.fold[d.fold];mark('fold');render();var fb=document.querySelector('[data-fold="'+d.fold+'"]');fb&&fb.focus();return}
+  if(d.mine){mark('mine');var mt=T(d.mine);if(inScope('U6d')){openWs(mt.repo,'board');S.task=d.mine;render()}else openWs(mt.repo);return}
+  if(d.act==='discard'){S.stage={};render();return}
+  if(d.act==='apply'){var ks=Object.keys(S.stage),failed=null,ad=0,rm=0;ks.forEach(function(k){var r=R(k);if(S.stage[k]){if(S.failOne&&!failed){failed=k;r.err='Access could not be verified · check it again to retry';return}if(r.priv&&!S.installed)S.installed=true;r.sel=true;r.sync='awaiting';r.p=0;r.t=0;ad++}else{r.sel=false;r.sync='none';rm++}});S.stage={};S.failOne=false;if(ad)mark('confirm');if(rm)mark('apply');if(failed&&ad)mark('partial');toast([ad?'Started syncing '+ad:'',rm?'stopped syncing '+rm:'',failed?failed+' could not be verified and stays unchecked':''].filter(Boolean).join(' · ')+'.');render();return}
+  if(d.w){S.win=+d.w;S.fh=null;mark('win');render();return}
+  if(d.tab){S.tab=d.tab;S.fh=null;S.task=null;S.run=null;S.seenTabs=S.seenTabs||{};S.seenTabs[d.tab]=1;if(Object.keys(S.seenTabs).length>=3)mark('tabs');render();return}
+  if(d.card){S.task=d.card;S.gOver=false;mark('life');render();return}
+  if(d.openTask){S.task=d.openTask;mark('life');if(S.view==='workspace'&&S.tab==='prs'){S.tab='board'}render();return}
+  if(d.act==='closetask'){S.task=null;render();return}
+  if(d.bv){S.bView=d.bv;if(d.bv==='list')mark('list');render();return}
+  if(d.setup){if(!can('setup')){mark('role');toast(why('setup'));return}W={kind:'setup',repo:d.setup};renderModal();return}
+  if(d.src){var rp=W.repo,then=W.then;
+    if(d.src==='project'){if(!S.permProjects){W={kind:'perm',repo:rp,then:then};renderModal();return}linkSource(rp,{kind:'project',name:'Engineering'},then);return}
+    W={kind:'edit',step:'review',title:'Create status labels on '+rp,diff:'<div class="add">+ label status:todo</div><div class="add">+ label status:in-progress</div><div class="add">+ label status:review</div><div>  Backlog = no status label · Done = closed issue</div>',done:'Status labels created on '+rp,apply:function(){linkSource(rp,{kind:'labels'},null);S.afterDone=then}};renderModal();return}
+  if(d.perm){var rp2=W.repo,then2=W.then;S.permProjects=true;W=null;renderModal();linkSource(rp2,{kind:'project',name:'Engineering'},then2);return}
+  if(d.run){S.run=+d.run;S.openJob=null;var rr=RECENT.filter(function(x){return x.id===S.run})[0];if(rr&&rr.status==='failed')mark('run');if(S.view==='workspace'&&S.tab==='board')S.tab='cicd';render();return}
+  if(d.act==='closerun'){S.run=null;render();return}
+  if(d.job){S.openJob=S.openJob===d.job?'none':d.job;render();return}
+  if(d.ciday){S.ciDay=+d.ciday;mark('ciday');render();return}
+  if(d.ciw){S.ciWin=+d.ciw;S.ciDay=null;mark('cikpi');render();return}
+  if(d.act==='newissue'){W={kind:'new',step:'edit',title:'New issue',data:S.newDraft||{repo:S.repo||selKeys()[0]}};renderModal();return}
+  if(d.w2){
+    if(d.w2==='cancel'){readNew();if(W.kind==='new')S.newDraft=W.data;W=null;renderModal();render();return}
+    if(d.w2==='toreview'){readNew();if(!W.data.title){toast('Add a title first.');$('nTitle').focus();return}W.step='review';renderModal();return}
+    if(d.w2==='submit'){W.timeout=$('sim').checked;W.step='submitting';renderModal();setTimeout(function(){if(!W)return;if(W.timeout)W.step='unknown';else{W.step='confirmed';finishWrite()}renderModal();if(W.step==='confirmed')render()},1100);return}
+    if(d.w2==='recheck'){W.step='submitting';renderModal();setTimeout(function(){mark('unknown');W.step='confirmed';finishWrite();renderModal();render();toast('Found it on GitHub: the change had gone through. Nothing was sent twice.')},1000);return}
+    if(d.w2==='keep'){if(W.kind==='new')S.newDraft=W.data;W=null;renderModal();toast('Draft kept. Marked “outcome unknown” until rechecked.');return}
+    if(d.w2==='done'){W=null;renderModal();render();if(S.afterDone){var ad=S.afterDone;S.afterDone=null;moveTask(ad.k,ad.to)}return}
+  }
+  if(d.act==='reverify'){S.override=null;toast('Access confirmed.');render();return}
+  if(d.skill){S.skillsDraft[d.skill]=!S.skillsDraft[d.skill];render();return}
+  if(d.diff){S.diff=d.diff;render();return}
+  if(d.act==='saveprofile'){var p={};Object.keys(S.skillsDraft).forEach(function(k){if(S.skillsDraft[k])p[k]=true});S.profile=p;mark('skills');render();return}
+  if(d.act==='editprofile'){S.profile=null;render();return}
+  if(d.brk){S.open[d.brk]=!S.open[d.brk];mark('breakdown');render();return}
+  if(d.save){S.saved[d.save]=!S.saved[d.save];if(S.saved[d.save])mark('save');render();return}
+  if(d.dismiss){S.dismissed[d.dismiss]=true;render();return}
+  if(d.act==='guide'){S.guide=!S.guide;S.gOver=false;renderGuide();return}
+  if(d.act==='gover'){S.gOver=true;renderGuide();return}
+  if(d.act==='reset'){var g2=S.guide;reset();S.guide=g2;W=null;renderModal();render();return}
+});
+document.addEventListener('change',function(e){
+  var id=e.target.id,v=e.target.value;
+  if(id==='stateSel'){S.override=v||null;mark('states');render();return}
+  if(id==='roleSel'){S.role=v;toast('Viewing as '+ROLES[v]+'. '+(v==='read'?'You can read everything but not move or assign.':v==='admin'||v==='maintain'?'You can also change status sources.':'You can move and assign, but not change status sources.'));render();return}
+  if(id==='scopeSel'){S.scope=v;S.task=null;S.run=null;if(v==='U5')mark('scope');if(!viewIn(S.view))S.view='overview';if(S.view==='workspace'&&((S.tab==='board'&&!inScope('U6d'))||(S.tab==='cicd'&&!inScope('U7d'))))S.tab='overview';render();return}
+  if(id==='bRepo'){S.bRepo=v;mark('list');render();return}
+  if(id==='bAs'){S.bAs=v;mark('list');render();return}
+  if(id==='bLab'){S.bLab=v;mark('list');render();return}
+  if(id==='ciRepo'){S.ciRepo=v;S.ciDay=null;mark('deploy');render();return}
+  if(id==='failNext'){S.failNext=e.target.checked;return}
+  if(id==='failOne'){S.failOne=e.target.checked;return}
+  if(e.target.dataset.pick||e.target.dataset.pickall){var on=e.target.checked,list=e.target.dataset.pick?[R(e.target.dataset.pick)]:pickRows(e.target.dataset.pickall);list.forEach(function(r){var k=r.owner+'/'+r.id;r.err=null;if(on===r.sel)delete S.stage[k];else S.stage[k]=on;if(on)mark(r.kind==='own'?'own':'star');else if(!r.sel)mark('uncheck')});render();return}
+  if(id==='dSt'){moveTask(S.task,v);return}
+  if(id==='dAs'){var t=T(S.task),old=t.as;W={kind:'edit',step:'review',title:'Update '+t.repo.split('/')[1]+' #'+t.n,diff:(old?'<div class="del">− assignee: '+old+'</div>':'')+(v?'<div class="add">+ assignee: '+v+'</div>':''),done:'Assignee '+(v?'set to '+v+' and verified':'removed'),apply:function(){t.as=v}};renderModal();return}
+  if(id==='gsearch'&&R(v))openWs(v);
+});
+document.addEventListener('input',function(e){var id=e.target.id;if(id==='bQ'||id==='rq'){S[id]=e.target.value;var pos=e.target.selectionStart;render();var el=$(id);if(el){el.focus();el.setSelectionRange(pos,pos)}}});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'&&W&&W.step!=='submitting'){if(W.kind==='new'){readNew();S.newDraft=W.data}W=null;renderModal();return}
+  if((e.key==='Enter'||e.key===' ')&&e.target.dataset&&e.target.dataset.card){e.preventDefault();e.target.click()}
+});
+/* drag and drop */
+document.addEventListener('dragstart',function(e){var c=e.target.closest&&e.target.closest('[data-card]');if(!c)return;S.dragKey=c.dataset.card;e.dataTransfer.setData('text/plain',c.dataset.card);e.dataTransfer.effectAllowed='move';setTimeout(function(){c.classList.add('dragging')},0)});
+document.addEventListener('dragend',function(e){S.dragKey=null;document.querySelectorAll('.kcol.over').forEach(function(x){x.classList.remove('over')});var c=e.target.closest&&e.target.closest('[data-card]');c&&c.classList.remove('dragging')});
+document.addEventListener('dragover',function(e){var col=e.target.closest&&e.target.closest('[data-col]');if(!col||!S.dragKey)return;e.preventDefault();document.querySelectorAll('.kcol.over').forEach(function(x){if(x!==col)x.classList.remove('over')});col.classList.add('over')});
+document.addEventListener('drop',function(e){var col=e.target.closest&&e.target.closest('[data-col]');if(!col)return;e.preventDefault();var k=e.dataTransfer.getData('text/plain')||S.dragKey;S.dragKey=null;col.classList.remove('over');moveTask(k,col.dataset.col)});
+document.addEventListener('mouseover',function(e){var c=e.target.closest('[data-fh]');if(c&&S.fh!==+c.dataset.fh){S.fh=+c.dataset.fh;render()}});
+document.addEventListener('focusin',function(e){var c=e.target.closest('[data-fh]');if(c&&S.fh!==+c.dataset.fh){S.fh=+c.dataset.fh;render();var nb=document.querySelector('[data-fh="'+S.fh+'"]');nb&&nb.focus()}});
+render();
+})();
+</script>
+</body>
+</html>

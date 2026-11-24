@@ -1,0 +1,3 @@
+# CI/CD monitoring is read-only and limited to GitHub Actions
+
+The first CI/CD unit ingests GitHub Actions workflow runs, jobs, and GitHub Deployment records only, and offers no re-run or cancel actions. External CI providers, runner cost, and flaky-job detection are deferred. Durations and queue times come from run and job timestamps, not from GitHub's retiring workflow usage and timing endpoints. A deployment is shown only when GitHub reports a Deployment. A successful workflow, including one named "Deploy", never counts as a deployment, and repositories without Deployment records show deployment data as unavailable. Starting read-only keeps the GitHub App's new permissions limited to Actions read and Deployments read.

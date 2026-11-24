@@ -4,6 +4,8 @@ INSERT INTO repositories (id, name, description, is_private) VALUES
 INSERT INTO activity_resources (repository_id, resource, boundary, phase, watermark)
 SELECT 10, resource, '2026-08-18 00:00Z', 'catchup', '2026-11-17 11:00Z'
 FROM unnest(ARRAY['issues', 'pull_requests', 'releases', 'issue_events']) AS resource;
+INSERT INTO activity_resources (repository_id, resource, boundary, phase, watermark)
+VALUES (10, 'comments', '2026-08-18 00:00Z', 'catchup', '2026-11-17 09:00Z');
 
 INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, closed_at, author_id, author_type)
 VALUES
@@ -37,12 +39,6 @@ VALUES
 
 INSERT INTO activity_children (repository_id, resource, parent_id, parent_number, watermark)
 VALUES
-  (10, 'comments', 1, 1, '2026-11-17 10:00Z'),
-  (10, 'comments', 2, 2, '2026-11-17 09:00Z'),
-  (10, 'comments', 3, 3, '2026-11-17 10:00Z'),
-  (10, 'comments', 5, 5, '2026-11-17 10:00Z'),
-  (10, 'comments', 6, 6, '2026-11-17 10:00Z'),
-  (10, 'comments', 7, 7, '2026-11-17 10:00Z'),
   (10, 'reviews', 100, 5, '2026-11-17 10:00Z'),
   (10, 'reviews', 101, 6, '2026-11-17 10:00Z'),
   (10, 'reviews', 102, 7, '2026-11-17 10:00Z');

@@ -453,10 +453,30 @@ export async function fetchWorkspaceIssues(id: string, after: string | null, sig
   return data.issues;
 }
 
+// Fetches one imported issue by number (null when it has not been imported), so a restored editor knows its author and state.
+export async function fetchWorkspaceIssue(id: string, number: number, signal: AbortSignal): Promise<WorkspaceIssue | null> {
+  const { data, errors } = await graphqlQuery<{ issues: { nodes: WorkspaceIssue[]; withheld: number; retryAt: string | null } }>(`query WorkspaceIssue($id: ID!, $number: Int!) {
+    issues(repositoryIds: [$id], first: 1, number: $number) {
+      nodes { id repositoryId number title state url authorLogin updatedAt labels assignees }
+      withheld retryAt
+    }
+  }`, { id, number }, signal);
+  if (!data || errors?.length) throw new Error("Could not load the issue");
+  if (data.issues.withheld) throw new RepositoryAccessUnverifiedError(data.issues.retryAt ?? null);
+  return data.issues.nodes[0] ?? null;
+}
+
 export async function fetchIssueCapabilities(id: string, signal?: AbortSignal): Promise<IssueCapabilities> {
   const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/issue-capabilities`, { cache: "no-store", signal });
   if (!response.ok) throw await toIssueWriteError(response);
   return response.json();
+}
+
+// Lists the users GitHub would accept as assignees (empty when the viewer cannot assign), for editor suggestions.
+export async function fetchAssignableUsers(id: string, signal?: AbortSignal): Promise<string[]> {
+  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/assignees`, { cache: "no-store", signal });
+  if (!response.ok) throw await toIssueWriteError(response);
+  return ((await response.json()) as { assignees: string[] }).assignees;
 }
 
 export async function fetchWriteOperations(id: string, signal?: AbortSignal): Promise<WriteOperation[]> {
@@ -473,20 +493,15 @@ export async function fetchWriteOperation(operationId: number, signal?: AbortSig
 }
 
 export async function submitIssueCreate(repositoryId: string, idempotencyKey: string, draft: IssueCreateDraft): Promise<WriteOperation> {
-  const response = await fetch(`/api/repositories/${encodeURIComponent(repositoryId)}/issues`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "", "Idempotency-Key": idempotencyKey },
-    cache: "no-store",
-    body: JSON.stringify(draft),
-  }).catch(() => {
-    throw new IssueWriteError("No reliable answer from the server. Your draft is preserved; check Write history before retrying.", { status: 0, kind: "transport" });
-  });
-  if (!response.ok) throw await toIssueWriteError(response);
-  return response.json();
+  return submitIssueWrite(`/api/repositories/${encodeURIComponent(repositoryId)}/issues`, idempotencyKey, draft);
 }
 
 export async function submitIssueUpdate(repositoryId: string, issueNumber: number, idempotencyKey: string, draft: IssueUpdateDraft): Promise<WriteOperation> {
-  const response = await fetch(`/api/repositories/${encodeURIComponent(repositoryId)}/issues/${encodeURIComponent(String(issueNumber))}/updates`, {
+  return submitIssueWrite(`/api/repositories/${encodeURIComponent(repositoryId)}/issues/${encodeURIComponent(String(issueNumber))}/updates`, idempotencyKey, draft);
+}
+
+async function submitIssueWrite(path: string, idempotencyKey: string, draft: IssueCreateDraft | IssueUpdateDraft): Promise<WriteOperation> {
+  const response = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "", "Idempotency-Key": idempotencyKey },
     cache: "no-store",

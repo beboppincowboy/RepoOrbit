@@ -52,13 +52,15 @@ SELECT i.source_id AS id, i.repository_id, i.number, i.title, i.state, i.html_ur
   COALESCE(ARRAY(SELECT a.login FROM activity_issue_assignees a WHERE a.issue_id = i.source_id ORDER BY a.login), '{}'::text[])::text[] AS assignees
 FROM activity_issues i JOIN repositories r ON r.id = i.repository_id
 WHERE r.is_demo = $1::boolean AND i.repository_id = ANY($2::bigint[]) AND i.source_id > $3::bigint
-ORDER BY i.source_id LIMIT $4::int
+  AND ($4::bigint IS NULL OR i.number = $4::bigint)
+ORDER BY i.source_id LIMIT $5::int
 `
 
 type ListIssuesParams struct {
 	Demo          bool
 	RepositoryIds []int64
 	After         int64
+	Number        pgtype.Int8
 	PageSize      int32
 }
 
@@ -76,11 +78,13 @@ type ListIssuesRow struct {
 }
 
 // Demo and real mode both list the synced evidence the analytics count; each mode sees only its own repositories.
+// A non-null number narrows the listing to that issue number.
 func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]ListIssuesRow, error) {
 	rows, err := q.db.Query(ctx, listIssues,
 		arg.Demo,
 		arg.RepositoryIds,
 		arg.After,
+		arg.Number,
 		arg.PageSize,
 	)
 	if err != nil {

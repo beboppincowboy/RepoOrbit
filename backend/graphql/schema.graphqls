@@ -16,7 +16,7 @@ type RepositoryConnection { nodes: [Repository!]!, endCursor: ID, hasNextPage: B
 type IssueConnection { nodes: [Issue!]!, endCursor: ID, hasNextPage: Boolean!, withheld: Int!, retryAt: String }
 # Errors carry extensions.code: UNAUTHENTICATED (no real signed-in viewer) or ACCESS_UNVERIFIED (GitHub could not confirm access; extensions.retryAt is RFC 3339 when rate limited).
 # selectedRepositories lists only repositories the viewer has selected (not every accessible one). first is 1..100; repositoryIds holds at most 100 ids.
-type Query { viewer: Viewer, selectedRepositories(first: Int! = 20, after: ID): RepositoryConnection!, repository(id: ID!): Repository, issues(repositoryIds: [ID!]!, first: Int! = 20, after: ID): IssueConnection! }
+type Query { viewer: Viewer, selectedRepositories(first: Int! = 20, after: ID): RepositoryConnection!, repository(id: ID!): Repository, issues(repositoryIds: [ID!]!, first: Int! = 20, after: ID, number: Int): IssueConnection! }
 
 type EvidenceActor { id: ID!, login: String!, type: String! }
 # reviewState: "merged", "closed", or for an open PR "awaiting_review", "commented", "approved" or "changes_requested" from each human
