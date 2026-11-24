@@ -280,3 +280,35 @@ func (d *Deps) requireOwnerStillFollows(ctx context.Context, q *db.Queries, repo
 	}
 	return err
 }
+
+// checkActivityAccess verifies both grants for the repository using the page's user token.
+func (d *Deps) checkActivityAccess(ctx context.Context, uid, repoID int64, token string) repositories.Decision {
+	client, ok := d.GitHub.(*githubapp.Client)
+	if !ok {
+		return d.Access.CheckOne(ctx, uid, repoID, true)
+	}
+	repo, err := client.FetchRepo(ctx, token, repoID)
+	var api *githubapp.APIError
+	switch {
+	case errors.As(err, &api) && api.Unauthorized():
+		_ = d.Tokens.Revoke(ctx, uid)
+		return repositories.Decision{}
+	case errors.As(err, &api) && api.RateLimited():
+		return repositories.Decision{Unverified: true, RetryAt: api.RetryAt}
+	case errors.As(err, &api) && api.NotFound():
+		return repositories.Decision{}
+	case err != nil || repo.ID != repoID || repo.FullName == "":
+		return repositories.Decision{Unverified: true}
+	}
+	var installation int64
+	if d.AppKey != nil {
+		installation, err = client.RepositoryInstallation(ctx, d.AppKey, repo.FullName)
+		if err != nil {
+			return repositories.Decision{Unverified: true}
+		}
+	}
+	if repo.Private && (installation == 0 || d.InstallationCredentials == nil) {
+		return repositories.Decision{}
+	}
+	return repositories.Decision{Allowed: true, Repo: repo, InstallationID: installation}
+}

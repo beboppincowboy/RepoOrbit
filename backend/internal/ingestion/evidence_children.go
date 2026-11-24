@@ -49,7 +49,8 @@ func (d *Deps) syncChild(ctx context.Context, job jobs.Job, fence jobs.ClaimFenc
 		return err
 	}
 	started := d.Clock.Now()
-	err = d.withEvidencePage(ctx, job, fence, repoID, func(token, name string) (any, error) {
+	err = d.withEvidencePage(ctx, job, fence, repoID, func(token string, repo githubapp.Repo) (any, error) {
+		name := repo.FullName
 		if resource == "reviews" {
 			f, ok := d.GitHub.(reviewFetcher)
 			if !ok {

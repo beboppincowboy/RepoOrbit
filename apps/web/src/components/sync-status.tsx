@@ -11,6 +11,7 @@ const failNote = (code: string | null) => (code ? ` Last attempt failed (${safe(
 const nextNote = (at: string | null) => (at ? ` Next attempt ${when(at)}.` : "");
 
 function stream(name: string, r: ActivityResourceStatus): string {
+  if (r.phase === "disabled") return `${name}: disabled on GitHub.`;
   const fail = failNote(r.failureCode);
   if (r.jobState === "dead") return `${name}: stopped after repeated failures; an operator must requeue it.${fail}`;
   if (r.jobState === "paused") return `${name}: paused pending authorization.${fail}`;
@@ -71,13 +72,13 @@ export const syncLabels: Record<SyncDisplay, string> = {
 const tones: Record<SyncDisplay, [string, string]> = {
   demo: ["text-demo", "bg-demo-soft"],
   "access-unverified": ["text-destructive", "bg-destructive-soft"],
-  "rate-limited": ["text-warning", "bg-warning-soft"],
-  syncing: ["text-run", "bg-run-soft"],
+  "rate-limited": ["text-destructive", "bg-destructive-soft"],
+  syncing: ["text-warning", "bg-warning-soft"],
   stopped: ["text-destructive", "bg-destructive-soft"],
   synced: ["text-success-foreground", "bg-success-soft"],
   partial: ["text-warning", "bg-warning-soft"],
-  awaiting: ["text-muted-foreground", "bg-muted"],
-  "not-synchronized": ["text-muted-foreground", "bg-muted"],
+  awaiting: ["text-warning", "bg-warning-soft"],
+  "not-synchronized": ["text-warning", "bg-warning-soft"],
 };
 
 export function LoadingCircle({ className = "size-4" }: { className?: string }) {
@@ -86,7 +87,6 @@ export function LoadingCircle({ className = "size-4" }: { className?: string }) 
 
 // The pill's 7px dot on its own (sidebar rows). Carries no label or data-sync-state; callers name the state themselves.
 export function SyncDot({ display }: { display: SyncDisplay }) {
-  if (display === "awaiting" || display === "syncing") return <LoadingCircle className={`size-2.5 ${tones[display][0]}`} />;
   return <span aria-hidden="true" className={`inline-block size-[7px] shrink-0 rounded-full bg-current ${tones[display][0]}`} />;
 }
 
@@ -98,7 +98,7 @@ export type SyncInput = {
   retryAt?: string | null;
 };
 
-// Precedence: demo, then access, rate limit, running work, stopped jobs, synchronized, partial coverage, awaiting.
+// Show failures before coverage and keep background work separate from established coverage.
 export function syncDisplay({ syncState, activity = null, metadataStatus = null, withheld = 0, retryAt = null }: SyncInput): SyncDisplay {
   if (syncState === "demo") return "demo";
   const streams: ActivityResourceStatus[] = activity ? [activity.issues, activity.pullRequests, activity.releases, activity.issueEvents?.traversal].filter((s): s is ActivityResourceStatus => !!s) : [];
@@ -106,10 +106,10 @@ export function syncDisplay({ syncState, activity = null, metadataStatus = null,
   const codes = [...streams, ...children].map(s => s.failureCode);
   if (withheld > 0 || codes.includes("access_unverified") || metadataStatus?.state === "paused") return "access-unverified";
   if (retryAt || codes.includes("rate_limited")) return "rate-limited";
-  if (metadataStatus?.state === "running" || streams.some(s => s.jobState === "running")) return "syncing";
-  if (metadataStatus?.state === "dead" || streams.some(s => s.jobState === "dead")) return "stopped";
+  if (metadataStatus?.state === "dead" || metadataStatus?.failureCode || codes.some(Boolean) || streams.some(s => s.jobState === "dead" || s.jobState === "paused")) return "stopped";
   if (activity?.synchronized) return "synced";
-  if (streams.some(s => s.phase !== "current") || children.some(s => !s.complete)) return "partial";
+  if (streams.some(s => s.phase !== "current" && s.phase !== "disabled") || children.some(s => !s.complete)) return "partial";
+  if (metadataStatus?.state === "running" || streams.some(s => s.jobState === "running")) return "syncing";
   if (syncState === "awaiting-sync") return "awaiting";
   return "not-synchronized";
 }
