@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"slices"
 	"testing"
+
+	"github.com/repoorbit/repoorbit/backend/internal/githubapp/fake"
 )
 
 func statusLabelsPath(repoID int64) string {
@@ -208,5 +210,46 @@ func TestStatusLabelsRecheckRespectsInFlightAndTurnOff(t *testing.T) {
 	}
 	if resp, done := alice.send(opPath(op.ID)+"/recheck", "", `{}`); resp.StatusCode != http.StatusOK || done.State != "succeeded" || e.statusLabelsOn(repo) {
 		t.Fatalf("late recheck: %d %+v on=%v", resp.StatusCode, done, e.statusLabelsOn(repo))
+	}
+}
+
+// The live conflict check's Board status (a conflict's current.status) agrees with the issue_board_states view, which
+// the Board reads, on the same issues as projected from GitHub.
+func TestBoardStatusAgreesWithView(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	cases := []struct {
+		state  string
+		labels []string
+		want   string
+	}{
+		{"open", nil, "backlog"},
+		{"open", []string{"status:todo"}, "todo"},
+		{"open", []string{"bug", "status:in-progress"}, "in_progress"},
+		{"open", []string{"Status:Review", "status:todo"}, "in_review"},
+		{"closed", []string{"status:review"}, "done"},
+	}
+	var seeds []fake.IssueFixture
+	for i, c := range cases {
+		seeds = append(seeds, boardIssue(int64(i+1), c.state, c.labels))
+	}
+	e.gh.SetIssues(repo, seeds...)
+	for i, c := range cases {
+		number := int64(i + 1)
+		resp, _ := alice.send(changes(repo, number), fmt.Sprintf("conflict-%d", number), `{"labels":{"add":["seen"]},"expect":{"status":"backlog","assignees":["nobody"],"statusLabels":[]}}`)
+		live := decodeConflict(t, resp).Current.Status
+		// A confirmed update projects the issue as GitHub shows it; "seen" is not a status label.
+		if resp, op := alice.send(changes(repo, number), fmt.Sprintf("project-%d", number), `{"labels":{"add":["seen"]}}`); op.State != "succeeded" {
+			t.Fatalf("project #%d: %d %+v", number, resp.StatusCode, op)
+		}
+		var view string
+		if err := e.pool.QueryRow(context.Background(), `SELECT v.status FROM issue_board_states v JOIN activity_issues i ON i.source_id = v.issue_id
+			WHERE i.repository_id = $1 AND i.number = $2`, repo, number).Scan(&view); err != nil {
+			t.Fatal(err)
+		}
+		if live != c.want || view != c.want {
+			t.Fatalf("%s %v: live check %q, view %q, want %q", c.state, c.labels, live, view, c.want)
+		}
 	}
 }

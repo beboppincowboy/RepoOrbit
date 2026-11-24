@@ -133,10 +133,14 @@ func (c *Client) RemoveAssignees(ctx context.Context, token, fullName string, nu
 	return c.issueCall(ctx, token, http.MethodDelete, fullName, fmt.Sprintf("/issues/%d/assignees", number), map[string][]string{"assignees": logins}, nil)
 }
 
-// SetIssueState closes or reopens an issue: state is "open" or "closed". Only the state field is sent (no
-// state_reason).
+// SetIssueState closes or reopens an issue: state is "open" or "closed". A close is sent with state_reason
+// "completed", so it never depends on GitHub's default; a reopen sends the state alone.
 func (c *Client) SetIssueState(ctx context.Context, token, fullName string, number int64, state string) error {
-	return c.issueCall(ctx, token, http.MethodPatch, fullName, fmt.Sprintf("/issues/%d", number), map[string]string{"state": state}, nil)
+	body := map[string]string{"state": state}
+	if state == "closed" {
+		body["state_reason"] = "completed"
+	}
+	return c.issueCall(ctx, token, http.MethodPatch, fullName, fmt.Sprintf("/issues/%d", number), body, nil)
 }
 
 // LabelExists reports whether the repository has a label of this name; GitHub matches label names case-insensitively.

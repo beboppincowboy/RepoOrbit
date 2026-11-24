@@ -532,6 +532,9 @@ func TestAddRemovePreservesConcurrentValues(t *testing.T) {
 	if n := e.count(`SELECT count(*) FROM write_operations WHERE user_id = $1 AND state = 'succeeded' AND outcome ? 'issue'`, alice.id); n != 2 {
 		t.Fatalf("audit rows for the actor: %d", n)
 	}
+	if n := e.count(`SELECT count(*) FROM write_operations WHERE draft ? 'expect'`); n != 0 {
+		t.Fatalf("a change without expect stored one, so its request hash changed: %d", n)
+	}
 	var rows string
 	if err := e.pool.QueryRow(context.Background(), `SELECT json_agg(o)::text FROM write_operations o`).Scan(&rows); err != nil {
 		t.Fatal(err)
@@ -668,6 +671,13 @@ func TestInvalidInputIsRejected(t *testing.T) {
 		{changes(repo, 1), `{"state":"merged"}`},
 		{changes(repo, 1), `{"labels":{"add":[""]}}`},
 		{changes(repo, 1), `{"assignees":{"add":["x"],"replace":["y"]}}`},
+		{changes(repo, 1), `{"expect":{"status":"todo","assignees":[],"statusLabels":["status:todo"]}}`},
+		{changes(repo, 1), `{"state":"closed","expect":{"status":"closed","assignees":[],"statusLabels":[]}}`},
+		{changes(repo, 1), `{"state":"closed","expect":{"status":"","assignees":[],"statusLabels":[]}}`},
+		{changes(repo, 1), `{"state":"closed","expect":{"status":"todo","assignees":[],"statusLabels":["bug"]}}`},
+		{changes(repo, 1), `{"state":"closed","expect":{"status":"todo","assignees":[],"statusLabels":["status:todo","Status:Todo"]}}`},
+		{changes(repo, 1), `{"state":"closed","expect":{"status":"todo","assignees":["bad login!"],"statusLabels":[]}}`},
+		{changes(repo, 1), `{"state":"closed","expect":{"status":"todo","assignees":[],"statusLabels":[],"labels":[]}}`},
 	} {
 		if resp, _ := alice.send(c.path, "bad-input", c.body); resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("%s %.80s: %d", c.path, c.body, resp.StatusCode)
@@ -1420,4 +1430,164 @@ func TestAssigneeSuggestionsListOnlyAssignableUsers(t *testing.T) {
 		t.Fatalf("a user who cannot assign got suggestions %v (%v)", got.Assignees, err)
 	}
 	e.noInstallationAuthority()
+}
+
+// boardIssue is an open or closed issue by alice carrying labels (spelled as given) and assignees.
+func boardIssue(number int64, state string, labels []string, assignees ...string) fake.IssueFixture {
+	issue := seedIssue(number, "alice", fmt.Sprintf("Card %d", number))
+	issue.State = state
+	for i, l := range labels {
+		issue.Labels = append(issue.Labels, fake.IssueLabel{ID: number*100 + int64(i), Name: l})
+	}
+	for i, a := range assignees {
+		issue.Assignees = append(issue.Assignees, fake.IssueActor{ID: number*100 + int64(i), Login: a, Type: "User"})
+	}
+	return issue
+}
+
+// conflict is an update's 409 when its expect no longer matches the issue on GitHub.
+type conflict struct {
+	Error   string `json:"error"`
+	Current struct {
+		State     string    `json:"state"`
+		Labels    []string  `json:"labels"`
+		Assignees []string  `json:"assignees"`
+		Status    string    `json:"status"`
+		UpdatedAt time.Time `json:"updatedAt"`
+	} `json:"current"`
+}
+
+func decodeConflict(t *testing.T, resp *http.Response) conflict {
+	t.Helper()
+	var c conflict
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusConflict || json.Unmarshal(b, &c) != nil || c.Error != "changed on GitHub" {
+		t.Fatalf("want a changed-on-GitHub 409, got %d %s", resp.StatusCode, b)
+	}
+	return c
+}
+
+// writeLog records every write the fake GitHub receives, in arrival order, as "METHOD path body". A write for which
+// reject (nil for none) is true is answered 422 instead of served.
+func (e *env) writeLog(reject func(call string) bool) func() []string {
+	var mu sync.Mutex
+	var calls []string
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		if r.Method != http.MethodGet {
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			call := strings.TrimSpace(r.Method + " " + r.URL.Path + " " + string(bytes.TrimSpace(body)))
+			mu.Lock()
+			calls = append(calls, call)
+			mu.Unlock()
+			if reject != nil && reject(call) {
+				http.Error(w, `{"message":"Validation Failed"}`, http.StatusUnprocessableEntity)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+	return func() []string { mu.Lock(); defer mu.Unlock(); return slices.Clone(calls) }
+}
+
+// Covers AE9 (server side): a Board change whose expect no longer matches GitHub's status, status labels or assignees
+// is refused with the current values, before anything is recorded or sent. Permission is decided first.
+func TestBoardChangeRefusedWhenChangedOnGitHub(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	carol := e.signIn("carol") // read only
+	repo := e.repo("alice", "app", false)
+	e.gh.SetPermission("bob", repo, "write")
+	moved := boardIssue(1, "open", []string{"status:in-progress", "bug"})
+	e.gh.SetIssues(repo, moved,
+		boardIssue(2, "open", []string{"status:review"}),                       // flagged with todo + review when staged
+		boardIssue(3, "open", []string{"status:review", "status:in-progress"}), // In Review when staged; in-progress added since
+		boardIssue(4, "open", []string{"status:todo"}, "bob"),                  // unassigned when staged
+		boardIssue(5, "open", nil),                                             // backlog, staged as todo; by alice, not carol
+	)
+
+	resp, _ := alice.send(changes(repo, 1), "stale-1", `{"labels":{"add":["status:review"],"remove":["status:todo"]},"expect":{"status":"todo","assignees":[],"statusLabels":["status:todo"]}}`)
+	c := decodeConflict(t, resp)
+	if c.Current.Status != "in_progress" || c.Current.State != "open" || !slices.Equal(c.Current.Labels, []string{"status:in-progress", "bug"}) ||
+		c.Current.Assignees == nil || len(c.Current.Assignees) != 0 || !c.Current.UpdatedAt.Equal(moved.UpdatedAt) {
+		t.Fatalf("current: %+v", c.Current)
+	}
+	for number, body := range map[int64]string{
+		2: `{"labels":{"remove":["status:todo"]},"expect":{"status":"in_review","assignees":[],"statusLabels":["status:todo","status:review"]}}`,
+		3: `{"state":"closed","expect":{"status":"in_review","assignees":[],"statusLabels":["status:review"]}}`,
+		4: `{"labels":{"add":["status:in-progress"],"remove":["status:todo"]},"assignees":{"add":["alice"]},"expect":{"status":"todo","assignees":[],"statusLabels":["status:todo"]}}`,
+	} {
+		resp, _ := alice.send(changes(repo, number), fmt.Sprintf("stale-%d", number), body)
+		decodeConflict(t, resp)
+	}
+	if resp, _ := carol.send(changes(repo, 5), "stale-5", `{"state":"closed","expect":{"status":"todo","assignees":[],"statusLabels":["status:todo"]}}`); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("read user, not the author, with a stale expect: %d %s", resp.StatusCode, carol.body(resp))
+	}
+	if n := e.count(`SELECT count(*) FROM write_operations`); n != 0 || len(e.gh.WriteTokens()) != 0 {
+		t.Fatalf("refused changes recorded %d operations and sent %d writes", n, len(e.gh.WriteTokens()))
+	}
+}
+
+// Covers AE6 (server side): a matching expect, compared case-insensitively, goes ahead and swaps the status label
+// without touching other labels; the same key then replays the operation although GitHub now shows the new status.
+func TestBoardChangeWithMatchingExpect(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetPermission("ada", repo, "write")
+	e.gh.SetIssues(repo, boardIssue(1, "open", []string{"Status:Todo", "bug"}, "ada"))
+	body := `{"labels":{"add":["status:review"],"remove":["Status:Todo"]},"expect":{"status":"todo","assignees":["Ada"],"statusLabels":["status:todo"]}}`
+
+	resp, op := alice.send(changes(repo, 1), "move-1", body)
+	if resp.StatusCode != http.StatusCreated || op.State != "succeeded" {
+		t.Fatalf("matching expect: %d %+v %s", resp.StatusCode, op, alice.body(resp))
+	}
+	if got := labelNames(e.gh.Issues(repo)[0]); !slices.Equal(got, []string{"bug", "status:review"}) {
+		t.Fatalf("labels: %v", got)
+	}
+	if resp, again := alice.send(changes(repo, 1), "move-1", body); resp.StatusCode != http.StatusOK || again.ID != op.ID {
+		t.Fatalf("same key after success: %d %+v %s", resp.StatusCode, again, alice.body(resp))
+	}
+	if resp, _ := alice.send(changes(repo, 1), "move-1", strings.Replace(body, `"Ada"`, `"bob"`, 1)); resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("same key, different expect: %d", resp.StatusCode)
+	}
+	if n := e.count(`SELECT count(*) FROM write_operations WHERE draft->'expect'->>'status' = 'todo'`); n != 1 {
+		t.Fatalf("the reviewed expect is part of the stored draft: %d", n)
+	}
+}
+
+// Covers AE8: a reopen is sent before the label steps and a close after them, as completed. A closed issue matches
+// expect "done" whatever status labels the app's cleanup removed since. A rejected reopen applies no labels.
+func TestStateChangesOrderAroundLabelSteps(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.gh.SetIssues(repo, boardIssue(1, "closed", nil), boardIssue(2, "open", []string{"status:in-progress"}), boardIssue(3, "closed", nil))
+	calls := e.writeLog(func(call string) bool { return strings.HasPrefix(call, "PATCH /repos/alice/app/issues/3 ") })
+
+	resp, op := alice.send(changes(repo, 1), "reopen-1", `{"labels":{"add":["status:todo"]},"state":"open","expect":{"status":"done","assignees":[],"statusLabels":["status:review"]}}`)
+	if resp.StatusCode != http.StatusCreated || op.State != "succeeded" {
+		t.Fatalf("reopen: %d %+v %s", resp.StatusCode, op, alice.body(resp))
+	}
+	resp, op = alice.send(changes(repo, 2), "close-2", `{"labels":{"remove":["status:in-progress"]},"state":"closed","expect":{"status":"in_progress","assignees":[],"statusLabels":["status:in-progress"]}}`)
+	if resp.StatusCode != http.StatusCreated || op.State != "succeeded" {
+		t.Fatalf("close: %d %+v %s", resp.StatusCode, op, alice.body(resp))
+	}
+	resp, op = alice.send(changes(repo, 3), "reopen-3", `{"labels":{"add":["status:todo"]},"state":"open"}`)
+	if resp.StatusCode != http.StatusCreated || op.State != "failed" || !slices.Equal(op.Outcome.Unapplied, []string{"add label status:todo", "state open"}) {
+		t.Fatalf("rejected reopen: %d %+v", resp.StatusCode, op)
+	}
+	want := []string{
+		`PATCH /repos/alice/app/issues/1 {"state":"open"}`,
+		`POST /repos/alice/app/issues/1/labels {"labels":["status:todo"]}`,
+		`DELETE /repos/alice/app/issues/2/labels/status:in-progress`,
+		`PATCH /repos/alice/app/issues/2 {"state":"closed","state_reason":"completed"}`,
+		`PATCH /repos/alice/app/issues/3 {"state":"open"}`,
+	}
+	if got := calls(); !slices.Equal(got, want) {
+		t.Fatalf("write calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if issue := e.gh.Issues(repo)[2]; issue.State != "closed" || len(issue.Labels) != 0 {
+		t.Fatalf("rejected reopen applied something: %+v", issue)
+	}
 }
