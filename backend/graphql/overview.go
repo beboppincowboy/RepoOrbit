@@ -46,13 +46,13 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 	if err != nil {
 		return nil, err
 	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth, false,
-		func() (*model.RepositoryOverview, error) {
-			if auth.withheld > 0 {
-				return nil, unverifiedError(auth.retryAt)
-			}
-			return nil, nil
-		},
+	if len(auth.ids) == 0 {
+		if auth.withheld > 0 {
+			return nil, unverifiedError(auth.retryAt)
+		}
+		return nil, nil
+	}
+	return guardedRead(ctx, r.RepoAccess.Pool, auth,
 		func() (*model.RepositoryOverview, error) {
 			targetID := auth.ids[0]
 			overview, err := analytics.LoadRepositoryOverview(ctx, r.RepoAccess.Pool, targetID, days, now)
@@ -123,7 +123,7 @@ func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (
 	if err != nil {
 		return nil, err
 	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth, true, nil,
+	return guardedRead(ctx, r.RepoAccess.Pool, auth,
 		func() (*model.CrossRepositoryOverview, error) {
 			var assignee int64
 			if len(auth.ids) > 0 {
