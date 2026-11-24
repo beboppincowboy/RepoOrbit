@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -51,30 +50,38 @@ func enqueueStatusCleanup(ctx context.Context, tx pgx.Tx, repoID int64, issue gi
 	return jobs.Enqueue(ctx, tx, jobs.KindStatusLabelCleanup, fmt.Sprintf("repo:%d", repoID), time.Now())
 }
 
+// errStatusLabelsOff stops a cleanup run when status labels were turned off while it ran.
+var errStatusLabelsOff = errors.New("status labels turned off")
+
+// errIssueBusy means another transaction holds the issue: the cleanup never waits for it while it holds its job claim
+// (a sync or an issue write may be waiting on that claim to enqueue this very job), so it retries shortly instead.
+var errIssueBusy = errors.New("issue busy")
+
 // CleanupStatusLabels is the jobs.KindStatusLabelCleanup handler (Key "repo:<repositories.id>"): the one RepoOrbit
-// write with no user behind it (R20, KTD3). For each stored closed issue that still has a status label in a
-// repository with status labels on, it re-reads the issue with the installation token and, only if GitHub still shows
-// it closed with that label, removes the label, records the removal in app_operations as done by the app, and projects
-// the issue as read back. Nothing is written without an installation that holds Issues write. Removing a label is
-// idempotent, so a removal left unknown is resolved by the job's own retry rather than a Recheck.
+// write with no user behind it (R20, KTD3). In a repository with status labels on, for each stored closed issue that
+// still has a status label (and each issue with a removal left unknown), it re-reads the issue with the installation
+// token and, only if GitHub still shows it closed with that label, removes the label, records the removal in
+// app_operations as done by the app, and projects the issue as read back. Nothing is written without an installation
+// that holds Issues write and covers this repository's ID, or after status labels are turned off. Removing a label is
+// idempotent, so a removal left unknown is resolved by a later run rather than a Recheck.
 func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) error {
 	repoID, err := parseKey("repo:", job.Key)
 	if err != nil {
 		return jobs.Permanent(err)
 	}
-	stale, err := db.New(d.Pool).ListStaleStatusLabels(ctx, repoID)
-	if err != nil || len(stale) == 0 {
+	candidates, err := db.New(d.Pool).ListStatusCleanupCandidates(ctx, repoID)
+	if err != nil || len(candidates) == 0 {
 		return err
 	}
 	client, ok := d.GitHub.(*githubapp.Client)
 	if !ok || d.AppKey == nil || d.InstallationCredentials == nil {
 		return nil // no GitHub App configured: labels stay, and closed issues still show in Done
 	}
-	var fullName string
-	if err := d.Pool.QueryRow(ctx, `SELECT name FROM repositories WHERE id=$1`, repoID).Scan(&fullName); err != nil {
+	var storedName string
+	if err := d.Pool.QueryRow(ctx, `SELECT name FROM repositories WHERE id=$1`, repoID).Scan(&storedName); err != nil {
 		return err
 	}
-	installation, issuesWrite, err := client.RepositoryInstallationGrant(ctx, d.AppKey, fullName)
+	installation, issuesWrite, err := client.RepositoryInstallationGrant(ctx, d.AppKey, storedName)
 	var api *githubapp.APIError
 	if errors.As(err, &api) && api.RateLimited() {
 		return &jobs.Defer{RetryAt: api.RetryAt, Reason: CodeRateLimited}
@@ -89,23 +96,41 @@ func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs
 	if err != nil {
 		return d.installationFetchError(installation, token, err)
 	}
-	var numbers []int64
-	for _, s := range stale {
-		if !slices.Contains(numbers, s.Number) {
-			numbers = append(numbers, s.Number)
+	// The stored name may be stale (a rename or transfer): read the repository by ID, so every write below goes to this
+	// repository's live name.
+	repo, err := client.FetchRepo(ctx, token, repoID)
+	if errors.As(err, &api) && api.NotFound() {
+		return nil
+	}
+	if err != nil {
+		return d.installationFetchError(installation, token, err)
+	}
+	if repo.ID != repoID || repo.FullName == "" {
+		return nil
+	}
+	fullName := repo.FullName
+	if !strings.EqualFold(fullName, storedName) {
+		// The installation was found under a stale name and may belong to another repository: it must also be the one
+		// that covers this repository under its live name.
+		live, liveWrite, err := client.RepositoryInstallationGrant(ctx, d.AppKey, fullName)
+		if err != nil {
+			return fmt.Errorf("status cleanup: installation lookup: %w", err)
+		}
+		if live != installation || !liveWrite {
+			return nil
 		}
 	}
-	unresolved := false
-	for _, number := range numbers {
-		issue, err := client.FetchIssue(ctx, token, fullName, number)
+	unresolved, progressed := false, false
+	for _, c := range candidates {
+		issue, err := client.FetchIssue(ctx, token, fullName, c.Number)
 		if errors.As(err, &api) && api.NotFound() {
 			continue // gone or transferred; a deletion webhook or the next sync removes it
 		}
 		if err != nil {
 			return d.installationFetchError(installation, token, err)
 		}
-		if issue.PullRequest != nil {
-			continue
+		if issue.PullRequest != nil || issue.ID != c.SourceID {
+			continue // not the issue that was projected under this number
 		}
 		var labels []string
 		if issue.State == "closed" {
@@ -123,46 +148,115 @@ func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs
 		var removals []removal
 		for _, label := range labels {
 			var opID int64
-			if err := fence.Commit(ctx, func(tx pgx.Tx) (err error) {
-				opID, err = db.New(tx).StartAppOperation(ctx, db.StartAppOperationParams{RepositoryID: repoID, IssueNumber: number, Label: label})
+			err := fence.Commit(ctx, func(tx pgx.Tx) error {
+				var on bool
+				if err := tx.QueryRow(ctx, `SELECT status_labels FROM repositories WHERE id=$1 FOR SHARE`, repoID).Scan(&on); err != nil {
+					return err
+				}
+				if !on {
+					return errStatusLabelsOff
+				}
+				var err error
+				opID, err = db.New(tx).StartAppOperation(ctx, db.StartAppOperationParams{RepositoryID: repoID, IssueNumber: c.Number, Label: label})
 				return err
-			}); err != nil {
+			})
+			if errors.Is(err, errStatusLabelsOff) {
+				return nil
+			}
+			if err != nil {
 				return err
 			}
-			removals = append(removals, removal{opID, label, client.RemoveLabel(ctx, token, fullName, number, label)})
+			removeErr := client.RemoveLabel(ctx, token, fullName, c.Number, label)
+			if errors.As(removeErr, &api) && api.RateLimited() {
+				// Stop the batch for the cooldown; this removal stays unknown and a later run resolves it.
+				return d.installationFetchError(installation, token, removeErr)
+			}
+			removals = append(removals, removal{opID, label, removeErr})
 		}
 		if len(labels) > 0 {
-			if issue, err = client.FetchIssue(ctx, token, fullName, number); err != nil {
-				// The removals stay unknown; the retry finds the labels gone (or removes them again) and resolves them.
+			if issue, err = client.FetchIssue(ctx, token, fullName, c.Number); err != nil {
+				// The removals stay unknown; a later run finds the labels gone (or removes them again) and resolves them.
 				return d.installationFetchError(installation, token, err)
 			}
 		}
 		err = fence.Commit(ctx, func(tx pgx.Tx) error {
+			var locked bool
+			if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended(format('issue-write:%s:%s', $1::bigint, $2::bigint), 0))`, repoID, c.Number).Scan(&locked); err != nil {
+				return err
+			}
+			if !locked {
+				return errIssueBusy
+			}
+			// Lock the stored row so a concurrent private purge cannot delete it under this refresh (which would turn the
+			// refresh into an insert of purged data); a purge that got there first leaves nothing to refresh.
+			var stored bool
+			err := tx.QueryRow(ctx, `SELECT true FROM activity_issues WHERE source_id=$1 AND repository_id=$2 FOR UPDATE NOWAIT`, c.SourceID, repoID).Scan(&stored)
+			switch {
+			case isLockNotAvailable(err):
+				return errIssueBusy
+			case errors.Is(err, pgx.ErrNoRows):
+			case err != nil:
+				return err
+			}
 			q := db.New(tx)
+			finish := func(id int64, state, msg string) error {
+				body := []byte(`{}`)
+				if msg != "" {
+					body, _ = json.Marshal(map[string]string{"error": msg})
+				}
+				return q.FinishAppOperation(ctx, db.FinishAppOperationParams{ID: id, State: state, Outcome: body})
+			}
+			sent := map[int64]bool{}
 			for _, r := range removals {
+				sent[r.opID] = true
 				state, msg := removalOutcome(issue, r.label, r.err)
 				if state == "unknown" {
 					unresolved = true
 					continue
 				}
-				body := []byte(`{}`)
-				if msg != "" {
-					body, _ = json.Marshal(map[string]string{"error": msg})
-				}
-				if err := q.FinishAppOperation(ctx, db.FinishAppOperationParams{ID: r.opID, State: state, Outcome: body}); err != nil {
+				progressed = progressed || state == "succeeded"
+				if err := finish(r.opID, state, msg); err != nil {
 					return err
 				}
 			}
-			// Only refresh an issue that is still stored: a private cleanup may have purged the repository's issues.
-			if err := LockIssue(ctx, tx, repoID, number); err != nil {
+			// Removals an earlier run left unknown: settled by what GitHub shows now.
+			earlier, err := q.ListUnknownAppOperations(ctx, db.ListUnknownAppOperationsParams{RepositoryID: repoID, IssueNumber: c.Number})
+			if err != nil {
 				return err
 			}
-			var stored bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM activity_issues WHERE repository_id=$1 AND number=$2)`, repoID, number).Scan(&stored); err != nil || !stored {
-				return err
+			for _, o := range earlier {
+				if sent[o.ID] {
+					continue
+				}
+				onIssue := hasLabel(issue, func(name string) bool { return strings.EqualFold(name, o.Label) })
+				switch {
+				case !onIssue:
+					err = finish(o.ID, "succeeded", "")
+				case issue.State == "open":
+					err = finish(o.ID, "failed", "the issue was reopened with the label still on it")
+				default:
+					unresolved = true
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				progressed = true
 			}
-			return ProjectConfirmedIssue(ctx, tx, repoID, issue)
+			if !stored {
+				return nil
+			}
+			if issue.State == "open" || !hasLabel(issue, isStatusLabel) {
+				progressed = true // the issue leaves the candidates
+			}
+			// Not the same-second variant: this readback was taken before the lock, so it must not replace a copy an
+			// issue write projected in the same second. It never enqueues this job again, so a refused removal cannot
+			// make the cleanup schedule itself forever.
+			return projectIssue(ctx, tx, repoID, issue, false, false)
 		})
+		if errors.Is(err, errIssueBusy) {
+			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
+		}
 		if err != nil {
 			return err
 		}
@@ -170,7 +264,7 @@ func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs
 	if unresolved {
 		return errors.New("status cleanup: a label removal has no reliable answer yet")
 	}
-	if len(stale) == 100 {
+	if len(candidates) == 100 && progressed {
 		return &jobs.Defer{RetryAt: d.Clock.Now(), Reason: "continue"}
 	}
 	return nil

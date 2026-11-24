@@ -48,8 +48,9 @@ function summarizeDraft(op: WriteOperation): string {
     const created = op.outcome?.created ?? [];
     const labels = (op.draft as StatusLabelsDraft).labels ?? [];
     if (op.state !== "succeeded") return `Labels: ${labels.join(", ")}`;
-    const reused = labels.filter(l => !created.includes(l));
-    return [created.length ? `created: ${created.join(", ")}` : "", reused.length ? `reused: ${reused.join(", ")}` : ""].filter(Boolean).join(" · ");
+    // A label not in created may have existed already or been created by a request whose answer was lost.
+    const others = labels.filter(l => !created.includes(l));
+    return [created.length ? `created: ${created.join(", ")}` : "", others.length ? `confirmed present: ${others.join(", ")}` : ""].filter(Boolean).join(" · ");
   }
   if (op.kind === "cleanup") return `-label: ${(op.draft as CleanupDraft).label} (the issue is closed, so it is in Done)`;
   if (op.kind === "create") {
@@ -71,6 +72,10 @@ function summarizeDraft(op: WriteOperation): string {
 
 export function writeOperationsQueryKey(viewerKey: string, repositoryId: string) {
   return ["writeOperations", viewerKey, repositoryId] as const;
+}
+
+export function statusLabelsQueryKey(viewerKey: string, repositoryId: string) {
+  return ["statusLabels", viewerKey, repositoryId] as const;
 }
 
 export function WriteHistory({
@@ -143,6 +148,7 @@ export function WriteHistory({
                 op={op}
                 onUpdated={updated => {
                   queryClient.setQueryData<WriteOperation[]>(queryKey, prev => prev?.map(item => (rowKey(item) === rowKey(updated) ? updated : item)) ?? [updated]);
+                  if (updated.kind === "status_labels") void queryClient.invalidateQueries({ queryKey: statusLabelsQueryKey(viewerKey, repositoryId) });
                   onResolved(updated);
                 }}
                 onEditIssue={onEditIssue}

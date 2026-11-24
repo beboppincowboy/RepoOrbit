@@ -9,6 +9,41 @@ import (
 	"context"
 )
 
+const disableStatusLabels = `-- name: DisableStatusLabels :execrows
+UPDATE repositories SET status_labels = false, status_labels_changed_at = now() WHERE id = $1 AND NOT is_demo
+`
+
+// Turns status labels off. The caller has checked Admin or Maintain permission and its access fence.
+func (q *Queries) DisableStatusLabels(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, disableStatusLabels, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const enableStatusLabels = `-- name: EnableStatusLabels :execrows
+UPDATE repositories r SET status_labels = true, status_labels_changed_at = now()
+FROM write_operations o
+WHERE r.id = $1 AND NOT r.is_demo AND o.id = $2
+ AND (r.status_labels_changed_at IS NULL OR r.status_labels_changed_at < o.created_at)
+`
+
+type EnableStatusLabelsParams struct {
+	RepositoryID int64
+	OperationID  int64
+}
+
+// Turns status labels on for a succeeded status_labels operation, unless the setting changed after that operation
+// was recorded (a later Turn off wins over a late recheck). The caller has checked permission and its access fence.
+func (q *Queries) EnableStatusLabels(ctx context.Context, arg EnableStatusLabelsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enableStatusLabels, arg.RepositoryID, arg.OperationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const finishAppOperation = `-- name: FinishAppOperation :exec
 UPDATE app_operations SET state = $2, outcome = $3, updated_at = now() WHERE id = $1 AND state = 'unknown'
 `
@@ -122,33 +157,34 @@ func (q *Queries) ListBoardIssues(ctx context.Context, repositoryID int64) ([]Li
 	return items, nil
 }
 
-const listStaleStatusLabels = `-- name: ListStaleStatusLabels :many
-SELECT i.number, l.name AS label
+const listStatusCleanupCandidates = `-- name: ListStatusCleanupCandidates :many
+SELECT i.number, i.source_id
 FROM activity_issues i
 JOIN repositories r ON r.id = i.repository_id AND r.status_labels AND NOT r.is_demo
-JOIN activity_issue_labels l ON l.issue_id = i.source_id AND status_label_rank(l.name) IS NOT NULL
-WHERE i.repository_id = $1 AND i.state = 'closed'
-ORDER BY i.number, l.name
+WHERE i.repository_id = $1 AND (
+ (i.state = 'closed' AND EXISTS (SELECT 1 FROM activity_issue_labels l WHERE l.issue_id = i.source_id AND status_label_rank(l.name) IS NOT NULL))
+ OR EXISTS (SELECT 1 FROM app_operations o WHERE o.repository_id = i.repository_id AND o.issue_number = i.number AND o.state = 'unknown'))
+ORDER BY i.number
 LIMIT 100
 `
 
-type ListStaleStatusLabelsRow struct {
-	Number int64
-	Label  string
+type ListStatusCleanupCandidatesRow struct {
+	Number   int64
+	SourceID int64
 }
 
-// The status labels still on stored closed issues of a repository with status labels on: what the app's cleanup
-// removes. At most 100 per run; the job runs again while any remain.
-func (q *Queries) ListStaleStatusLabels(ctx context.Context, repositoryID int64) ([]ListStaleStatusLabelsRow, error) {
-	rows, err := q.db.Query(ctx, listStaleStatusLabels, repositoryID)
+// The stored issues the app's cleanup looks at in a repository with status labels on: closed issues still carrying a
+// status label, and issues with a removal left unknown. At most 100 per run.
+func (q *Queries) ListStatusCleanupCandidates(ctx context.Context, repositoryID int64) ([]ListStatusCleanupCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listStatusCleanupCandidates, repositoryID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListStaleStatusLabelsRow
+	var items []ListStatusCleanupCandidatesRow
 	for rows.Next() {
-		var i ListStaleStatusLabelsRow
-		if err := rows.Scan(&i.Number, &i.Label); err != nil {
+		var i ListStatusCleanupCandidatesRow
+		if err := rows.Scan(&i.Number, &i.SourceID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -159,22 +195,39 @@ func (q *Queries) ListStaleStatusLabels(ctx context.Context, repositoryID int64)
 	return items, nil
 }
 
-const setStatusLabels = `-- name: SetStatusLabels :execrows
-UPDATE repositories SET status_labels = $2 WHERE id = $1 AND NOT is_demo
+const listUnknownAppOperations = `-- name: ListUnknownAppOperations :many
+SELECT id, label FROM app_operations WHERE repository_id = $1 AND issue_number = $2 AND state = 'unknown'
 `
 
-type SetStatusLabelsParams struct {
-	ID           int64
-	StatusLabels bool
+type ListUnknownAppOperationsParams struct {
+	RepositoryID int64
+	IssueNumber  int64
 }
 
-// Turns status labels on or off. The caller has checked Admin or Maintain permission and its access fence.
-func (q *Queries) SetStatusLabels(ctx context.Context, arg SetStatusLabelsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setStatusLabels, arg.ID, arg.StatusLabels)
+type ListUnknownAppOperationsRow struct {
+	ID    int64
+	Label string
+}
+
+// The app's removals on one issue still without a reliable answer.
+func (q *Queries) ListUnknownAppOperations(ctx context.Context, arg ListUnknownAppOperationsParams) ([]ListUnknownAppOperationsRow, error) {
+	rows, err := q.db.Query(ctx, listUnknownAppOperations, arg.RepositoryID, arg.IssueNumber)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	var items []ListUnknownAppOperationsRow
+	for rows.Next() {
+		var i ListUnknownAppOperationsRow
+		if err := rows.Scan(&i.ID, &i.Label); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const startAppOperation = `-- name: StartAppOperation :one

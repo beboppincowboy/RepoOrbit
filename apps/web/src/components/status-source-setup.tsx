@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { generateIdempotencyKey } from "@/components/issue-editor";
-import { writeOperationsQueryKey } from "@/components/write-history";
+import { statusLabelsQueryKey, writeOperationsQueryKey } from "@/components/write-history";
 import { IssueWriteError, disableStatusLabels, enableStatusLabels, fetchStatusLabels, type WriteOperation } from "@/lib/api";
 
 // The three labels and the Board state each stands for (ADR 0003). Backlog is an open issue without one; Done is closed.
@@ -14,7 +14,7 @@ type Step = "idle" | "review" | "submitting" | "confirm-off";
 // the missing labels) or off. Everyone else sees the current setting and why they cannot change it.
 export function StatusSourceSetup({ repositoryId, viewerKey, demo, frozen }: { repositoryId: string; viewerKey: string; demo: boolean; frozen: boolean }) {
   const queryClient = useQueryClient();
-  const queryKey = ["statusLabels", viewerKey, repositoryId] as const;
+  const queryKey = statusLabelsQueryKey(viewerKey, repositoryId);
   const query = useQuery({ queryKey, queryFn: ({ signal }) => fetchStatusLabels(repositoryId, signal), enabled: !demo && !frozen, gcTime: 0 });
   const [step, setStep] = useState<Step>("idle");
   const [result, setResult] = useState<WriteOperation | null>(null);
@@ -133,10 +133,10 @@ export function StatusSourceSetup({ repositoryId, viewerKey, demo, frozen }: { r
         </div>
       )}
 
-      {result && (
+      {result && !(state?.enabled && result.state !== "succeeded") && (
         <div role="status" className={`text-xs ${result.state === "succeeded" ? "text-success-foreground" : result.state === "unknown" ? "text-warning" : "text-destructive"}`}>
           {result.state === "succeeded"
-            ? `Confirmed: status labels are on${result.outcome?.created?.length ? `; created ${result.outcome.created.join(", ")}` : "; all labels already existed"}.`
+            ? `Confirmed: status labels are on${result.outcome?.created?.length ? `; created ${result.outcome.created.join(", ")}` : "; all three labels are on GitHub"}.`
             : result.state === "unknown"
               ? "Outcome unknown — recheck it in Write history instead of resubmitting."
               : `Not turned on: ${result.outcome?.error ?? result.outcome?.unapplied?.join(", ") ?? "GitHub did not confirm the labels"}.`}

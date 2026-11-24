@@ -249,10 +249,14 @@ func (s *Server) api(h func(http.ResponseWriter, *http.Request, string)) http.Ha
 				if in := s.installs[id]; in != nil {
 					for repoID := range in.repos {
 						repo := s.repos[repoID]
-						if repo != nil && repo.owner == r.PathValue("owner") && repo.name == r.PathValue("repo") {
+						if repo != nil && (repo.owner == r.PathValue("owner") && repo.name == r.PathValue("repo") || r.PathValue("id") == strconv.FormatInt(repoID, 10)) {
 							login, ok = in.owner, true
 							break
 						}
+					}
+					// GitHub serves public repositories by ID to any valid installation token, covered or not.
+					if !ok && r.PathValue("id") != "" {
+						ok = true
 					}
 				}
 			}

@@ -8,6 +8,8 @@ import (
 	"crypto/rsa"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -252,4 +254,90 @@ func TestStatusCleanupWritesNothingWithoutAuthority(t *testing.T) {
 			t.Fatalf("reopened issue not refreshed: %+v", rows)
 		}
 	})
+}
+
+// roundTrip lets a test rewrite fake GitHub answers.
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func answer(status int) *http.Response {
+	return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"message":"x"}`))}
+}
+
+// A refused removal is recorded as failed once and does not make the cleanup schedule itself again.
+func TestRefusedRemovalDoesNotRequeueCleanup(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	repoID := statusRepo(t, e, true, statusIssue(1, "closed", "status:review"))
+	if _, err := e.pool.Exec(ctx, `DELETE FROM jobs`); err != nil {
+		t.Fatal(err)
+	}
+	e.ghc.HTTP.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodDelete {
+			return answer(http.StatusForbidden), nil
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	})
+	if err := e.runCleanup(repoID); err != nil {
+		t.Fatal(err)
+	}
+	ops, _ := db.New(e.pool).ListAppOperations(ctx, repoID)
+	if len(ops) != 1 || ops[0].State != "failed" {
+		t.Fatalf("app operations: %+v", ops)
+	}
+	if e.cleanupQueued(repoID) {
+		t.Fatal("a refused removal queued the cleanup again")
+	}
+}
+
+// A removal GitHub applied but whose answer and read-back were lost stays unknown, and the next run settles it from
+// what GitHub shows, without another removal.
+func TestUnknownRemovalIsSettledByNextRun(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	repoID := statusRepo(t, e, true, statusIssue(1, "closed", "status:review"))
+	lose := true
+	e.ghc.HTTP.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		resp, err := http.DefaultTransport.RoundTrip(r)
+		if lose && r.Method == http.MethodDelete {
+			return answer(http.StatusBadGateway), err
+		}
+		if lose && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/1") && e.labelDeletes() > 0 {
+			return answer(http.StatusBadGateway), err
+		}
+		return resp, err
+	})
+	if err := e.runCleanup(repoID); err == nil {
+		t.Fatal("expected the run to fail while the removal is unknown")
+	}
+	ops, _ := db.New(e.pool).ListAppOperations(ctx, repoID)
+	if len(ops) != 1 || ops[0].State != "unknown" {
+		t.Fatalf("app operations after the lost answer: %+v", ops)
+	}
+	lose = false
+	if err := e.runCleanup(repoID); err != nil {
+		t.Fatal(err)
+	}
+	ops, _ = db.New(e.pool).ListAppOperations(ctx, repoID)
+	if len(ops) != 1 || ops[0].State != "succeeded" || e.labelDeletes() != 1 {
+		t.Fatalf("app operations=%+v deletes=%d", ops, e.labelDeletes())
+	}
+}
+
+// A stale stored name pointing at another repository never receives a removal.
+func TestCleanupUsesTheRepositoryByID(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	repoID := statusRepo(t, e, true, statusIssue(1, "closed", "status:review"))
+	other := e.gh.AddRepo("alice", "other", false)
+	e.gh.Install("alice", 10, other)
+	e.gh.SetIssues(other, statusIssue(1, "closed", "status:review"))
+	e.gh.Uninstall(9)
+	if _, err := e.pool.Exec(ctx, `UPDATE repositories SET name='alice/other' WHERE id=$1`, repoID); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.runCleanup(repoID); err != nil || e.labelDeletes() != 0 || !slices.Equal(remoteLabels(e, other, 1), []string{"status:review"}) {
+		t.Fatalf("err=%v writes=%v", err, e.gh.WriteTokens())
+	}
 }

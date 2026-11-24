@@ -216,13 +216,14 @@ type OauthState struct {
 }
 
 type Repository struct {
-	ID           int64
-	Name         string
-	Description  string
-	IsDemo       bool
-	IsPrivate    bool
-	Archived     bool
-	StatusLabels bool
+	ID                    int64
+	Name                  string
+	Description           string
+	IsDemo                bool
+	IsPrivate             bool
+	Archived              bool
+	StatusLabels          bool
+	StatusLabelsChangedAt pgtype.Timestamptz
 }
 
 type RepositorySync struct {

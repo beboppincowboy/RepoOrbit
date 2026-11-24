@@ -178,3 +178,35 @@ func TestAmbiguousStatusLabelsResolveOnRecheck(t *testing.T) {
 	}
 	_ = alice
 }
+
+// A recheck right after an unanswered enable does not fail it while labels may still be on their way, and a recheck
+// that succeeds after another admin turned labels off does not turn them back on.
+func TestStatusLabelsRecheckRespectsInFlightAndTurnOff(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/alice/app/labels" {
+			http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+	_, op := alice.send(statusLabelsPath(repo), "on-1", `{}`)
+	if op.State != "unknown" {
+		t.Fatalf("op=%+v", op)
+	}
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) { next.ServeHTTP(w, r) })
+	if resp, again := alice.send(opPath(op.ID)+"/recheck", "", `{}`); resp.StatusCode != http.StatusConflict || again.State != "unknown" {
+		t.Fatalf("early recheck: %d %+v", resp.StatusCode, again)
+	}
+	if resp := alice.disableStatusLabels(repo); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("disable: %d", resp.StatusCode)
+	}
+	for _, l := range []string{"status:todo", "status:in-progress", "status:review"} {
+		e.gh.AddLabel(repo, l)
+	}
+	if resp, done := alice.send(opPath(op.ID)+"/recheck", "", `{}`); resp.StatusCode != http.StatusOK || done.State != "succeeded" || e.statusLabelsOn(repo) {
+		t.Fatalf("late recheck: %d %+v on=%v", resp.StatusCode, done, e.statusLabelsOn(repo))
+	}
+}

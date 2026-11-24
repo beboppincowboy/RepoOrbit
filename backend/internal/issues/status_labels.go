@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
@@ -27,6 +28,10 @@ var statusLabels = []struct{ name, color string }{
 type statusLabelsDraft struct {
 	Labels []string `json:"labels"`
 }
+
+// recheckGrace is how long after its send a status_labels operation with a missing label stays unknown on recheck.
+// ponytail: a fixed bound on how long the sending request may still be creating labels; it times out well before.
+const recheckGrace = 2 * time.Minute
 
 // canChangeStatusLabels: status labels are a setting every viewer of the repository shares, so only Admin or Maintain
 // users may turn them on or off, and only where issues can be written.
@@ -118,7 +123,7 @@ func (s *Service) disableStatusLabels(w http.ResponseWriter, r *http.Request) {
 		} else if !current {
 			return errAccessMoved
 		}
-		_, err := s.Queries.WithTx(tx).SetStatusLabels(r.Context(), db.SetStatusLabelsParams{ID: repoID, StatusLabels: false})
+		_, err := s.Queries.WithTx(tx).DisableStatusLabels(r.Context(), repoID)
 		return err
 	})
 	switch {
@@ -179,7 +184,8 @@ func (s *Service) readStatusLabels(ctx context.Context, token, fullName string, 
 }
 
 // finishStatusLabels records the outcome of an unknown status_labels operation and, when it succeeded, turns status
-// labels on in the same transaction. If access changed since snap (the snapshot the actor's Admin or Maintain check
+// labels on in the same transaction, unless the setting changed after the operation was recorded (a later Turn off
+// stands). If access changed since snap (the snapshot the actor's Admin or Maintain check
 // was made under) the setting is not changed and the operation stays unknown, so a recheck under current access
 // finishes it.
 func (s *Service) finishStatusLabels(ctx context.Context, opID, repoID int64, snap accessfence.Snapshot, state string, out outcome) error {
@@ -202,14 +208,15 @@ func (s *Service) finishStatusLabels(ctx context.Context, opID, repoID int64, sn
 		if err != nil || n == 0 || state != "succeeded" {
 			return err
 		}
-		_, err = q.SetStatusLabels(ctx, db.SetStatusLabelsParams{ID: repoID, StatusLabels: true})
+		_, err = q.EnableStatusLabels(ctx, db.EnableStatusLabelsParams{RepositoryID: repoID, OperationID: opID})
 		return err
 	})
 }
 
 // recheckStatusLabels resolves an unknown status_labels operation by reading the labels again: succeeded (and status
 // labels turned on) when all three exist, failed when any is missing. Turning labels on again is always safe, so a
-// missing label never needs to stay unknown. The actor must still be Admin or Maintain, since success changes a
+// missing label need not stay unknown, except within recheckGrace of the send, when the original request may still be
+// creating labels: then it stays unknown (409). The actor must still be Admin or Maintain, since success changes a
 // setting every viewer shares.
 func (s *Service) recheckStatusLabels(w http.ResponseWriter, r *http.Request, userID int64, row db.GetWriteOperationRow, d repositories.Decision, snap accessfence.Snapshot) {
 	ctx := r.Context()
@@ -226,6 +233,12 @@ func (s *Service) recheckStatusLabels(w http.ResponseWriter, r *http.Request, us
 	state, out := s.readStatusLabels(ctx, token, d.Repo.FullName, outcome{Created: sent.Created})
 	if state == "unknown" {
 		s.upstream(w, ctx, userID, errors.New("label read failed"))
+		return
+	}
+	if state == "failed" && row.SentAt.Valid && time.Since(row.SentAt.Time) < recheckGrace {
+		if s.fenceHolds(w, ctx, snap) {
+			writeJSON(w, http.StatusConflict, s.view(row))
+		}
 		return
 	}
 	if err := s.finishStatusLabels(context.WithoutCancel(ctx), row.ID, row.RepositoryID, snap, state, out); err != nil {

@@ -3,6 +3,8 @@
 -- status:review labels once an Admin or Maintain user turns them on. Only the flag is stored; each issue's state is
 -- derived from its synced labels and open/closed state, never stored per issue.
 ALTER TABLE repositories ADD COLUMN status_labels boolean NOT NULL DEFAULT false;
+-- When the setting last changed, so an enable operation finished late (a recheck) cannot undo a later Turn off.
+ALTER TABLE repositories ADD COLUMN status_labels_changed_at timestamptz;
 
 -- The rank of a status label (1 todo, 2 in progress, 3 in review), NULL for any other label. GitHub label names are
 -- case-insensitive, so the match is too. Every status-label check goes through this function.
@@ -40,4 +42,5 @@ DELETE FROM write_operations WHERE kind = 'status_labels';
 ALTER TABLE write_operations DROP CONSTRAINT write_operations_kind_check;
 ALTER TABLE write_operations ADD CONSTRAINT write_operations_kind_check CHECK (kind IN ('create', 'update'));
 DROP FUNCTION status_label_rank(text);
+ALTER TABLE repositories DROP COLUMN status_labels_changed_at;
 ALTER TABLE repositories DROP COLUMN status_labels;
