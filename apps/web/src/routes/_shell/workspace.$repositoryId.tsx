@@ -12,6 +12,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { WriteHistory, writeOperationsQueryKey } from "@/components/write-history";
 import { StatusSourceSetup } from "@/components/status-source-setup";
 import {
+  crossRepositoryOverviewKey,
   currentAccessSeq,
   recordAccessDenied,
   recordOverviewSnapshot,
@@ -251,7 +252,7 @@ function RepositoryWorkspace() {
     if (op.state === "succeeded" || op.issueNumber) {
       void queryClient.invalidateQueries({ queryKey: ["workspaceIssues", repositoryId, viewerKey] });
       void queryClient.invalidateQueries({ queryKey: ["repositoryOverview", session.mode, session.user?.login, repositoryId] });
-      void queryClient.invalidateQueries({ queryKey: ["crossRepositoryOverview", session.mode, session.user?.login] });
+      void queryClient.invalidateQueries({ queryKey: crossRepositoryOverviewKey(session) });
     }
   }
 

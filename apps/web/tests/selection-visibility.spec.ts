@@ -405,3 +405,39 @@ test('a rate-limited detail check that started before a workspace denial cannot 
   await expect(sidebar(page).locator('a[href*="/workspace/1"]')).toHaveCount(0);
   await expect(sidebar(page).getByText('Waiting for GitHub')).toHaveCount(0);
 });
+
+test('a detail retry that denies a repository on Overview refetches the aggregate instead of leaving totals blank', async ({ page }) => {
+  await mockSession(page, signedIn);
+  let detailCalls = 0;
+  let crossCalls = 0;
+  const aggregate = (openIssues: number) => ({
+    days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
+    repositoriesCounted: 2, repositoriesSyncing: 0, withheld: 0, retryAt: null,
+    openIssues: { value: openIssues, coverage: covered }, reviewBacklog: { value: 1, coverage: covered },
+    needsAttention: [], assignedToMe: [], daily: [{ day: '2026-11-17T00:00:00Z', issuesOpened: 1, pullRequestsMerged: 1 }],
+  });
+
+  await page.route('**/graphql', async route => {
+    const { query } = route.request().postDataJSON();
+    if (String(query).startsWith('query SelectedRepositories')) {
+      return route.fulfill({
+        json: { data: { selectedRepositories: { nodes: [selectedRepo('1'), selectedRepo('2')], endCursor: '2', hasNextPage: false, withheld: 0, retryAt: null } } },
+      });
+    }
+    if (String(query).startsWith('query RepositoryDetails')) {
+      if (++detailCalls === 1) return route.fulfill({ status: 502 });
+      return route.fulfill({ json: { data: { a0: null, r0: issuePage('1'), a1: { activity: quietActivity }, r1: issuePage('2') } } });
+    }
+    if (String(query).startsWith('query CrossRepositoryOverview')) {
+      return route.fulfill({ json: { data: { crossRepositoryOverview: aggregate(++crossCalls === 1 ? 41 : 37) } } });
+    }
+    return route.fallback();
+  });
+
+  await page.goto('/');
+  const totals = page.getByRole('region', { name: 'Totals' });
+  await expect(totals).toContainText('41');
+  await sidebar(page).getByRole('button', { name: 'Retry details' }).click();
+  await expect(sidebar(page).getByRole('link', { name: 'repo-1', exact: true })).toHaveCount(0);
+  await expect(totals).toContainText('37');
+});

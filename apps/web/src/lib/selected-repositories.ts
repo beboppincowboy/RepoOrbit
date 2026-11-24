@@ -19,6 +19,9 @@ import { repositorySnapshotKey, repositorySnapshotPrefix, repositorySnapshotsKey
 
 export const selectedRepositoriesKey = (session: ViewerSession) => ["selectedRepositories", session.mode, session.user?.login] as const;
 
+// Prefix of the Overview aggregate for every metric window.
+export const crossRepositoryOverviewKey = (session: ViewerSession) => ["crossRepositoryOverview", session.mode, session.user?.login] as const;
+
 export function viewerKeyOf(session: ViewerSession): string {
   return `${session.mode}:${session.user?.login ?? ""}`;
 }
@@ -88,6 +91,11 @@ function newerRejection(
   sinceSeq: number,
 ): Exclude<RepositoryAccessOutcome, { status: "verified" }> | null {
   return outcome && outcome.status !== "verified" && outcome.seq > sinceSeq ? outcome : null;
+}
+
+// filterAggregateByVisibility blanks an aggregate read that started before a recorded rejection; read it again.
+function refetchAggregateAfterRejection(queryClient: QueryClient, session: ViewerSession) {
+  void queryClient.invalidateQueries({ queryKey: crossRepositoryOverviewKey(session) });
 }
 
 // A denial recorded after a read started outranks that read's "unverified" answer: the older read cannot relist it.
@@ -381,18 +389,21 @@ function applyDetailOutcomes(
     if (!next) next = new Map(current);
     return next;
   };
+  let rejected = false;
   for (const { repositoryId, detail } of updates) {
     const existing = (next ?? current).get(repositoryId);
     if (detail.state === "access-denied") {
       ensureNext().set(repositoryId, { status: "denied", seq: nextAccessSeq() });
       queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
       clearRepositoryIssueDrafts(viewerKey, repositoryId);
+      rejected = true;
     } else if (detail.state === "access-unverified") {
       if (newerDenial(existing, startedAtSeq)) continue;
       ensureNext().set(repositoryId, { status: "unverified", retryAt: detail.retryAt, seq: nextAccessSeq() });
       if (!detail.retryAt) {
         queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
       }
+      rejected = true;
     } else if (!newerRejection(existing, startedAtSeq) && existing?.status !== "verified") {
       ensureNext().set(repositoryId, { status: "verified", seq: nextAccessSeq() });
     }
@@ -401,6 +412,7 @@ function applyDetailOutcomes(
     visibilityByViewer.set(viewerKey, next);
     notifyVisibility();
   }
+  if (rejected) refetchAggregateAfterRejection(queryClient, session);
 }
 
 export function recordAccessDenied(queryClient: QueryClient, session: ViewerSession, repositoryId: string): void {
@@ -408,6 +420,7 @@ export function recordAccessDenied(queryClient: QueryClient, session: ViewerSess
   setViewerOutcome(viewerKey, repositoryId, { status: "denied", seq: nextAccessSeq() });
   queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
   clearRepositoryIssueDrafts(viewerKey, repositoryId);
+  refetchAggregateAfterRejection(queryClient, session);
 }
 
 export function recordAccessUnverified(
@@ -423,6 +436,7 @@ export function recordAccessUnverified(
   if (!opts.preserveSnapshot) {
     queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
   }
+  refetchAggregateAfterRejection(queryClient, session);
 }
 
 export function recordAccessVerified(session: ViewerSession, repositoryId: string, startedAtSeq?: number): boolean {
