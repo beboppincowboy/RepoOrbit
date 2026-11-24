@@ -62,7 +62,9 @@ var errIssueBusy = errors.New("issue busy")
 
 // cleanupRetry is how long the cleanup waits after temporary GitHub trouble. A Defer spends no attempt, so an outage
 // never leaves the job dead (later syncs cannot revive a dead job; only an operator can).
-// ponytail: fixed interval with no backoff; an outage costs one pass per affected repository every 15 minutes.
+// ponytail: fixed interval with no backoff or attempt cap. An outage costs one pass per affected repository every
+// 15 minutes, plus one per newly projected closed issue with a status label (enqueueing moves run_at back to now).
+// Add backoff state to the job if outages run long enough for that to matter.
 const cleanupRetry = 15 * time.Minute
 
 // githubError decides the cleanup's result for a failed GitHub call. Calls made with the installation token pass its

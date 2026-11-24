@@ -354,6 +354,29 @@ func TestUnansweredRemovalDefersCleanup(t *testing.T) {
 	}
 }
 
+// A network failure defers the cleanup, including on the app-JWT calls (installation lookup, token mint).
+func TestNetworkFailureDefersCleanup(t *testing.T) {
+	for name, fails := range map[string]func(*http.Request) bool{
+		"every request": func(*http.Request) bool { return true },
+		"token mint":    func(r *http.Request) bool { return strings.HasSuffix(r.URL.Path, "/access_tokens") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := setup(t)
+			repoID := statusRepo(t, e, true, statusIssue(1, "closed", "status:review"))
+			e.deps.InstallationCredentials = githubapp.NewInstallationCredentials(e.ghc, e.deps.AppKey) // no token cached by the sync
+			e.ghc.HTTP.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+				if fails(r) {
+					return nil, errors.New("dial: connection refused")
+				}
+				return http.DefaultTransport.RoundTrip(r)
+			})
+			if err := e.runCleanup(repoID); !upstreamDeferred(err) {
+				t.Fatalf("want an upstream deferral, got %v", err)
+			}
+		})
+	}
+}
+
 // A permanent refusal (a plain 403) is not temporary: it still spends an attempt so an operator sees it.
 func TestRefusedIssueReadSpendsAttempt(t *testing.T) {
 	e := setup(t)
