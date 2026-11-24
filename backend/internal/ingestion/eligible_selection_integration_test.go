@@ -5,6 +5,10 @@ package ingestion
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -242,42 +246,96 @@ func TestLockEligibleSelectionPostCommitAndExplainInlining(t *testing.T) {
 	f.selection(1, 100, "owned")
 	f.selection(1, 101, "owned")
 
-	explain := func(sql string) string {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	queriesDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "queries")
+
+	loadSQL := func(fileName, queryName string) string {
 		t.Helper()
-		rows, err := f.pool.Query(ctx, sql)
+		fullPath := filepath.Join(queriesDir, fileName)
+		raw, err := os.ReadFile(fullPath)
 		if err != nil {
-			t.Fatalf("EXPLAIN %q: %v", sql, err)
+			t.Fatalf("read %s: %v", fullPath, err)
 		}
-		defer rows.Close()
-		var lines []string
-		for rows.Next() {
-			var line string
-			if err := rows.Scan(&line); err != nil {
-				t.Fatal(err)
+		marker := "-- name: " + queryName
+		idx := strings.Index(string(raw), marker)
+		if idx < 0 {
+			t.Fatalf("%s not found in %s", marker, fullPath)
+		}
+		rest := string(raw)[idx+len(marker):]
+		if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+			rest = rest[nl+1:]
+		}
+		var stmt []string
+		for _, line := range strings.Split(rest, "\n") {
+			trim := strings.TrimSpace(line)
+			if strings.HasPrefix(trim, "-- name:") {
+				break
 			}
-			lines = append(lines, line)
+			if strings.HasPrefix(trim, "--") {
+				continue
+			}
+			stmt = append(stmt, line)
+			if strings.HasSuffix(trim, ";") {
+				break
+			}
 		}
-		if err := rows.Err(); err != nil {
+		return strings.TrimSuffix(strings.TrimSpace(strings.Join(stmt, "\n")), ";")
+	}
+
+	explainPrepared := func(stmtName, sqlText, execArgs string) string {
+		t.Helper()
+		tx, err := f.begin()
+		if err != nil {
 			t.Fatal(err)
 		}
+		if _, err := tx.Exec(ctx, `SET LOCAL plan_cache_mode = force_custom_plan`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`PREPARE %s AS %s`, stmtName, sqlText)); err != nil {
+			t.Fatalf("PREPARE %s: %v\nSQL:\n%s", stmtName, err, sqlText)
+		}
+		execStmt := fmt.Sprintf(`EXPLAIN (VERBOSE) EXECUTE %s`, stmtName)
+		if execArgs != "" {
+			execStmt += "(" + execArgs + ")"
+		}
+		rows, err := tx.Query(ctx, execStmt)
+		if err != nil {
+			t.Fatalf("%s: %v", execStmt, err)
+		}
+		lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = tx.Rollback(ctx)
 		return strings.Join(lines, "\n")
 	}
 
-	lockPlan := explain(`EXPLAIN (VERBOSE) SELECT s.user_id FROM selections s JOIN repositories r ON r.id = s.repository_id WHERE s.repository_id = 100 AND s.user_id = 1 AND is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo) FOR SHARE OF s NOWAIT`)
-	forPlan := explain(`EXPLAIN (VERBOSE) SELECT s.repository_id FROM selections s JOIN repositories r ON r.id = s.repository_id WHERE s.user_id = 1 AND is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo) ORDER BY s.repository_id`)
-
-	for name, plan := range map[string]string{
-		"LockEligibleSelection":            lockPlan,
-		"ListEligibleRepositoryIDsForUser": forPlan,
+	var lockPlan string
+	for _, tc := range []struct {
+		name, file, args string
+	}{
+		{"HasEligibleSelection", "ingestion.sql", "100"},
+		{"ListEligibleSelectors", "ingestion.sql", "100"},
+		{"LockEligibleSelection", "ingestion.sql", "100, 1"},
+		{"ListFollowedRepositoryIDs", "status.sql", ""},
+		{"ListEligibleRepositoryIDsForUser", "status.sql", "1"},
 	} {
+		sqlText := loadSQL(tc.file, tc.name)
+		plan := explainPrepared("plan_"+strings.ToLower(tc.name), sqlText, tc.args)
 		if strings.Contains(plan, "is_eligible_selection") {
-			t.Fatalf("%s plan did not inline is_eligible_selection:\n%s", name, plan)
+			t.Fatalf("%s plan did not inline is_eligible_selection:\n%s", tc.name, plan)
 		}
 		if !strings.Contains(plan, "follow_suspended_at IS NULL") {
-			t.Fatalf("%s plan missing inlined follow_suspended_at IS NULL:\n%s", name, plan)
+			t.Fatalf("%s plan missing inlined follow_suspended_at IS NULL:\n%s", tc.name, plan)
 		}
 		if !strings.Contains(plan, "selections_user_active") && !strings.Contains(plan, "deselected_at IS NULL") {
-			t.Fatalf("%s plan missing deselected_at IS NULL / selections_user_active predicate:\n%s", name, plan)
+			t.Fatalf("%s plan missing deselected_at IS NULL / selections_user_active predicate:\n%s", tc.name, plan)
+		}
+		if tc.name == "LockEligibleSelection" {
+			lockPlan = plan
 		}
 	}
 

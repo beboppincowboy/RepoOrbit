@@ -80,7 +80,10 @@ func (r *queryResolver) issues(ctx context.Context, repositoryIds []string, firs
 	withhold := func() (*model.IssueConnection, error) {
 		return &model.IssueConnection{Nodes: []*model.Issue{}, Withheld: auth.withheld + len(auth.ids), RetryAt: auth.retryAtString()}, nil
 	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth, false, withhold, func() (*model.IssueConnection, error) {
+	if len(auth.ids) == 0 {
+		return withhold()
+	}
+	return guardedRead(ctx, r.RepoAccess.Pool, auth, func() (*model.IssueConnection, error) {
 		rows, err := r.Queries.ListIssues(ctx, db.ListIssuesParams{Demo: false, RepositoryIds: auth.ids, After: args.after, Number: issueNumber, PageSize: int32(args.limit + 1)})
 		if err != nil {
 			return nil, fmt.Errorf("database unavailable")

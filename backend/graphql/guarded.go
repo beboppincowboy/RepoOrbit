@@ -122,14 +122,9 @@ func guardedRead[T any](
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	auth guardedAuth,
-	runWhenEmpty bool,
-	onEmpty func() (T, error),
 	read func() (T, error),
 	onStale func() (T, error),
 ) (T, error) {
-	if len(auth.ids) == 0 && !runWhenEmpty {
-		return onEmpty()
-	}
 	val, err := read()
 	if err != nil {
 		var zero T
@@ -197,7 +192,10 @@ func readGuardedEvidencePage[N any, C any](
 	withhold := func() (C, error) {
 		return buildConn(pageData[N]{nodes: []*N{}}, auth.withheld+len(auth.ids), auth.retryAtString()), nil
 	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth, false, withhold, func() (C, error) {
+	if len(auth.ids) == 0 {
+		return withhold()
+	}
+	return guardedRead(ctx, r.RepoAccess.Pool, auth, func() (C, error) {
 		page, err := queryEvidencePage(ctx, r.RepoAccess.Pool, args.limit, sql, []any{auth.ids, args.after, args.limit + 1}, scanRow)
 		if err != nil {
 			return zero, err

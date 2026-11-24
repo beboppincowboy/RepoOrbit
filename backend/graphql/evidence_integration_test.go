@@ -28,63 +28,186 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
 
+type evidenceHarness struct {
+	t         *testing.T
+	dbURL     string
+	pool      *pgxpool.Pool
+	gh        *fake.Server
+	client    *githubapp.Client
+	limitRepo atomic.Int64
+	resetUnix int64
+	q         *db.Queries
+	authSvc   *auth.Service
+	repos     *repositories.Service
+	ah        *auth.Handler
+	mux       *http.ServeMux
+	api       *httptest.Server
+}
+
+func newEvidenceHarness(t *testing.T) *evidenceHarness {
+	t.Helper()
+	dbURL, pool := testutil.Database(t)
+	gh := fake.New("cid", "secret")
+	h := &evidenceHarness{
+		t:         t,
+		dbURL:     dbURL,
+		pool:      pool,
+		gh:        gh,
+		resetUnix: time.Now().Add(time.Hour).UTC().Unix(),
+	}
+	ghHandler := gh.Handler()
+	gs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id := h.limitRepo.Load(); id != 0 && r.URL.Path == fmt.Sprintf("/repositories/%d", id) {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(h.resetUnix, 10))
+			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+			return
+		}
+		ghHandler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(gs.Close)
+
+	h.client = githubapp.New("cid", "secret", gs.URL, gs.URL, "http://app.test/auth/github/callback")
+	h.q = db.New(pool)
+	h.authSvc = &auth.Service{Pool: pool, Queries: h.q, GitHub: h.client, Key: bytes.Repeat([]byte{1}, 32)}
+	h.repos = &repositories.Service{Pool: pool, Queries: h.q, GitHub: h.client, TokenSource: h.authSvc, TTL: time.Nanosecond}
+	h.ah = &auth.Handler{Service: h.authSvc, AppURL: "http://app.test"}
+	h.mux = http.NewServeMux()
+	h.mux.Handle("/auth/", h.ah.Routes())
+	h.mux.Handle("/graphql", h.ah.Protect(Server(&Resolver{Queries: h.q, RepoAccess: h.repos})))
+	h.api = httptest.NewServer(h.mux)
+	t.Cleanup(h.api.Close)
+	return h
+}
+
+func (h *evidenceHarness) addShortTimeoutEndpoint(path string, timeout time.Duration) {
+	h.mux.Handle(path, h.ah.Protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		shortCtx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		Server(&Resolver{Queries: h.q, RepoAccess: h.repos}).ServeHTTP(w, r.WithContext(shortCtx))
+	})))
+}
+
+func (h *evidenceHarness) addSingleConnEndpoint(ctx context.Context, path string) {
+	h.t.Helper()
+	cfg, err := pgxpool.ParseConfig(h.dbURL)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	cfg.MaxConns = 1
+	singlePool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	h.t.Cleanup(singlePool.Close)
+	singleRepos := &repositories.Service{Pool: singlePool, Queries: db.New(singlePool), GitHub: h.client, TokenSource: h.authSvc, TTL: time.Minute}
+	h.mux.Handle(path, h.ah.Protect(Server(&Resolver{Queries: db.New(singlePool), RepoAccess: singleRepos})))
+}
+
+func (h *evidenceHarness) signIn(login string) *http.Client {
+	h.t.Helper()
+	jar, _ := cookiejar.New(nil)
+	c := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := c.Get(h.api.URL + "/auth/github/login")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	resp.Body.Close()
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	v := loc.Query()
+	v.Set("as", login)
+	loc.RawQuery = v.Encode()
+	resp, err = c.Get(loc.String())
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	resp.Body.Close()
+	cb, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	resp, err = c.Get(h.api.URL + cb.RequestURI())
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 302 || resp.Header.Get("Location") != "http://app.test/" {
+		h.t.Fatalf("login %s: %d %s", login, resp.StatusCode, resp.Header.Get("Location"))
+	}
+	return c
+}
+
+func (h *evidenceHarness) userID(ctx context.Context, login string) int64 {
+	h.t.Helper()
+	var id int64
+	if err := h.pool.QueryRow(ctx, `SELECT id FROM users WHERE login=$1`, login).Scan(&id); err != nil {
+		h.t.Fatal(err)
+	}
+	return id
+}
+
+func (h *evidenceHarness) runAt(c *http.Client, path, query string) string {
+	h.t.Helper()
+	me, err := c.Get(h.api.URL + "/auth/me")
+	if err != nil {
+		h.t.Error(err)
+		return ""
+	}
+	var session struct {
+		CSRFToken string `json:"csrfToken"`
+	}
+	err = json.NewDecoder(me.Body).Decode(&session)
+	me.Body.Close()
+	if err != nil {
+		h.t.Error(err)
+		return ""
+	}
+	body, err := json.Marshal(map[string]string{"query": query})
+	if err != nil {
+		h.t.Error(err)
+		return ""
+	}
+	req, err := http.NewRequest("POST", h.api.URL+path, bytes.NewReader(body))
+	if err != nil {
+		h.t.Error(err)
+		return ""
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://app.test")
+	req.Header.Set("X-CSRF-Token", session.CSRFToken)
+	resp, err := c.Do(req)
+	if err != nil {
+		h.t.Error(err)
+		return ""
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.t.Error(err)
+		return ""
+	}
+	if resp.StatusCode != 200 {
+		h.t.Errorf("status %d: %s", resp.StatusCode, b)
+	}
+	return string(b)
+}
+
+func (h *evidenceHarness) run(c *http.Client, query string) string {
+	h.t.Helper()
+	return h.runAt(c, "/graphql", query)
+}
+
 func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 	ctx := context.Background()
-	_, pool := testutil.Database(t)
-	gh := fake.New("cid", "secret")
-	gs := httptest.NewServer(gh.Handler())
-	defer gs.Close()
-	client := githubapp.New("cid", "secret", gs.URL, gs.URL, "http://app.test/auth/github/callback")
-	q := db.New(pool)
-	authSvc := &auth.Service{Pool: pool, Queries: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
-	repos := &repositories.Service{Pool: pool, Queries: q, GitHub: client, TokenSource: authSvc, TTL: time.Nanosecond}
-	ah := &auth.Handler{Service: authSvc, AppURL: "http://app.test"}
-	mux := http.NewServeMux()
-	mux.Handle("/auth/", ah.Routes())
-	mux.Handle("/graphql", ah.Protect(Server(&Resolver{Queries: q, RepoAccess: repos})))
-	api := httptest.NewServer(mux)
-	defer api.Close()
-	signIn := func(login string) *http.Client {
-		t.Helper()
-		jar, _ := cookiejar.New(nil)
-		c := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		resp, err := c.Get(api.URL + "/auth/github/login")
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		loc, err := url.Parse(resp.Header.Get("Location"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		v := loc.Query()
-		v.Set("as", login)
-		loc.RawQuery = v.Encode()
-		resp, err = c.Get(loc.String())
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		cb, err := url.Parse(resp.Header.Get("Location"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp, err = c.Get(api.URL + cb.RequestURI())
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != 302 || resp.Header.Get("Location") != "http://app.test/" {
-			t.Fatalf("login %s: %d %s", login, resp.StatusCode, resp.Header.Get("Location"))
-		}
-		return c
-	}
+	h := newEvidenceHarness(t)
+	pool, gh, repos := h.pool, h.gh, h.repos
+	signIn, run := h.signIn, h.run
 	alice := signIn("alice")
 	bob := signIn("bob")
-	var aliceID int64
-	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE login='alice'`).Scan(&aliceID); err != nil {
-		t.Fatal(err)
-	}
+	aliceID := h.userID(ctx, "alice")
 	repo := gh.AddRepo("alice", "secret", true)
 	gh.Install("alice", 9, repo)
 	if err := repos.Connect(ctx, aliceID, repo); err != nil {
@@ -96,42 +219,6 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 		}
 	}
 	query := fmt.Sprintf(`{ pullRequestEvidence(repositoryIds:["%d"]) { nodes { title author { id } } withheld } reviewEvidence(repositoryIds:["%d"]) { nodes { body author { type } } withheld } commentEvidence(repositoryIds:["%d"]) { nodes { body author { id } } withheld } }`, repo, repo, repo)
-	run := func(c *http.Client, query string) string {
-		t.Helper()
-		me, err := c.Get(api.URL + "/auth/me")
-		if err != nil {
-			t.Error(err)
-			return ""
-		}
-		var session struct {
-			CSRFToken string `json:"csrfToken"`
-		}
-		err = json.NewDecoder(me.Body).Decode(&session)
-		me.Body.Close()
-		if err != nil {
-			t.Error(err)
-			return ""
-		}
-		body, _ := json.Marshal(map[string]string{"query": query})
-		req, _ := http.NewRequest("POST", api.URL+"/graphql", bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", "http://app.test")
-		req.Header.Set("X-CSRF-Token", session.CSRFToken)
-		resp, err := c.Do(req)
-		if err != nil {
-			t.Error(err)
-			return ""
-		}
-		defer resp.Body.Close()
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Error(err)
-		}
-		if resp.StatusCode != 200 {
-			t.Errorf("status %d: %s", resp.StatusCode, b)
-		}
-		return string(b)
-	}
 	got := run(alice, query)
 	for _, s := range []string{"private PR", "private review", "private comment", "Bot"} {
 		if !strings.Contains(got, s) {
@@ -353,84 +440,14 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 
 func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 	ctx := context.Background()
-	dbURL, pool := testutil.Database(t)
-	gh := fake.New("cid", "secret")
-	var limitRepo atomic.Int64
-	resetUnix := time.Now().Add(time.Hour).UTC().Unix()
-	ghHandler := gh.Handler()
-	gs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if id := limitRepo.Load(); id != 0 && r.URL.Path == fmt.Sprintf("/repositories/%d", id) {
-			w.Header().Set("X-RateLimit-Remaining", "0")
-			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetUnix, 10))
-			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
-			return
-		}
-		ghHandler.ServeHTTP(w, r)
-	}))
-	defer gs.Close()
+	h := newEvidenceHarness(t)
+	h.addShortTimeoutEndpoint("/graphql-short", 150*time.Millisecond)
+	h.addSingleConnEndpoint(ctx, "/graphql-single")
 
-	client := githubapp.New("cid", "secret", gs.URL, gs.URL, "http://app.test/auth/github/callback")
-	q := db.New(pool)
-	authSvc := &auth.Service{Pool: pool, Queries: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
-	repos := &repositories.Service{Pool: pool, Queries: q, GitHub: client, TokenSource: authSvc, TTL: time.Nanosecond}
-	ah := &auth.Handler{Service: authSvc, AppURL: "http://app.test"}
-	mux := http.NewServeMux()
-	mux.Handle("/auth/", ah.Routes())
-	gqlHandler := ah.Protect(Server(&Resolver{Queries: q, RepoAccess: repos}))
-	mux.Handle("/graphql", gqlHandler)
-	mux.Handle("/graphql-short", ah.Protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		shortCtx, cancel := context.WithTimeout(r.Context(), 150*time.Millisecond)
-		defer cancel()
-		Server(&Resolver{Queries: q, RepoAccess: repos}).ServeHTTP(w, r.WithContext(shortCtx))
-	})))
-
-	cfg, err := pgxpool.ParseConfig(dbURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.MaxConns = 1
-	singlePool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer singlePool.Close()
-	singleRepos := &repositories.Service{Pool: singlePool, Queries: db.New(singlePool), GitHub: client, TokenSource: authSvc, TTL: time.Minute}
-	mux.Handle("/graphql-single", ah.Protect(Server(&Resolver{Queries: db.New(singlePool), RepoAccess: singleRepos})))
-
-	api := httptest.NewServer(mux)
-	defer api.Close()
-
-	signIn := func(login string) *http.Client {
-		t.Helper()
-		jar, _ := cookiejar.New(nil)
-		c := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		resp, err := c.Get(api.URL + "/auth/github/login")
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		loc, _ := url.Parse(resp.Header.Get("Location"))
-		v := loc.Query()
-		v.Set("as", login)
-		loc.RawQuery = v.Encode()
-		resp, err = c.Get(loc.String())
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		cb, _ := url.Parse(resp.Header.Get("Location"))
-		resp, err = c.Get(api.URL + cb.RequestURI())
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		return c
-	}
-	alice := signIn("alice")
-	var aliceID int64
-	if err := pool.QueryRow(ctx, `SELECT id FROM users WHERE login='alice'`).Scan(&aliceID); err != nil {
-		t.Fatal(err)
-	}
+	pool, gh, repos, q := h.pool, h.gh, h.repos, h.q
+	alice := h.signIn("alice")
+	bob := h.signIn("bob")
+	aliceID := h.userID(ctx, "alice")
 	repo := gh.AddRepo("alice", "secret", true)
 	gh.Install("alice", 9, repo)
 	if err := repos.Connect(ctx, aliceID, repo); err != nil {
@@ -456,54 +473,45 @@ func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 		 (300,$1,1,'c 1','url',now(),now(),1,'alice','User'),
 		 (301,$1,1,'c 2','url',now(),now(),1,'alice','User')`, []any{repo}},
 		{`INSERT INTO activity_releases(source_id,repository_id,name,tag_name,body,html_url,created_at,updated_at,published_at,observed_at,prerelease,author_id,author_login,author_type) VALUES
-		 (400,$1,'rel 1','v1','','url',now(),now(),now(),now(),false,1,'alice','User'),
+		 (400,$1,'rel 1','v1','release notes','url',now(),now(),now(),now(),false,1,'alice','User'),
 		 (401,$1,'rel 2','v2','','url',now(),now(),now(),now(),false,1,'alice','User')`, []any{repo}},
-		{`INSERT INTO activity_issue_events(source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at,actor_id,actor_login,actor_type) VALUES
-		 (500,$1,10,1,'closed','url',now(),now(),1,'alice','User'),
-		 (501,$1,10,1,'reopened','url',now(),now(),1,'alice','User')`, []any{repo}},
+		{`INSERT INTO activity_issue_events(source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at,actor_id,actor_login,actor_type,assignee_id,assignee_login,assignee_type,label) VALUES
+		 (500,$1,10,1,'assigned','url',now(),now(),1,'alice','User',2,'bob','User','bug'),
+		 (501,$1,10,1,'reopened','url',now(),now(),1,'alice','User',NULL,NULL,NULL,NULL)`, []any{repo}},
 	} {
 		if _, err := pool.Exec(ctx, step.sql, step.args...); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	runAt := func(c *http.Client, path, query string) string {
-		t.Helper()
-		me, err := c.Get(api.URL + "/auth/me")
-		if err != nil {
-			t.Fatal(err)
+	t.Run("releaseEvidence_and_issueEventEvidence_authorized_and_unselected", func(t *testing.T) {
+		relQ := fmt.Sprintf(`{ releaseEvidence(repositoryIds:["%d"], first: 1) { nodes { id repositoryId name tagName body url prerelease author { id login type } } endCursor hasNextPage withheld retryAt } }`, repo)
+		gotRel := h.run(alice, relQ)
+		for _, want := range []string{`"id":"400"`, `"name":"rel 1"`, `"tagName":"v1"`, `"body":"release notes"`, `"endCursor":"400"`, `"hasNextPage":true`, `"withheld":0`} {
+			if !strings.Contains(gotRel, want) {
+				t.Fatalf("authorized releaseEvidence missing %s: %s", want, gotRel)
+			}
 		}
-		var session struct {
-			CSRFToken string `json:"csrfToken"`
+		if strings.Contains(gotRel, `"errors"`) || !strings.Contains(h.run(bob, relQ), `"nodes":[],"endCursor":null,"hasNextPage":false,"withheld":0`) {
+			t.Fatalf("unauthorized releaseEvidence leak or error: %s", gotRel)
 		}
-		if err := json.NewDecoder(me.Body).Decode(&session); err != nil {
-			t.Fatal(err)
-		}
-		me.Body.Close()
-		body, _ := json.Marshal(map[string]string{"query": query})
-		req, _ := http.NewRequest("POST", api.URL+path, bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", "http://app.test")
-		req.Header.Set("X-CSRF-Token", session.CSRFToken)
-		resp, err := c.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != 200 {
-			t.Fatalf("status %d: %s", resp.StatusCode, b)
-		}
-		return string(b)
-	}
-	run := func(c *http.Client, query string) string {
-		t.Helper()
-		return runAt(c, "/graphql", query)
-	}
 
+		evQ := fmt.Sprintf(`{ issueEventEvidence(repositoryIds:["%d"], first: 1) { nodes { id repositoryId issueId issueNumber event url actor { login } assignee { id login type } label } endCursor hasNextPage withheld retryAt } }`, repo)
+		gotEv := h.run(alice, evQ)
+		for _, want := range []string{`"id":"500"`, `"issueId":"10"`, `"issueNumber":1`, `"event":"assigned"`, `"assignee":{"id":"2","login":"bob","type":"User"}`, `"label":"bug"`, `"endCursor":"500"`, `"hasNextPage":true`, `"withheld":0`} {
+			if !strings.Contains(gotEv, want) {
+				t.Fatalf("authorized issueEventEvidence missing %s: %s", want, gotEv)
+			}
+		}
+		if strings.Contains(gotEv, `"errors"`) || !strings.Contains(h.run(bob, evQ), `"nodes":[],"endCursor":null,"hasNextPage":false,"withheld":0`) {
+			t.Fatalf("unauthorized issueEventEvidence leak or error: %s", gotEv)
+		}
+	})
+
+	run, runAt := h.run, h.runAt
 	// Duplicate repositoryIds deduplicates withheld to 1.
-	limitRepo.Store(pub)
-	wantRetry := time.Unix(resetUnix, 0).UTC().Format(time.RFC3339)
+	h.limitRepo.Store(pub)
+	wantRetry := time.Unix(h.resetUnix, 0).UTC().Format(time.RFC3339)
 	if got := run(alice, fmt.Sprintf(`{ issues(repositoryIds: ["%d","%d"], first: 1) { nodes { title } withheld retryAt } }`, pub, pub)); !strings.Contains(got, fmt.Sprintf(`"nodes":[],"withheld":1,"retryAt":"%s"`, wantRetry)) {
 		t.Fatalf("duplicate repositoryIds withheld count wrong: %s", got)
 	}
@@ -566,6 +574,7 @@ func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 			}
 		})
 	}
+	limitRepo := &h.limitRepo
 	limitRepo.Store(0)
 
 	// 1-connection pool test: pullRequestEvidence(first: 1) with HasNextPage == true must close rows before fence.Current.
@@ -616,94 +625,13 @@ func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 
 func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 	ctx := context.Background()
-	_, pool := testutil.Database(t)
-	gh := fake.New("cid", "secret")
-	var limitRepo atomic.Int64
-	resetUnix := time.Now().Add(time.Hour).UTC().Unix()
-	ghHandler := gh.Handler()
-	gs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if id := limitRepo.Load(); id != 0 && r.URL.Path == fmt.Sprintf("/repositories/%d", id) {
-			w.Header().Set("X-RateLimit-Remaining", "0")
-			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetUnix, 10))
-			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
-			return
-		}
-		ghHandler.ServeHTTP(w, r)
-	}))
-	defer gs.Close()
+	h := newEvidenceHarness(t)
+	pool, gh, repos, run := h.pool, h.gh, h.repos, h.run
+	limitRepo := &h.limitRepo
 
-	client := githubapp.New("cid", "secret", gs.URL, gs.URL, "http://app.test/auth/github/callback")
-	q := db.New(pool)
-	authSvc := &auth.Service{Pool: pool, Queries: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
-	repos := &repositories.Service{Pool: pool, Queries: q, GitHub: client, TokenSource: authSvc, TTL: time.Nanosecond}
-	ah := &auth.Handler{Service: authSvc, AppURL: "http://app.test"}
-	mux := http.NewServeMux()
-	mux.Handle("/auth/", ah.Routes())
-	mux.Handle("/graphql", ah.Protect(Server(&Resolver{Queries: q, RepoAccess: repos})))
-	api := httptest.NewServer(mux)
-	defer api.Close()
-
-	signIn := func(login string) *http.Client {
-		t.Helper()
-		jar, _ := cookiejar.New(nil)
-		c := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-		resp, err := c.Get(api.URL + "/auth/github/login")
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		loc, _ := url.Parse(resp.Header.Get("Location"))
-		v := loc.Query()
-		v.Set("as", login)
-		loc.RawQuery = v.Encode()
-		resp, err = c.Get(loc.String())
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		cb, _ := url.Parse(resp.Header.Get("Location"))
-		resp, err = c.Get(api.URL + cb.RequestURI())
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		return c
-	}
-
-	alice := signIn("alice")
-	bob := signIn("bob")
-	var aliceID, bobID int64
-	if err := pool.QueryRow(ctx, `SELECT (SELECT id FROM users WHERE login='alice'), (SELECT id FROM users WHERE login='bob')`).Scan(&aliceID, &bobID); err != nil {
-		t.Fatal(err)
-	}
-
-	run := func(c *http.Client, query string) string {
-		t.Helper()
-		me, err := c.Get(api.URL + "/auth/me")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var session struct {
-			CSRFToken string `json:"csrfToken"`
-		}
-		_ = json.NewDecoder(me.Body).Decode(&session)
-		me.Body.Close()
-		body, _ := json.Marshal(map[string]string{"query": query})
-		req, _ := http.NewRequest("POST", api.URL+"/graphql", bytes.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", "http://app.test")
-		req.Header.Set("X-CSRF-Token", session.CSRFToken)
-		resp, err := c.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode != 200 {
-			t.Fatalf("status %d: %s", resp.StatusCode, b)
-		}
-		return string(b)
-	}
+	alice := h.signIn("alice")
+	bob := h.signIn("bob")
+	aliceID, bobID := h.userID(ctx, "alice"), h.userID(ctx, "bob")
 
 	// Setup Alice's sole private installed repo and verify sole-repository installation removal on crossRepositoryOverview.
 	priv := gh.AddRepo("alice", "sole-secret", true)
@@ -749,7 +677,7 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 
 	// Pre-read rate-limited repositoryOverview returns ACCESS_UNVERIFIED with extensions.retryAt.
 	limitRepo.Store(pub)
-	wantRetry := time.Unix(resetUnix, 0).UTC().Format(time.RFC3339)
+	wantRetry := time.Unix(h.resetUnix, 0).UTC().Format(time.RFC3339)
 	if got := run(alice, fmt.Sprintf(`{ repositoryOverview(id: "%d", days: 7) { fullName } }`, pub)); !strings.Contains(got, "ACCESS_UNVERIFIED") || !strings.Contains(got, fmt.Sprintf(`"retryAt":"%s"`, wantRetry)) {
 		t.Fatalf("pre-read rate-limited repositoryOverview: %s", got)
 	}
