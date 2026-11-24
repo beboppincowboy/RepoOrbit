@@ -586,6 +586,10 @@ export async function retryDetailBatch(
         };
       },
     );
+  } catch (error) {
+    // Navigation, a page-1 refetch, or sign-out canceled this retry on purpose; that is not a failed check.
+    if (controller.signal.aborted || currentViewerGeneration(viewerKey) !== startGeneration) return;
+    throw error;
   } finally {
     if (controllers.get(batchKey) === controller) {
       controllers.delete(batchKey);
