@@ -91,12 +91,14 @@ export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal
     const hasIssuesAlias = Object.hasOwn(data, issuesAlias);
     const repository = data[repoAlias];
     const issues = data[issuesAlias];
-    const accessError = errors.find(error => error.path?.[0] === repoAlias || error.path?.[0] === issuesAlias);
+    const repoError = errors.find(error => error.path?.[0] === repoAlias);
+    const accessError = repoError ?? errors.find(error => error.path?.[0] === issuesAlias);
+    // An error-free null repository is the definitive denial; uncertainty on the issues alias cannot soften it.
+    if (hasRepoAlias && repository === null && !repoError) {
+      return { state: "access-denied" };
+    }
     if (accessError || issues?.withheld) {
       return { state: "access-unverified", retryAt: accessError?.extensions?.retryAt ?? issues?.retryAt ?? null };
-    }
-    if (hasRepoAlias && repository === null) {
-      return { state: "access-denied" };
     }
     if (!hasRepoAlias || !hasIssuesAlias || !repository || !issues || typeof repository !== "object" || typeof issues !== "object") {
       throw new Error("Unable to load repository details");
