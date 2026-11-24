@@ -97,7 +97,7 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 			result.Nodes = append(result.Nodes, &model.Repository{ID: cursorID, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: true, SyncState: string(repositories.SyncStateFor(true)), Activity: activityStatus(false, true)})
 		}
 	}
-	if err := r.attachMetadataStatus(ctx, userID, result.Nodes); err != nil {
+	if err := r.loadSelectedStatuses(ctx, userID, result.Nodes, selectedRepositoryStatusSelection(ctx)); err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
 	current, err := readFence.Current(ctx, r.RepoAccess.Pool)
@@ -148,7 +148,7 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 	}
 	repo := &model.Repository{ID: id, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: len(selected) == 1, SyncState: string(repositories.SyncStateFor(len(selected) == 1)), Activity: activityStatus(false, len(selected) == 1)}
 	if len(selected) == 1 {
-		if err := r.attachMetadataStatus(ctx, userID, []*model.Repository{repo}); err != nil {
+		if err := r.loadSelectedStatuses(ctx, userID, []*model.Repository{repo}, repositoryStatusSelection(ctx)); err != nil {
 			return nil, fmt.Errorf("database unavailable")
 		}
 	}

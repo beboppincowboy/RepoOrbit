@@ -60,8 +60,10 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 				return nil, fmt.Errorf("database unavailable")
 			}
 			repo := &model.Repository{ID: strconv.FormatInt(targetID, 10), Activity: activityStatus(false, true)}
-			if err := r.attachMetadataStatus(ctx, auth.userID, []*model.Repository{repo}); err != nil {
-				return nil, fmt.Errorf("database unavailable")
+			if overviewActivitySelected(ctx) {
+				if err := r.loadActivityStatus(ctx, []*model.Repository{repo}); err != nil {
+					return nil, fmt.Errorf("database unavailable")
+				}
 			}
 			return &model.RepositoryOverview{
 				Overview: overview, FullName: auth.checks[targetID].Repo.FullName,
