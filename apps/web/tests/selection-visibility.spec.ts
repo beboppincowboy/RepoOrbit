@@ -441,3 +441,70 @@ test('a detail retry that denies a repository on Overview refetches the aggregat
   await expect(sidebar(page).getByRole('link', { name: 'repo-1', exact: true })).toHaveCount(0);
   await expect(totals).toContainText('37');
 });
+
+test('a rate-limited repository missing from a complete selection refresh loses its saved data link and stops the wait', async ({ page }) => {
+  await mockSession(page, signedIn);
+  const retryAt = new Date(Date.now() + 600_000).toISOString();
+  let phase: 'ok' | 'limited' | 'dropped' = 'ok';
+
+  await page.route('**/graphql', async route => {
+    const { query, variables } = route.request().postDataJSON();
+    if (String(query).startsWith('query SelectedRepositories')) {
+      const nodes = phase === 'dropped' ? [selectedRepo('1')] : [selectedRepo('1'), selectedRepo('2')];
+      return route.fulfill({ json: { data: { selectedRepositories: { nodes, endCursor: String(nodes.length), hasNextPage: false, withheld: 0, retryAt: null } } } });
+    }
+    if (String(query).startsWith('query RepositoryDetails')) {
+      const ids = Object.values(variables as Record<string, string>);
+      const data: Record<string, unknown> = {};
+      const errors: unknown[] = [];
+      ids.forEach((id, i) => {
+        if (id === '2' && phase === 'limited') {
+          data[`a${i}`] = null;
+          data[`r${i}`] = { nodes: [], hasNextPage: false, withheld: 1, retryAt };
+          errors.push({ message: 'Rate limited', path: [`a${i}`], extensions: { code: 'ACCESS_UNVERIFIED', retryAt } });
+        } else {
+          data[`a${i}`] = { activity: quietActivity };
+          data[`r${i}`] = issuePage(id);
+        }
+      });
+      return route.fulfill({ json: errors.length > 0 ? { data, errors } : { data } });
+    }
+    if (String(query).startsWith('query RepositoryOverview')) {
+      return route.fulfill({ json: { data: { repositoryOverview: repoOverview(variables.id) } } });
+    }
+    if (String(query).startsWith('query CrossRepositoryOverview')) {
+      return route.fulfill({
+        json: {
+          data: {
+            crossRepositoryOverview: {
+              days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
+              repositoriesCounted: 1, repositoriesSyncing: 0, withheld: 0, retryAt: null,
+              openIssues: { value: 3, coverage: covered }, reviewBacklog: { value: 1, coverage: covered },
+              needsAttention: [], assignedToMe: [], daily: [],
+            },
+          },
+        },
+      });
+    }
+    return route.fallback();
+  });
+  const reconnect = () => page.evaluate(() => {
+    window.dispatchEvent(new Event('offline'));
+    window.dispatchEvent(new Event('online'));
+  });
+
+  await page.goto('/workspace/2?days=30');
+  await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
+  await sidebar(page).getByRole('link', { name: 'Overview', exact: true }).click();
+
+  phase = 'limited';
+  await reconnect();
+  await expect(sidebar(page).getByText('Waiting for GitHub')).toBeVisible();
+  await expect(sidebar(page).getByRole('link', { name: 'Repository', exact: true })).toHaveAttribute('href', /\/workspace\/2/);
+
+  phase = 'dropped';
+  await reconnect();
+  await expect(sidebar(page).getByRole('link', { name: 'Repository', exact: true })).toHaveCount(0);
+  await expect(sidebar(page).locator('a[href*="/workspace/2"]')).toHaveCount(0);
+  await expect(sidebar(page).getByText('Waiting for GitHub')).toHaveCount(0);
+});
