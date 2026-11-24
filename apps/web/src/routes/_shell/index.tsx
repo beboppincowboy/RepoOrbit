@@ -15,6 +15,7 @@ import {
   useSelectedRepositories,
   useSelectedRepositoryMetadata,
   useSelectionVisibility,
+  viewerKeyOf,
 } from "@/lib/selected-repositories";
 
 const windows = [7, 30, 90] as const;
@@ -45,7 +46,7 @@ function Overview() {
   const visibility = useSelectionVisibility(session);
   const rows = selectVisibleRows(metadata, selection, visibility);
   const { withheldCount: selectionWithheld, retryAt: selectionRetryAt } = selectWithheldSummary(metadata, selection, rows, visibility);
-  const [fold, toggleFold] = useFold(`repoorbit:overview-fold:${session.mode}:${session.user?.login ?? ""}`);
+  const [fold, toggleFold] = useFold(`repoorbit:overview-fold:${viewerKeyOf(session)}`);
   const query = useQuery({
     queryKey: ["crossRepositoryOverview", session.mode, session.user?.login, days],
     queryFn: async ({ signal }) => {
@@ -65,8 +66,7 @@ function Overview() {
     <p>Could not load repositories. Check that the local services are running.</p>
     <Button className="mt-3" onClick={() => void selection.refetch()}>Retry</Button>
   </div>;
-  const filtered = query.data ? filterAggregateByVisibility(query.data.overview, query.data.startedAtSeq, visibility) : null;
-  const data = filtered?.data;
+  const data = query.data ? filterAggregateByVisibility(query.data.overview, query.data.startedAtSeq, visibility) : undefined;
   const total = data ? data.repositoriesCounted + data.repositoriesSyncing : rows.length;
   const empty = selection.hasNextPage ? !!data && !query.isError && total === 0 : rows.length === 0;
   if (empty && (data?.withheld || data?.retryAt || selectionWithheld || selectionRetryAt)) return <div className="flex flex-col gap-3">

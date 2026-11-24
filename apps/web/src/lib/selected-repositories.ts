@@ -17,7 +17,6 @@ import {
 import { clearRepositoryIssueDrafts } from "@/lib/drafts";
 import { repositorySnapshotKey, repositorySnapshotPrefix, repositorySnapshotsKey } from "@/lib/repository-snapshots";
 
-// Exact key for selection pages with details. Invalidate by prefix to refresh the viewer's metadata pages too.
 export const selectedRepositoriesKey = (session: ViewerSession) => ["selectedRepositories", session.mode, session.user?.login] as const;
 
 export function viewerKeyOf(session: ViewerSession): string {
@@ -44,10 +43,7 @@ export type VisibleSelectedRow = {
   displayName: string;
   canRevealName: boolean;
   retryAt: string | null;
-  pageStartedAtSeq: number;
 };
-
-// --- Internal viewer-scoped visibility overlay and retry registry -------------------------------
 
 let accessSeq = 0;
 export function currentAccessSeq(): number {
@@ -87,6 +83,13 @@ function setViewerOutcome(viewerKey: string, repositoryId: string, outcome: Repo
   notifyVisibility();
 }
 
+function newerRejection(
+  outcome: RepositoryAccessOutcome | undefined,
+  sinceSeq: number,
+): Exclude<RepositoryAccessOutcome, { status: "verified" }> | null {
+  return outcome && outcome.status !== "verified" && outcome.seq > sinceSeq ? outcome : null;
+}
+
 function bumpViewerGeneration(viewerKey: string): number {
   const next = (generationByViewer.get(viewerKey) ?? 0) + 1;
   generationByViewer.set(viewerKey, next);
@@ -108,14 +111,21 @@ function batchKeyOf(batch: SelectedBatch): string {
   return batch.repositories.map(repo => repo.id).join(",");
 }
 
-// --- Query hooks --------------------------------------------------------------------------------
-
 export function useSelectionVisibility(session: ViewerSession): ViewerVisibility {
   const key = viewerKeyOf(session);
   return useSyncExternalStore(
     subscribeVisibility,
     () => getViewerVisibility(key),
     () => emptyVisibility,
+  );
+}
+
+export function useRepositoryVisibility(session: ViewerSession, repositoryId: string): RepositoryAccessOutcome | undefined {
+  const key = viewerKeyOf(session);
+  return useSyncExternalStore(
+    subscribeVisibility,
+    () => getViewerVisibility(key).get(repositoryId),
+    () => undefined,
   );
 }
 
@@ -127,8 +137,6 @@ function useSelectedRepositoryMetadataPage(session: ViewerSession) {
   });
 }
 
-// Pages the viewer's verified selections and enriches each page with activity and issue details.
-// Applies per-alias access outcomes through Selection commands inside this module.
 export function useSelectedRepositories(session: ViewerSession) {
   const fetchPage = useSelectedRepositoryMetadataPage(session);
   const queryClient = useQueryClient();
@@ -143,14 +151,15 @@ export function useSelectedRepositories(session: ViewerSession) {
       const startedAtSeq = currentAccessSeq();
       const page = await fetchSelectedRepositoryDetailsPage(fetchPage(pageParam), signal);
       signal.throwIfAborted();
+      const updates: { repositoryId: string; detail: RepositoryDetail }[] = [];
       for (const batch of page.batches) {
         if (!batch.details) continue;
         batch.repositories.forEach((repo, index) => {
           const detail = batch.details?.[index];
-          if (!detail) return;
-          applyDetailOutcome(queryClient, session, repo.id, detail, startedAtSeq);
+          if (detail) updates.push({ repositoryId: repo.id, detail });
         });
       }
+      applyDetailOutcomes(queryClient, session, updates, startedAtSeq);
       return { ...page, startedAtSeq };
     },
     initialPageParam: null as string | null,
@@ -158,7 +167,6 @@ export function useSelectedRepositories(session: ViewerSession) {
   });
 }
 
-// Pages the same verified selection metadata without waiting for activity or issue details.
 export function useSelectedRepositoryMetadata(session: ViewerSession) {
   const fetchPage = useSelectedRepositoryMetadataPage(session);
   return useInfiniteQuery({
@@ -169,9 +177,6 @@ export function useSelectedRepositoryMetadata(session: ViewerSession) {
   });
 }
 
-// --- Pure query selectors (zero cache or storage mutation) --------------------------------------
-
-// Flattens the loaded pages into rows. A failed revalidation drops every cached row.
 export function flattenSelectedRepositoryRows(query: ReturnType<typeof useSelectedRepositories>): SelectedRow[] {
   if (query.isRefetchError) return [];
   return (query.data?.pages ?? []).flatMap(p => p.batches.flatMap(b => b.repositories.map((repo, i) => ({ repo, detail: b.details?.[i] }))));
@@ -183,10 +188,11 @@ function deriveAvailability(
   pageStartedAtSeq: number,
   overlay: RepositoryAccessOutcome | undefined,
 ): { availability: RowAvailability; retryAt: string | null } {
-  const overlayWins = overlay !== undefined && overlay.seq > pageStartedAtSeq;
-  if (overlayWins) {
-    if (overlay.status === "denied") return { availability: "denied", retryAt: null };
-    if (overlay.status === "unverified") return { availability: "unverified", retryAt: overlay.retryAt };
+  const rejection = newerRejection(overlay, pageStartedAtSeq);
+  if (rejection) {
+    return rejection.status === "denied"
+      ? { availability: "denied", retryAt: null }
+      : { availability: "unverified", retryAt: rejection.retryAt };
   }
   if (detail?.state === "access-denied") return { availability: "denied", retryAt: null };
   if (detail?.state === "access-unverified") return { availability: "unverified", retryAt: detail.retryAt };
@@ -197,7 +203,25 @@ function deriveAvailability(
   return { availability: "loading", retryAt: null };
 }
 
-// Pure selector merging metadata pages, detail batches, and the viewer's live visibility overlay.
+function buildVisibleRow(
+  repo: SelectedRepository,
+  entry: { detail: RepositoryDetail | undefined; batchFailed: boolean; startedAtSeq: number } | undefined,
+  overlay: RepositoryAccessOutcome | undefined,
+): VisibleSelectedRow {
+  const pageStartedAtSeq = entry?.startedAtSeq ?? 0;
+  const { availability, retryAt } = deriveAvailability(entry?.detail, entry?.batchFailed ?? false, pageStartedAtSeq, overlay);
+  const canRevealName = availability !== "unverified" && availability !== "denied";
+  const displayName = canRevealName ? (repo.fullName.split("/")[1] || "Repository") : "Repository";
+  return {
+    repo,
+    detail: entry?.detail,
+    availability,
+    displayName,
+    canRevealName,
+    retryAt,
+  };
+}
+
 export function selectVisibleRows(
   metadata: ReturnType<typeof useSelectedRepositoryMetadata>,
   selection: ReturnType<typeof useSelectedRepositories>,
@@ -214,27 +238,22 @@ export function selectVisibleRows(
     }
   }
   return (metadata.data?.pages ?? []).flatMap(page =>
-    page.nodes.map(repo => {
-      const entry = detailByRepo.get(repo.id);
-      const pageStartedAtSeq = entry?.startedAtSeq ?? 0;
-      const overlay = visibility.get(repo.id);
-      const { availability, retryAt } = deriveAvailability(entry?.detail, entry?.batchFailed ?? false, pageStartedAtSeq, overlay);
-      const canRevealName = availability !== "unverified" && availability !== "denied";
-      const displayName = canRevealName ? (repo.fullName.split("/")[1] || "Repository") : "Repository";
-      return {
-        repo,
-        detail: entry?.detail,
-        availability,
-        displayName,
-        canRevealName,
-        retryAt,
-        pageStartedAtSeq,
-      };
-    }),
+    page.nodes.map(repo => buildVisibleRow(repo, detailByRepo.get(repo.id), visibility.get(repo.id))),
   );
 }
 
-// Pure selector for a single repository's live visibility (works even if the repository is outside loaded Selection pages).
+function outcomeVisibility(overlay: RepositoryAccessOutcome | undefined): {
+  row: undefined;
+  availability: RowAvailability;
+  retryAt: string | null;
+  canRevealName: boolean;
+} {
+  if (overlay?.status === "denied") return { row: undefined, availability: "denied", retryAt: null, canRevealName: false };
+  if (overlay?.status === "unverified") return { row: undefined, availability: "unverified", retryAt: overlay.retryAt, canRevealName: false };
+  if (overlay?.status === "verified") return { row: undefined, availability: "available", retryAt: null, canRevealName: true };
+  return { row: undefined, availability: "loading", retryAt: null, canRevealName: false };
+}
+
 export function selectRowVisibility(
   rows: readonly VisibleSelectedRow[],
   visibility: ViewerVisibility,
@@ -244,14 +263,42 @@ export function selectRowVisibility(
   if (row) {
     return { row, availability: row.availability, retryAt: row.retryAt, canRevealName: row.canRevealName };
   }
-  const overlay = visibility.get(repositoryId);
-  if (overlay?.status === "denied") return { row: undefined, availability: "denied", retryAt: null, canRevealName: false };
-  if (overlay?.status === "unverified") return { row: undefined, availability: "unverified", retryAt: overlay.retryAt, canRevealName: false };
-  if (overlay?.status === "verified") return { row: undefined, availability: "available", retryAt: null, canRevealName: true };
-  return { row: undefined, availability: "loading", retryAt: null, canRevealName: false };
+  return outcomeVisibility(visibility.get(repositoryId));
 }
 
-// Pure selector computing withheld count, latest retry timestamp, and rate-limit flag across metadata, details, and overlay.
+export function selectRepositoryVisibility(
+  metadata: ReturnType<typeof useSelectedRepositoryMetadata>,
+  selection: ReturnType<typeof useSelectedRepositories>,
+  visibility: ViewerVisibility,
+  repositoryId: string,
+): { row: VisibleSelectedRow | undefined; availability: RowAvailability; retryAt: string | null; canRevealName: boolean } {
+  const overlay = visibility.get(repositoryId);
+  if (!metadata.isRefetchError && !selection.isRefetchError) {
+    let targetRepo: SelectedRepository | undefined;
+    for (const page of metadata.data?.pages ?? []) {
+      const found = page.nodes.find(node => node.id === repositoryId);
+      if (found) {
+        targetRepo = found;
+        break;
+      }
+    }
+    if (targetRepo) {
+      let entry: { detail: RepositoryDetail | undefined; batchFailed: boolean; startedAtSeq: number } | undefined;
+      for (const page of selection.data?.pages ?? []) {
+        for (const batch of page.batches) {
+          const index = batch.repositories.findIndex(repo => repo.id === repositoryId);
+          if (index !== -1) {
+            entry = { detail: batch.details?.[index], batchFailed: batch.details === null, startedAtSeq: page.startedAtSeq };
+          }
+        }
+      }
+      const row = buildVisibleRow(targetRepo, entry, overlay);
+      return { row, availability: row.availability, retryAt: row.retryAt, canRevealName: row.canRevealName };
+    }
+  }
+  return outcomeVisibility(overlay);
+}
+
 export function selectWithheldSummary(
   metadata: ReturnType<typeof useSelectedRepositoryMetadata>,
   selection: ReturnType<typeof useSelectedRepositories>,
@@ -260,77 +307,96 @@ export function selectWithheldSummary(
 ): { withheldCount: number; retryAt: string | null; retryTime: number; limited: boolean } {
   const metadataPages = metadata.isRefetchError ? [] : metadata.data?.pages ?? [];
   const selectionPages = selection.isRefetchError ? [] : selection.data?.pages ?? [];
-  const withheldCount = selectionPages.reduce((sum, p) => sum + p.withheld, 0)
-    || metadataPages.reduce((sum, p) => sum + p.withheld, 0);
-  const retryCandidates: (string | null | undefined)[] = [
-    ...metadataPages.map(page => page.retryAt),
-    ...selectionPages.map(page => page.retryAt),
-    ...rows.map(row => (row.availability === "unverified" ? row.retryAt : null)),
-    ...[...visibility.values()].map(outcome => (outcome.status === "unverified" ? outcome.retryAt : null)),
-  ];
-  const retryAt = retryCandidates.filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+  let selectionWithheld = 0;
+  let retryAt: string | null = null;
+  const considerRetryAt = (candidate: string | null | undefined) => {
+    if (candidate && (!retryAt || candidate > retryAt)) retryAt = candidate;
+  };
+  for (const page of selectionPages) {
+    selectionWithheld += page.withheld;
+    considerRetryAt(page.retryAt);
+  }
+  let metadataWithheld = 0;
+  for (const page of metadataPages) {
+    metadataWithheld += page.withheld;
+    considerRetryAt(page.retryAt);
+  }
+  for (const row of rows) {
+    if (row.availability === "unverified") considerRetryAt(row.retryAt);
+  }
+  for (const outcome of visibility.values()) {
+    if (outcome.status === "unverified") considerRetryAt(outcome.retryAt);
+  }
+  const withheldCount = selectionWithheld || metadataWithheld;
   const retryTime = retryAt ? Date.parse(retryAt) : NaN;
   return { withheldCount, retryAt, retryTime, limited: Number.isFinite(retryTime) };
 }
 
-// Pure selector for failed detail batches eligible for manual retry.
 export function selectFailedDetailBatches(selection: ReturnType<typeof useSelectedRepositories>): SelectedBatch[] {
   if (selection.isRefetchError) return [];
   return selection.data?.pages.flatMap(page => page.batches.filter(batch => batch.details === null)) ?? [];
 }
 
-// Pure selector filtering an aggregate CrossRepositoryOverview against any newer access rejections.
-// Preserves separately authorized rows (including repositories from unloaded Selection pages) while hiding
-// rejected names, issue titles, links, and totals that still include a rejected repository until a fresh aggregate resolves.
 export function filterAggregateByVisibility(
   aggregate: CrossRepositoryOverview,
   aggregateStartedAtSeq: number,
   visibility: ViewerVisibility,
-): { data: CrossRepositoryOverview; totalsWithheld: boolean; supersededCount: number } {
+): CrossRepositoryOverview {
   const supersededIds = new Set<string>();
   for (const [repoId, outcome] of visibility.entries()) {
-    if ((outcome.status === "denied" || outcome.status === "unverified") && outcome.seq > aggregateStartedAtSeq) {
+    if (newerRejection(outcome, aggregateStartedAtSeq)) {
       supersededIds.add(repoId);
     }
   }
   if (supersededIds.size === 0) {
-    return { data: aggregate, totalsWithheld: false, supersededCount: 0 };
+    return aggregate;
   }
   const withheldCoverage = { covered: false, reason: "access_changed", through: null };
   return {
-    supersededCount: supersededIds.size,
-    totalsWithheld: true,
-    data: {
-      ...aggregate,
-      openIssues: { value: null, coverage: withheldCoverage },
-      reviewBacklog: { value: null, coverage: withheldCoverage },
-      needsAttention: aggregate.needsAttention.filter(item => !supersededIds.has(item.repositoryId)),
-      assignedToMe: aggregate.assignedToMe.filter(item => !supersededIds.has(item.repositoryId)),
-      daily: aggregate.daily.map(point => ({ day: point.day, issuesOpened: null, pullRequestsMerged: null })),
-    },
+    ...aggregate,
+    openIssues: { value: null, coverage: withheldCoverage },
+    reviewBacklog: { value: null, coverage: withheldCoverage },
+    needsAttention: aggregate.needsAttention.filter(item => !supersededIds.has(item.repositoryId)),
+    assignedToMe: aggregate.assignedToMe.filter(item => !supersededIds.has(item.repositoryId)),
+    daily: aggregate.daily.map(point => ({ day: point.day, issuesOpened: null, pullRequestsMerged: null })),
   };
 }
 
-// --- Explicit state-transition commands (sole mutation owner) -----------------------------------
-
-function applyDetailOutcome(
+function applyDetailOutcomes(
   queryClient: QueryClient,
   session: ViewerSession,
-  repositoryId: string,
-  detail: RepositoryDetail,
+  updates: readonly { repositoryId: string; detail: RepositoryDetail }[],
   startedAtSeq: number,
 ) {
-  if (detail.state === "access-denied") {
-    recordAccessDenied(queryClient, session, repositoryId);
-  } else if (detail.state === "access-unverified") {
-    recordAccessUnverified(queryClient, session, repositoryId, detail.retryAt, { preserveSnapshot: Boolean(detail.retryAt) });
-  } else {
-    recordAccessVerified(session, repositoryId, startedAtSeq);
+  if (updates.length === 0) return;
+  const viewerKey = viewerKeyOf(session);
+  const current = getViewerVisibility(viewerKey);
+  let next: Map<string, RepositoryAccessOutcome> | null = null;
+  const ensureNext = () => {
+    if (!next) next = new Map(current);
+    return next;
+  };
+  for (const { repositoryId, detail } of updates) {
+    const existing = (next ?? current).get(repositoryId);
+    if (detail.state === "access-denied") {
+      ensureNext().set(repositoryId, { status: "denied", seq: nextAccessSeq() });
+      queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
+      clearRepositoryIssueDrafts(viewerKey, repositoryId);
+    } else if (detail.state === "access-unverified") {
+      ensureNext().set(repositoryId, { status: "unverified", retryAt: detail.retryAt, seq: nextAccessSeq() });
+      if (!detail.retryAt) {
+        queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
+      }
+    } else if (!newerRejection(existing, startedAtSeq) && existing?.status !== "verified") {
+      ensureNext().set(repositoryId, { status: "verified", seq: nextAccessSeq() });
+    }
+  }
+  if (next) {
+    visibilityByViewer.set(viewerKey, next);
+    notifyVisibility();
   }
 }
 
-// Records definitive unavailability for one repository: updates visibility overlay, purges all saved
-// overview snapshots across metric windows, and wipes repository drafts and staged Board cards.
 export function recordAccessDenied(queryClient: QueryClient, session: ViewerSession, repositoryId: string): void {
   const viewerKey = viewerKeyOf(session);
   setViewerOutcome(viewerKey, repositoryId, { status: "denied", seq: nextAccessSeq() });
@@ -338,8 +404,6 @@ export function recordAccessDenied(queryClient: QueryClient, session: ViewerSess
   clearRepositoryIssueDrafts(viewerKey, repositoryId);
 }
 
-// Records temporary access uncertainty for one repository: updates visibility overlay and preserves
-// browser drafts. Removes saved snapshots unless preserveSnapshot is true (rate-limited with retryAt).
 export function recordAccessUnverified(
   queryClient: QueryClient,
   session: ViewerSession,
@@ -354,18 +418,19 @@ export function recordAccessUnverified(
   }
 }
 
-// Records verified live access for one repository unless a newer access rejection arrived after startedAtSeq.
 export function recordAccessVerified(session: ViewerSession, repositoryId: string, startedAtSeq?: number): boolean {
   const viewerKey = viewerKeyOf(session);
   const existing = getViewerVisibility(viewerKey).get(repositoryId);
-  if (startedAtSeq !== undefined && existing && existing.status !== "verified" && existing.seq > startedAtSeq) {
+  if (startedAtSeq !== undefined && newerRejection(existing, startedAtSeq)) {
     return false;
+  }
+  if (existing?.status === "verified") {
+    return true;
   }
   setViewerOutcome(viewerKey, repositoryId, { status: "verified", seq: nextAccessSeq() });
   return true;
 }
 
-// Saves a live RepositoryOverview snapshot and marks access verified unless a newer rejection superseded the read.
 export function recordOverviewSnapshot<T>(
   queryClient: QueryClient,
   session: ViewerSession,
@@ -378,8 +443,6 @@ export function recordOverviewSnapshot<T>(
   queryClient.setQueryData(repositorySnapshotKey(session, repositoryId, days), data);
 }
 
-// Routes an overview fetch error through Selection commands: preserves snapshots on temporary outage
-// or rate-limited ACCESS_UNVERIFIED (with retryAt), purges snapshots otherwise, and never wipes drafts.
 export function recordOverviewUnavailable(
   queryClient: QueryClient,
   session: ViewerSession,
@@ -396,13 +459,10 @@ export function recordOverviewUnavailable(
   queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
 }
 
-// Purges saved snapshots when a user explicitly disconnects or unfollows a repository.
 export function recordRepositoryRemoved(queryClient: QueryClient, session: ViewerSession, repositoryId: string): void {
   queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
 }
 
-// Versioned, cancellable manual retry for one failed detail batch.
-// Discards stale completions after batch replacement, navigation, sign-out, or newer per-repo rejections.
 export async function retryDetailBatch(
   queryClient: QueryClient,
   session: ViewerSession,
@@ -412,11 +472,6 @@ export async function retryDetailBatch(
   const batchKey = batchKeyOf(batch);
   const startGeneration = currentViewerGeneration(viewerKey);
   const startSeq = currentAccessSeq();
-  const repoStartSeqs = new Map<string, number>();
-  const existingVisibility = getViewerVisibility(viewerKey);
-  for (const repo of batch.repositories) {
-    repoStartSeqs.set(repo.id, existingVisibility.get(repo.id)?.seq ?? 0);
-  }
 
   let controllers = retryControllersByViewer.get(viewerKey);
   if (!controllers) {
@@ -433,19 +488,20 @@ export async function retryDetailBatch(
       return;
     }
     const latestVisibility = getViewerVisibility(viewerKey);
+    const updates: { repositoryId: string; detail: RepositoryDetail }[] = [];
     const mergedDetails: RepositoryDetail[] = fetchedDetails.map((detail, i) => {
       const repoId = batch.repositories[i].id;
       const latest = latestVisibility.get(repoId);
-      const prevSeq = repoStartSeqs.get(repoId) ?? 0;
-      // Never let a delayed retry overwrite a newer rejection that arrived while the retry was in flight.
-      if (latest && latest.status !== "verified" && latest.seq > prevSeq) {
-        return latest.status === "denied"
+      const rejection = newerRejection(latest, startSeq);
+      if (rejection) {
+        return rejection.status === "denied"
           ? { state: "access-denied" }
-          : { state: "access-unverified", retryAt: latest.retryAt };
+          : { state: "access-unverified", retryAt: rejection.retryAt };
       }
-      applyDetailOutcome(queryClient, session, repoId, detail, startSeq);
+      updates.push({ repositoryId: repoId, detail });
       return detail;
     });
+    applyDetailOutcomes(queryClient, session, updates, startSeq);
 
     queryClient.setQueryData<InfiniteData<SelectionPageWithSeq>>(
       selectedRepositoriesKey(session),
@@ -469,12 +525,10 @@ export async function retryDetailBatch(
   }
 }
 
-// Aborts any in-flight manual detail retries for the current viewer (e.g. on navigation).
 export function cancelDetailRetries(session: ViewerSession): void {
   abortViewerRetries(viewerKeyOf(session));
 }
 
-// Resets all viewer-scoped Selection caches, overlay entries, and in-flight retries (e.g. on sign-out).
 export function resetViewerSelection(queryClient: QueryClient, session: ViewerSession): void {
   const viewerKey = viewerKeyOf(session);
   bumpViewerGeneration(viewerKey);
