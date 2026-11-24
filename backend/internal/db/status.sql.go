@@ -13,7 +13,7 @@ import (
 
 const listEligibleRepositoryIDsForUser = `-- name: ListEligibleRepositoryIDsForUser :many
 SELECT s.repository_id FROM selections s JOIN repositories r ON r.id = s.repository_id
-WHERE s.user_id = $1 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false ORDER BY s.repository_id
+WHERE s.user_id = $1 AND is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo) ORDER BY s.repository_id
 `
 
 func (q *Queries) ListEligibleRepositoryIDsForUser(ctx context.Context, userID int64) ([]int64, error) {
@@ -38,7 +38,7 @@ func (q *Queries) ListEligibleRepositoryIDsForUser(ctx context.Context, userID i
 
 const listFollowedRepositoryIDs = `-- name: ListFollowedRepositoryIDs :many
 SELECT DISTINCT s.repository_id FROM selections s JOIN repositories r ON r.id = s.repository_id
-WHERE s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false ORDER BY s.repository_id
+WHERE is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo) ORDER BY s.repository_id
 `
 
 // Repositories some user actively selects and is still follow-eligible for: the poll set.

@@ -41,7 +41,7 @@ func (q *Queries) GetSyncRepository(ctx context.Context, id int64) (GetSyncRepos
 const hasEligibleSelection = `-- name: HasEligibleSelection :one
 SELECT EXISTS (
  SELECT 1 FROM selections s JOIN repositories r ON r.id = s.repository_id
- WHERE s.repository_id = $1 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false
+ WHERE s.repository_id = $1 AND is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo)
 )
 `
 
@@ -54,7 +54,7 @@ func (q *Queries) HasEligibleSelection(ctx context.Context, repositoryID int64) 
 
 const listEligibleSelectors = `-- name: ListEligibleSelectors :many
 SELECT s.user_id FROM selections s JOIN repositories r ON r.id = s.repository_id
-WHERE s.repository_id = $1 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false
+WHERE s.repository_id = $1 AND is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo)
 ORDER BY s.selected_at, s.user_id
 `
 
@@ -80,7 +80,7 @@ func (q *Queries) ListEligibleSelectors(ctx context.Context, repositoryID int64)
 
 const lockEligibleSelection = `-- name: LockEligibleSelection :one
 SELECT s.user_id FROM selections s JOIN repositories r ON r.id = s.repository_id
-WHERE s.repository_id = $1 AND s.user_id = $2 AND s.deselected_at IS NULL AND s.follow_suspended_at IS NULL AND r.is_demo = false
+WHERE s.repository_id = $1 AND s.user_id = $2 AND is_eligible_selection(s.deselected_at, s.follow_suspended_at, r.is_demo)
 FOR SHARE OF s NOWAIT
 `
 
