@@ -436,10 +436,11 @@ function Banner({ overview, display, sync }: { overview: Overview; display: stri
   if (display === "awaiting" || display === "not-synchronized" || (uncovered.length && uncovered.every(c => c.reason === "not_synchronized"))) {
     return note("First sync has not started. Figures show — until data exists.", false);
   }
-  if (uncovered.length || a.issueEvents?.historicalGap) {
+  const showHistoryGap = display !== "synced" && (a.issueEvents?.historicalGap || uncovered.some(c => c.reason === "historical_gap"));
+  if (uncovered.some(c => c.reason !== "historical_gap") || showHistoryGap) {
     const reasons = new Set(uncovered.map(c => c.reason));
     const parts = [
-      reasons.has("historical_gap") || a.issueEvents?.historicalGap ? (overview.eventsCoveredFrom ? `Issue events before ${day.format(new Date(overview.eventsCoveredFrom))} were never recorded` : "Issue event history is not recorded yet") : "",
+      showHistoryGap ? (overview.eventsCoveredFrom ? `Issue events before ${day.format(new Date(overview.eventsCoveredFrom))} were never recorded` : "Issue event history is not recorded yet") : "",
       reasons.has("children_incomplete") ? `Reviews and comments are still importing${a.reviews?.pendingChildren ? ` (${a.reviews.pendingChildren} pull requests pending)` : ""}` : "",
       reasons.has("not_synchronized") ? "Some activity has not finished its first import" : "",
     ].filter(Boolean);
