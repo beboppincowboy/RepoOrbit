@@ -16,6 +16,8 @@ export function selectedRepo(id: string, over: object = {}) {
 
 export async function mockSession(page: Page, session: Session) {
   await page.route('**/auth/me', route => route.fulfill({ json: session }));
+  // Keep tests offline: the sidebar avatar would otherwise load from github.com and fall back to initials.
+  await page.route('https://github.com/*.png*', route => route.abort());
 }
 
 // Answers the selected-repositories query with `nodes` (each may carry an `activity` fixture), and the per-page detail
