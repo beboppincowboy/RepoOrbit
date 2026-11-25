@@ -141,9 +141,19 @@ func ProjectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.
 // GitHub's confirmed copy, and a signed issue deletion takes it before its tombstone, so neither misses the other's
 // uncommitted write. It is reentrant within one transaction.
 func LockIssue(ctx context.Context, tx pgx.Tx, repoID, number int64) error {
-	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(format('issue-write:%s:%s', $1::bigint, $2::bigint), 0))`, repoID, number)
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(`+issueLockKey+`)`, repoID, number)
 	return err
 }
+
+// tryLockIssue is LockIssue without waiting: false means another transaction holds the issue.
+func tryLockIssue(ctx context.Context, tx pgx.Tx, repoID, number int64) (bool, error) {
+	var locked bool
+	err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(`+issueLockKey+`)`, repoID, number).Scan(&locked)
+	return locked, err
+}
+
+// issueLockKey is the advisory key of one issue ($1 repository id, $2 issue number) shared by every per-issue lock.
+const issueLockKey = `hashtextextended(format('issue-write:%s:%s', $1::bigint, $2::bigint), 0)`
 
 // ProjectConfirmedIssue is ProjectIssue for an issue read back right after a confirmed write, by a caller that
 // serializes readbacks of that issue (so the later readback is projected last). It also replaces a stored copy with
@@ -151,6 +161,13 @@ func LockIssue(ctx context.Context, tx pgx.Tx, repoID, number int64) error {
 // as the stored copy would otherwise be lost.
 func ProjectConfirmedIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue) error {
 	return projectIssue(ctx, tx, repoID, issue, true, true)
+}
+
+// projectCleanupObservation is ProjectIssue for the status label cleanup's own readback. Not the same-second variant:
+// the readback was taken before the lock, so it must not replace a copy an issue write projected in the same second. It
+// never queues the cleanup again, so a refused removal cannot make the cleanup schedule itself forever.
+func projectCleanupObservation(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue) error {
+	return projectIssue(ctx, tx, repoID, issue, false, false)
 }
 
 // projectIssue is ProjectIssue (sameSecond false) or ProjectConfirmedIssue (true). With cleanup, a projected closed
