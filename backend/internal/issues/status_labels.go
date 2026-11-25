@@ -24,6 +24,35 @@ var statusLabels = []struct{ name, color string }{
 	{"status:review", "0e8a16"},
 }
 
+// boardStates are the five Board states (R15), named as the issue_board_states view names them: boardStates[i] is an
+// open issue's state when its furthest-along status label is statusLabels[i-1] (0: none), and the last is a closed
+// issue's.
+var boardStates = []string{"backlog", "todo", "in_progress", "in_review", "done"}
+
+// statusRank is a label's position in statusLabels plus one, or 0 for any other label. It matches case-insensitively,
+// as status_label_rank in SQL does.
+func statusRank(label string) int {
+	for i, l := range statusLabels {
+		if strings.ToLower(label) == l.name {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// boardStatus derives an issue's Board state from its GitHub state and labels exactly as the issue_board_states view
+// does: "done" when closed whatever its labels, else the furthest-along status label's state, else "backlog".
+func boardStatus(state string, labels []string) string {
+	if state == "closed" {
+		return boardStates[len(boardStates)-1]
+	}
+	top := 0
+	for _, l := range labels {
+		top = max(top, statusRank(l))
+	}
+	return boardStates[top]
+}
+
 // statusLabelsDraft is what turning status labels on asks for: the three labels, created where missing.
 type statusLabelsDraft struct {
 	Labels []string `json:"labels"`

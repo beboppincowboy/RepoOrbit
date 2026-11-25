@@ -60,7 +60,8 @@ type Service struct {
 // codes and errors. A repository {id} is its GitHub ID; an operation {id} is the operation's id. Behind
 // auth.Handler.Protect a request without a session gets 401 there; a demo viewer gets 404 here, and a 401 from here
 // means the user's GitHub token is gone. Errors are plain text, except a duplicate create's 409 ({"error",
-// "operationId"}) and a recheck's 409 (the unchanged operation).
+// "operationId"}), an update's 409 when its expect no longer matches GitHub ({"error", "current"}) and a recheck's 409
+// (the unchanged operation).
 func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/repositories/{id}/issue-capabilities", s.capabilities)
 	mux.HandleFunc("GET /api/repositories/{id}/assignees", s.assignees)
@@ -91,9 +92,19 @@ type delta struct {
 
 // updateDraft changes an existing issue: labels and assignees by add/remove, and optionally its state.
 type updateDraft struct {
-	Labels    delta  `json:"labels"`
-	Assignees delta  `json:"assignees"`
-	State     string `json:"state"` // requested issue state: "" (unchanged), "open" or "closed"
+	Labels    delta        `json:"labels"`
+	Assignees delta        `json:"assignees"`
+	State     string       `json:"state"`            // requested issue state: "" (unchanged), "open" or "closed"
+	Expect    *expectation `json:"expect,omitempty"` // Board changes only; absent, a draft marshals and hashes as before it existed
+}
+
+// expectation is the issue's Board-relevant state as the user staged the change over it. When the live issue differs
+// in its Board state, its assignees or, while open, its status labels (each compared case-insensitively, as sets), the
+// update is refused with 409 and current values before anything is recorded or sent.
+type expectation struct {
+	Status       string   `json:"status"` // one of boardStates
+	Assignees    []string `json:"assignees"`
+	StatusLabels []string `json:"statusLabels"` // the issue's status labels, in any spelling
 }
 
 // issueView is an issue as GitHub returned or re-read it.
@@ -214,7 +225,30 @@ func (d *updateDraft) validate() (err error) {
 	if len(d.Labels.Add)+len(d.Labels.Remove)+len(d.Assignees.Add)+len(d.Assignees.Remove) == 0 && d.State == "" {
 		return errors.New("no change requested")
 	}
+	if e := d.Expect; e != nil {
+		if !slices.Contains(boardStates, e.Status) {
+			return fmt.Errorf("expect.status must be one of %s", strings.Join(boardStates, ", "))
+		}
+		if e.Assignees, err = names(e.Assignees, "expected assignee", validLogin); err != nil {
+			return err
+		}
+		e.StatusLabels, err = names(e.StatusLabels, "expected status label", func(v string) bool { return statusRank(v) > 0 })
+		return err
+	}
 	return nil
+}
+
+// matches reports whether the live issue still shows what e expects (see expectation).
+func (e *expectation) matches(issue *issueView) bool {
+	sameSet := func(a, b []string) bool {
+		within := func(x, y []string) bool { return !slices.ContainsFunc(x, func(v string) bool { return !has(y, v) }) }
+		return within(a, b) && within(b, a)
+	}
+	if boardStatus(issue.State, issue.Labels) != e.Status || !sameSet(issue.Assignees, e.Assignees) {
+		return false
+	}
+	live := slices.DeleteFunc(slices.Clone(issue.Labels), func(l string) bool { return statusRank(l) == 0 })
+	return issue.State == "closed" || sameSet(live, e.StatusLabels)
 }
 
 // contentHash identifies an issue's text, so a recheck can verify a candidate even after the draft is wiped.
@@ -621,9 +655,11 @@ func (s *Service) replay(w http.ResponseWriter, ctx context.Context, userID int6
 
 var errAccessMoved = errors.New("access changed")
 
-// submit records and sends one command: validate access and permission, record the operation as pending, mark it
-// unknown, send it with the actor's token, then record what GitHub confirmed. An operation that is no longer pending
-// when it is marked (a stale-pending recovery failed it) is sent nowhere and answered as a replay.
+// submit records and sends one command: validate access and permission, check an update's expect against the live
+// issue, record the operation as pending, mark it unknown, send it with the actor's token, then record what GitHub
+// confirmed. A reused key is answered right after the access check, before the permission and expect checks. An
+// operation that is no longer pending when it is marked (a stale-pending recovery failed it) is sent nowhere and
+// answered as a replay.
 func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 	ctx := r.Context()
 	userID, ok := auth.SignedInUserID(ctx)
@@ -682,6 +718,13 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 			}
 			if issue.User == nil || issue.User.ID != actor || !canCreate(d.Repo) {
 				denied()
+				return
+			}
+		}
+		if e := c.draft.(*updateDraft).Expect; e != nil {
+			if live := viewIssue(issue); !e.matches(live) {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": "changed on GitHub", "current": map[string]any{"state": live.State,
+					"labels": live.Labels, "assignees": live.Assignees, "status": boardStatus(live.State, live.Labels), "updatedAt": issue.UpdatedAt}})
 				return
 			}
 		}
@@ -882,9 +925,15 @@ func (s *Service) sendCreate(ctx context.Context, userID int64, token, fullName 
 }
 
 // applyUpdate applies add/remove steps (each idempotent), stopping at the first error; readBack then decides the
-// outcome. Assignees are removed before they are added, so a swap at GitHub's 10-assignee limit fits.
+// outcome. Assignees are removed before they are added, so a swap at GitHub's 10-assignee limit fits. A reopen is the
+// first step and a close the last, so a change that reopens or closes an issue never adds a label while it is still
+// closed, where the app's status label cleanup could strip it; a rejected reopen applies nothing.
 func (s *Service) applyUpdate(ctx context.Context, userID int64, token, fullName string, number int64, d *updateDraft) outcome {
 	steps := []func() error{}
+	setState := func() error { return s.GitHub.SetIssueState(ctx, token, fullName, number, d.State) }
+	if d.State == "open" {
+		steps = append(steps, setState)
+	}
 	if len(d.Labels.Add) > 0 {
 		steps = append(steps, func() error { return s.GitHub.AddLabels(ctx, token, fullName, number, d.Labels.Add) })
 	}
@@ -897,8 +946,8 @@ func (s *Service) applyUpdate(ctx context.Context, userID int64, token, fullName
 	if len(d.Assignees.Add) > 0 {
 		steps = append(steps, func() error { return s.GitHub.AddAssignees(ctx, token, fullName, number, d.Assignees.Add) })
 	}
-	if d.State != "" {
-		steps = append(steps, func() error { return s.GitHub.SetIssueState(ctx, token, fullName, number, d.State) })
+	if d.State == "closed" {
+		steps = append(steps, setState)
 	}
 	out := outcome{AllStepsAnswered: true}
 	for _, step := range steps {

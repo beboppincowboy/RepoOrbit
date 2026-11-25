@@ -77,6 +77,7 @@ type ComplexityRoot struct {
 		FullName     func(childComplexity int) int
 		Number       func(childComplexity int) int
 		RepositoryID func(childComplexity int) int
+		Status       func(childComplexity int) int
 		Title        func(childComplexity int) int
 		URL          func(childComplexity int) int
 		UpdatedAt    func(childComplexity int) int
@@ -90,6 +91,19 @@ type ComplexityRoot struct {
 		Since        func(childComplexity int) int
 		Title        func(childComplexity int) int
 		URL          func(childComplexity int) int
+	}
+
+	BoardIssue struct {
+		Assignees      func(childComplexity int) int
+		AuthorLogin    func(childComplexity int) int
+		Labels         func(childComplexity int) int
+		MultipleStatus func(childComplexity int) int
+		Number         func(childComplexity int) int
+		State          func(childComplexity int) int
+		Status         func(childComplexity int) int
+		Title          func(childComplexity int) int
+		URL            func(childComplexity int) int
+		UpdatedAt      func(childComplexity int) int
 	}
 
 	ChildResourceStatus struct {
@@ -290,6 +304,7 @@ type ComplexityRoot struct {
 		PullRequestEvidence     func(childComplexity int, repositoryIds []string, first int, after *string, newestFirst bool) int
 		ReleaseEvidence         func(childComplexity int, repositoryIds []string, first int, after *string) int
 		Repository              func(childComplexity int, id string) int
+		RepositoryBoard         func(childComplexity int, id string, include []int) int
 		RepositoryOverview      func(childComplexity int, id string, days int) int
 		ReviewEvidence          func(childComplexity int, repositoryIds []string, first int, after *string) int
 		SelectedRepositories    func(childComplexity int, first int, after *string) int
@@ -328,6 +343,12 @@ type ComplexityRoot struct {
 		Private        func(childComplexity int) int
 		Selected       func(childComplexity int) int
 		SyncState      func(childComplexity int) int
+	}
+
+	RepositoryBoard struct {
+		Issues       func(childComplexity int) int
+		StatusLabels func(childComplexity int) int
+		Truncated    func(childComplexity int) int
 	}
 
 	RepositoryConnection struct {
@@ -416,6 +437,7 @@ type QueryResolver interface {
 	IssueEventEvidence(ctx context.Context, repositoryIds []string, first int, after *string) (*model.IssueEventEvidenceConnection, error)
 	RepositoryOverview(ctx context.Context, id string, days int) (*model.RepositoryOverview, error)
 	CrossRepositoryOverview(ctx context.Context, days int) (*model.CrossRepositoryOverview, error)
+	RepositoryBoard(ctx context.Context, id string, include []int) (*model.RepositoryBoard, error)
 }
 
 type executableSchema struct {
@@ -577,6 +599,13 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.AssignedIssue.RepositoryID(childComplexity), true
 
+	case "AssignedIssue.status":
+		if e.complexity.AssignedIssue.Status == nil {
+			break
+		}
+
+		return e.complexity.AssignedIssue.Status(childComplexity), true
+
 	case "AssignedIssue.title":
 		if e.complexity.AssignedIssue.Title == nil {
 			break
@@ -646,6 +675,76 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.AttentionItem.URL(childComplexity), true
+
+	case "BoardIssue.assignees":
+		if e.complexity.BoardIssue.Assignees == nil {
+			break
+		}
+
+		return e.complexity.BoardIssue.Assignees(childComplexity), true
+
+	case "BoardIssue.authorLogin":
+		if e.complexity.BoardIssue.AuthorLogin == nil {
+			break
+		}
+
+		return e.complexity.BoardIssue.AuthorLogin(childComplexity), true
+
+	case "BoardIssue.labels":
+		if e.complexity.BoardIssue.Labels == nil {
+			break
+		}
+
+		return e.complexity.BoardIssue.Labels(childComplexity), true
+
+	case "BoardIssue.multipleStatus":
+		if e.complexity.BoardIssue.MultipleStatus == nil {
+			break
+		}
+
+		return e.complexity.BoardIssue.MultipleStatus(childComplexity), true
+
+	case "BoardIssue.number":
+		if e.complexity.BoardIssue.Number == nil {
+			break
+		}
+
+		return e.complexity.BoardIssue.Number(childComplexity), true
+
+	case "BoardIssue.state":
+		if e.complexity.BoardIssue.State == nil {
+			break
+		}
+
+		return e.complexity.BoardIssue.State(childComplexity), true
+
+	case "BoardIssue.status":
+		if e.complexity.BoardIssue.Status == nil {
+			break
+		}
+
+		return e.complexity.BoardIssue.Status(childComplexity), true
+
+	case "BoardIssue.title":
+		if e.complexity.BoardIssue.Title == nil {
+			break
+		}
+
+		return e.complexity.BoardIssue.Title(childComplexity), true
+
+	case "BoardIssue.url":
+		if e.complexity.BoardIssue.URL == nil {
+			break
+		}
+
+		return e.complexity.BoardIssue.URL(childComplexity), true
+
+	case "BoardIssue.updatedAt":
+		if e.complexity.BoardIssue.UpdatedAt == nil {
+			break
+		}
+
+		return e.complexity.BoardIssue.UpdatedAt(childComplexity), true
 
 	case "ChildResourceStatus.complete":
 		if e.complexity.ChildResourceStatus.Complete == nil {
@@ -1599,6 +1698,18 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.Query.Repository(childComplexity, args["id"].(string)), true
 
+	case "Query.repositoryBoard":
+		if e.complexity.Query.RepositoryBoard == nil {
+			break
+		}
+
+		args, err := ec.field_Query_repositoryBoard_args(ctx, rawArgs)
+		if err != nil {
+			return 0, false
+		}
+
+		return e.complexity.Query.RepositoryBoard(childComplexity, args["id"].(string), args["include"].([]int)), true
+
 	case "Query.repositoryOverview":
 		if e.complexity.Query.RepositoryOverview == nil {
 			break
@@ -1816,6 +1927,27 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Repository.SyncState(childComplexity), true
+
+	case "RepositoryBoard.issues":
+		if e.complexity.RepositoryBoard.Issues == nil {
+			break
+		}
+
+		return e.complexity.RepositoryBoard.Issues(childComplexity), true
+
+	case "RepositoryBoard.statusLabels":
+		if e.complexity.RepositoryBoard.StatusLabels == nil {
+			break
+		}
+
+		return e.complexity.RepositoryBoard.StatusLabels(childComplexity), true
+
+	case "RepositoryBoard.truncated":
+		if e.complexity.RepositoryBoard.Truncated == nil {
+			break
+		}
+
+		return e.complexity.RepositoryBoard.Truncated(childComplexity), true
 
 	case "RepositoryConnection.endCursor":
 		if e.complexity.RepositoryConnection.EndCursor == nil {
@@ -2758,6 +2890,57 @@ func (ec *executionContext) field_Query_releaseEvidence_argsAfter(
 	}
 
 	var zeroVal *string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_repositoryBoard_args(ctx context.Context, rawArgs map[string]any) (map[string]any, error) {
+	var err error
+	args := map[string]any{}
+	arg0, err := ec.field_Query_repositoryBoard_argsID(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["id"] = arg0
+	arg1, err := ec.field_Query_repositoryBoard_argsInclude(ctx, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	args["include"] = arg1
+	return args, nil
+}
+func (ec *executionContext) field_Query_repositoryBoard_argsID(
+	ctx context.Context,
+	rawArgs map[string]any,
+) (string, error) {
+	if _, ok := rawArgs["id"]; !ok {
+		var zeroVal string
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("id"))
+	if tmp, ok := rawArgs["id"]; ok {
+		return ec.unmarshalNID2string(ctx, tmp)
+	}
+
+	var zeroVal string
+	return zeroVal, nil
+}
+
+func (ec *executionContext) field_Query_repositoryBoard_argsInclude(
+	ctx context.Context,
+	rawArgs map[string]any,
+) ([]int, error) {
+	if _, ok := rawArgs["include"]; !ok {
+		var zeroVal []int
+		return zeroVal, nil
+	}
+
+	ctx = graphql.WithPathContext(ctx, graphql.NewPathWithField("include"))
+	if tmp, ok := rawArgs["include"]; ok {
+		return ec.unmarshalOInt2ᚕintᚄ(ctx, tmp)
+	}
+
+	var zeroVal []int
 	return zeroVal, nil
 }
 
@@ -4145,6 +4328,47 @@ func (ec *executionContext) fieldContext_AssignedIssue_updatedAt(_ context.Conte
 	return fc, nil
 }
 
+func (ec *executionContext) _AssignedIssue_status(ctx context.Context, field graphql.CollectedField, obj *analytics.AssignedIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_AssignedIssue_status(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Status, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_AssignedIssue_status(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "AssignedIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _AttentionItem_kind(ctx context.Context, field graphql.CollectedField, obj *analytics.AttentionItem) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_AttentionItem_kind(ctx, field)
 	if err != nil {
@@ -4448,6 +4672,440 @@ func (ec *executionContext) fieldContext_AttentionItem_since(_ context.Context, 
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Time does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BoardIssue_number(ctx context.Context, field graphql.CollectedField, obj *model.BoardIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BoardIssue_number(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Number, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(int)
+	fc.Result = res
+	return ec.marshalNInt2int(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BoardIssue_number(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BoardIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BoardIssue_title(ctx context.Context, field graphql.CollectedField, obj *model.BoardIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BoardIssue_title(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Title, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BoardIssue_title(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BoardIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BoardIssue_url(ctx context.Context, field graphql.CollectedField, obj *model.BoardIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BoardIssue_url(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.URL, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BoardIssue_url(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BoardIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BoardIssue_state(ctx context.Context, field graphql.CollectedField, obj *model.BoardIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BoardIssue_state(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.State, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BoardIssue_state(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BoardIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BoardIssue_updatedAt(ctx context.Context, field graphql.CollectedField, obj *model.BoardIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BoardIssue_updatedAt(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.UpdatedAt, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(string)
+	fc.Result = res
+	return ec.marshalNString2string(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BoardIssue_updatedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BoardIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BoardIssue_authorLogin(ctx context.Context, field graphql.CollectedField, obj *model.BoardIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BoardIssue_authorLogin(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.AuthorLogin, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BoardIssue_authorLogin(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BoardIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BoardIssue_labels(ctx context.Context, field graphql.CollectedField, obj *model.BoardIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BoardIssue_labels(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Labels, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]string)
+	fc.Result = res
+	return ec.marshalNString2ᚕstringᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BoardIssue_labels(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BoardIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BoardIssue_assignees(ctx context.Context, field graphql.CollectedField, obj *model.BoardIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BoardIssue_assignees(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Assignees, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]string)
+	fc.Result = res
+	return ec.marshalNString2ᚕstringᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BoardIssue_assignees(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BoardIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BoardIssue_status(ctx context.Context, field graphql.CollectedField, obj *model.BoardIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BoardIssue_status(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Status, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*string)
+	fc.Result = res
+	return ec.marshalOString2ᚖstring(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BoardIssue_status(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BoardIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _BoardIssue_multipleStatus(ctx context.Context, field graphql.CollectedField, obj *model.BoardIssue) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_BoardIssue_multipleStatus(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.MultipleStatus, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_BoardIssue_multipleStatus(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "BoardIssue",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
 		},
 	}
 	return fc, nil
@@ -5895,6 +6553,8 @@ func (ec *executionContext) fieldContext_CrossRepositoryOverview_assignedToMe(_ 
 				return ec.fieldContext_AssignedIssue_url(ctx, field)
 			case "updatedAt":
 				return ec.fieldContext_AssignedIssue_updatedAt(ctx, field)
+			case "status":
+				return ec.fieldContext_AssignedIssue_status(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type AssignedIssue", field.Name)
 		},
@@ -10816,6 +11476,66 @@ func (ec *executionContext) fieldContext_Query_crossRepositoryOverview(ctx conte
 	return fc, nil
 }
 
+func (ec *executionContext) _Query_repositoryBoard(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_Query_repositoryBoard(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return ec.resolvers.Query().RepositoryBoard(rctx, fc.Args["id"].(string), fc.Args["include"].([]int))
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		return graphql.Null
+	}
+	res := resTmp.(*model.RepositoryBoard)
+	fc.Result = res
+	return ec.marshalORepositoryBoard2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐRepositoryBoard(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_Query_repositoryBoard(ctx context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Query",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "statusLabels":
+				return ec.fieldContext_RepositoryBoard_statusLabels(ctx, field)
+			case "truncated":
+				return ec.fieldContext_RepositoryBoard_truncated(ctx, field)
+			case "issues":
+				return ec.fieldContext_RepositoryBoard_issues(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type RepositoryBoard", field.Name)
+		},
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = ec.Recover(ctx, r)
+			ec.Error(ctx, err)
+		}
+	}()
+	ctx = graphql.WithFieldContext(ctx, fc)
+	if fc.Args, err = ec.field_Query_repositoryBoard_args(ctx, field.ArgumentMap(ec.Variables)); err != nil {
+		ec.Error(ctx, err)
+		return fc, err
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Query___type(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	fc, err := ec.fieldContext_Query___type(ctx, field)
 	if err != nil {
@@ -12097,6 +12817,160 @@ func (ec *executionContext) fieldContext_Repository_activity(_ context.Context, 
 				return ec.fieldContext_ActivityStatus_archived(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type ActivityStatus", field.Name)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _RepositoryBoard_statusLabels(ctx context.Context, field graphql.CollectedField, obj *model.RepositoryBoard) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_RepositoryBoard_statusLabels(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.StatusLabels, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_RepositoryBoard_statusLabels(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "RepositoryBoard",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _RepositoryBoard_truncated(ctx context.Context, field graphql.CollectedField, obj *model.RepositoryBoard) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_RepositoryBoard_truncated(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Truncated, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.(bool)
+	fc.Result = res
+	return ec.marshalNBoolean2bool(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_RepositoryBoard_truncated(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "RepositoryBoard",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Boolean does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _RepositoryBoard_issues(ctx context.Context, field graphql.CollectedField, obj *model.RepositoryBoard) (ret graphql.Marshaler) {
+	fc, err := ec.fieldContext_RepositoryBoard_issues(ctx, field)
+	if err != nil {
+		return graphql.Null
+	}
+	ctx = graphql.WithFieldContext(ctx, fc)
+	defer func() {
+		if r := recover(); r != nil {
+			ec.Error(ctx, ec.Recover(ctx, r))
+			ret = graphql.Null
+		}
+	}()
+	resTmp, err := ec.ResolverMiddleware(ctx, func(rctx context.Context) (any, error) {
+		ctx = rctx // use context from middleware stack in children
+		return obj.Issues, nil
+	})
+	if err != nil {
+		ec.Error(ctx, err)
+		return graphql.Null
+	}
+	if resTmp == nil {
+		if !graphql.HasFieldError(ctx, fc) {
+			ec.Errorf(ctx, "must not be null")
+		}
+		return graphql.Null
+	}
+	res := resTmp.([]*model.BoardIssue)
+	fc.Result = res
+	return ec.marshalNBoardIssue2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐBoardIssueᚄ(ctx, field.Selections, res)
+}
+
+func (ec *executionContext) fieldContext_RepositoryBoard_issues(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "RepositoryBoard",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "number":
+				return ec.fieldContext_BoardIssue_number(ctx, field)
+			case "title":
+				return ec.fieldContext_BoardIssue_title(ctx, field)
+			case "url":
+				return ec.fieldContext_BoardIssue_url(ctx, field)
+			case "state":
+				return ec.fieldContext_BoardIssue_state(ctx, field)
+			case "updatedAt":
+				return ec.fieldContext_BoardIssue_updatedAt(ctx, field)
+			case "authorLogin":
+				return ec.fieldContext_BoardIssue_authorLogin(ctx, field)
+			case "labels":
+				return ec.fieldContext_BoardIssue_labels(ctx, field)
+			case "assignees":
+				return ec.fieldContext_BoardIssue_assignees(ctx, field)
+			case "status":
+				return ec.fieldContext_BoardIssue_status(ctx, field)
+			case "multipleStatus":
+				return ec.fieldContext_BoardIssue_multipleStatus(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type BoardIssue", field.Name)
 		},
 	}
 	return fc, nil
@@ -16778,6 +17652,8 @@ func (ec *executionContext) _AssignedIssue(ctx context.Context, sel ast.Selectio
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}
+		case "status":
+			out.Values[i] = ec._AssignedIssue_status(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -16877,6 +17753,84 @@ func (ec *executionContext) _AttentionItem(ctx context.Context, sel ast.Selectio
 			out.Values[i] = ec._AttentionItem_since(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var boardIssueImplementors = []string{"BoardIssue"}
+
+func (ec *executionContext) _BoardIssue(ctx context.Context, sel ast.SelectionSet, obj *model.BoardIssue) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, boardIssueImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("BoardIssue")
+		case "number":
+			out.Values[i] = ec._BoardIssue_number(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "title":
+			out.Values[i] = ec._BoardIssue_title(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "url":
+			out.Values[i] = ec._BoardIssue_url(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "state":
+			out.Values[i] = ec._BoardIssue_state(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "updatedAt":
+			out.Values[i] = ec._BoardIssue_updatedAt(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "authorLogin":
+			out.Values[i] = ec._BoardIssue_authorLogin(ctx, field, obj)
+		case "labels":
+			out.Values[i] = ec._BoardIssue_labels(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "assignees":
+			out.Values[i] = ec._BoardIssue_assignees(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "status":
+			out.Values[i] = ec._BoardIssue_status(ctx, field, obj)
+		case "multipleStatus":
+			out.Values[i] = ec._BoardIssue_multipleStatus(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
 			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
@@ -18401,6 +19355,25 @@ func (ec *executionContext) _Query(ctx context.Context, sel ast.SelectionSet) gr
 			}
 
 			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
+		case "repositoryBoard":
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._Query_repositoryBoard(ctx, field)
+				return res
+			}
+
+			rrm := func(ctx context.Context) graphql.Marshaler {
+				return ec.OperationContext.RootResolverMiddleware(ctx,
+					func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return rrm(innerCtx) })
 		case "__type":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Query___type(ctx, field)
@@ -18618,6 +19591,55 @@ func (ec *executionContext) _Repository(ctx context.Context, sel ast.SelectionSe
 			out.Values[i] = ec._Repository_metadataStatus(ctx, field, obj)
 		case "activity":
 			out.Values[i] = ec._Repository_activity(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var repositoryBoardImplementors = []string{"RepositoryBoard"}
+
+func (ec *executionContext) _RepositoryBoard(ctx context.Context, sel ast.SelectionSet, obj *model.RepositoryBoard) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, repositoryBoardImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("RepositoryBoard")
+		case "statusLabels":
+			out.Values[i] = ec._RepositoryBoard_statusLabels(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "truncated":
+			out.Values[i] = ec._RepositoryBoard_truncated(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "issues":
+			out.Values[i] = ec._RepositoryBoard_issues(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
@@ -19495,6 +20517,60 @@ func (ec *executionContext) marshalNAttentionItem2ᚕgithubᚗcomᚋrepoorbitᚋ
 	}
 
 	return ret
+}
+
+func (ec *executionContext) marshalNBoardIssue2ᚕᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐBoardIssueᚄ(ctx context.Context, sel ast.SelectionSet, v []*model.BoardIssue) graphql.Marshaler {
+	ret := make(graphql.Array, len(v))
+	var wg sync.WaitGroup
+	isLen1 := len(v) == 1
+	if !isLen1 {
+		wg.Add(len(v))
+	}
+	for i := range v {
+		i := i
+		fc := &graphql.FieldContext{
+			Index:  &i,
+			Result: &v[i],
+		}
+		ctx := graphql.WithFieldContext(ctx, fc)
+		f := func(i int) {
+			defer func() {
+				if r := recover(); r != nil {
+					ec.Error(ctx, ec.Recover(ctx, r))
+					ret = nil
+				}
+			}()
+			if !isLen1 {
+				defer wg.Done()
+			}
+			ret[i] = ec.marshalNBoardIssue2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐBoardIssue(ctx, sel, v[i])
+		}
+		if isLen1 {
+			f(i)
+		} else {
+			go f(i)
+		}
+
+	}
+	wg.Wait()
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNBoardIssue2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐBoardIssue(ctx context.Context, sel ast.SelectionSet, v *model.BoardIssue) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			ec.Errorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._BoardIssue(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalNBoolean2bool(ctx context.Context, v any) (bool, error) {
@@ -20666,6 +21742,42 @@ func (ec *executionContext) marshalOID2ᚖstring(ctx context.Context, sel ast.Se
 	return res
 }
 
+func (ec *executionContext) unmarshalOInt2ᚕintᚄ(ctx context.Context, v any) ([]int, error) {
+	if v == nil {
+		return nil, nil
+	}
+	var vSlice []any
+	vSlice = graphql.CoerceList(v)
+	var err error
+	res := make([]int, len(vSlice))
+	for i := range vSlice {
+		ctx := graphql.WithPathContext(ctx, graphql.NewPathWithIndex(i))
+		res[i], err = ec.unmarshalNInt2int(ctx, vSlice[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return res, nil
+}
+
+func (ec *executionContext) marshalOInt2ᚕintᚄ(ctx context.Context, sel ast.SelectionSet, v []int) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	ret := make(graphql.Array, len(v))
+	for i := range v {
+		ret[i] = ec.marshalNInt2int(ctx, sel, v[i])
+	}
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
 func (ec *executionContext) unmarshalOInt2ᚖint(ctx context.Context, v any) (*int, error) {
 	if v == nil {
 		return nil, nil
@@ -20728,6 +21840,13 @@ func (ec *executionContext) marshalORepository2ᚖgithubᚗcomᚋrepoorbitᚋrep
 		return graphql.Null
 	}
 	return ec._Repository(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalORepositoryBoard2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐRepositoryBoard(ctx context.Context, sel ast.SelectionSet, v *model.RepositoryBoard) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._RepositoryBoard(ctx, sel, v)
 }
 
 func (ec *executionContext) marshalORepositoryOverview2ᚖgithubᚗcomᚋrepoorbitᚋrepoorbitᚋbackendᚋgraphqlᚋmodelᚐRepositoryOverview(ctx context.Context, sel ast.SelectionSet, v *model.RepositoryOverview) graphql.Marshaler {

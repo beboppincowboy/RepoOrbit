@@ -45,15 +45,18 @@ func (operationLimits) MutateOperationContext(_ context.Context, op *graphql.Ope
 	if !depth(op.Operation.SelectionSet, 1) {
 		return gqlerror.Errorf("query depth exceeds limit")
 	}
-	overview := false
+	// Expensive reads whose cost the complexity budget does not see: at most one of each group per request.
+	once := map[string]string{"repositoryOverview": "repository overview", "crossRepositoryOverview": "repository overview", "repositoryBoard": "repository board"}
+	seen := map[string]bool{}
 	for _, field := range graphql.CollectFields(op, op.Operation.SelectionSet, []string{"Query"}) {
-		if field.Name != "repositoryOverview" && field.Name != "crossRepositoryOverview" {
+		group := once[field.Name]
+		if group == "" {
 			continue
 		}
-		if overview {
-			return gqlerror.Errorf("request at most one repository overview")
+		if seen[group] {
+			return gqlerror.Errorf("request at most one %s", group)
 		}
-		overview = true
+		seen[group] = true
 	}
 	return nil
 }
