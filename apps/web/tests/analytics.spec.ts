@@ -77,6 +77,16 @@ test('shows — with the coverage reason for an uncovered metric, and real figur
   expect(await fits(page)).toBe(true);
 });
 
+test('hides the historical coverage banner once the repository is synced', async ({ page }) => {
+  await mockWorkspace(page, () => overview({
+    firstResponseTime: { seconds: 120, sampleSize: 1, coverage: covered },
+    activity: activity({ issueEvents: { traversal: stream(), historicalGap: true } }),
+  }));
+  await page.goto('/workspace/1');
+  await expect(page.getByRole('button', { name: 'Sync details' })).toContainText('Synced');
+  await expect(page.getByText('Partial coverage.')).toHaveCount(0);
+});
+
 test('chart reads a day on focus and hatches days with no imported history', async ({ page }) => {
   let covered = true;
   await mockWorkspace(page, () => overview({ daily: days(30, covered) }));
