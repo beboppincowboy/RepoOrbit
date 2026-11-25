@@ -17,7 +17,6 @@ import {
 } from "@/lib/api";
 import { issueDraftStorageKey, readStorage, removeStorage, writeStorage } from "@/lib/drafts";
 
-// Matches backend/internal/issues/commands.go limits and syntax rules.
 const MAX_TITLE = 256;
 const MAX_BODY = 65536;
 const MAX_ITEMS = 10;
@@ -168,7 +167,6 @@ export function IssueEditor(props: IssueEditorProps) {
   const issueNumber = issue?.number ?? 0;
   const storageKey = issueDraftStorageKey(viewerKey, repositoryId, isCreate ? "create" : issueNumber);
 
-  // Restore saved draft synchronously on mount so reloads keep the exact form and failure/unknown state.
   const initialCreate = useMemo<StoredCreateDraft | null>(() => {
     if (demo || !isCreate) return null;
     return readStorage<StoredCreateDraft>(storageKey);
@@ -179,25 +177,21 @@ export function IssueEditor(props: IssueEditorProps) {
     return readStorage<StoredUpdateDraft>(storageKey);
   }, [demo, isCreate, storageKey]);
 
-  // Create fields
   const [title, setTitle] = useState(() => initialCreate?.title ?? "");
   const [body, setBody] = useState(() => initialCreate?.body ?? "");
   const [createLabels, setCreateLabels] = useState<string[]>(() => initialCreate?.labels ?? []);
   const [createAssignees, setCreateAssignees] = useState<string[]>(() => initialCreate?.assignees ?? []);
 
-  // Update fields
   const [addLabels, setAddLabels] = useState<string[]>(() => initialUpdate?.addLabels ?? []);
   const [removeLabels, setRemoveLabels] = useState<string[]>(() => initialUpdate?.removeLabels ?? []);
   const [addAssignees, setAddAssignees] = useState<string[]>(() => initialUpdate?.addAssignees ?? []);
   const [removeAssignees, setRemoveAssignees] = useState<string[]>(() => initialUpdate?.removeAssignees ?? []);
   const [targetState, setTargetState] = useState<"" | "open" | "closed">(() => initialUpdate?.state ?? "");
 
-  // Transient text inputs for adding labels/assignees
   const [labelInput, setLabelInput] = useState("");
   const [assigneeInput, setAssigneeInput] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  // Write flow state
   const [step, setStep] = useState<Step>(() => (isCreate ? initialCreate?.step : initialUpdate?.step) ?? "edit");
   const [idempotencyKey, setIdempotencyKey] = useState<string | null>(() => (isCreate ? initialCreate?.idempotencyKey : initialUpdate?.idempotencyKey) ?? null);
   const [attemptedAt, setAttemptedAt] = useState<string | null>(() => (isCreate ? initialCreate?.attemptedAt : initialUpdate?.attemptedAt) ?? null);
@@ -209,14 +203,12 @@ export function IssueEditor(props: IssueEditorProps) {
   const [lastOperation, setLastOperation] = useState<WriteOperation | null>(() => (isCreate ? initialCreate?.lastOperation : initialUpdate?.lastOperation) ?? null);
   const [duplicateOperationId, setDuplicateOperationId] = useState<number | null>(() => initialCreate?.duplicateOperationId ?? null);
 
-  // Recheck UI state
   const [recheckNumber, setRecheckNumber] = useState("");
   const [rechecking, setRechecking] = useState(false);
   const [recheckError, setRecheckError] = useState<string | null>(null);
 
   const submittingRef = useRef(false);
 
-  // Permission evaluation (mirrors backend/internal/issues/commands.go)
   const isAuthor = Boolean(viewerLogin && issue?.authorLogin && viewerLogin.toLowerCase() === issue.authorLogin.toLowerCase());
   const canCreate = !demo && !archived && Boolean(capabilities?.canCreateIssue);
   const canCreateMetadata = !demo && !archived && Boolean(capabilities?.canCreateIssueWithMetadata);
@@ -288,7 +280,6 @@ export function IssueEditor(props: IssueEditorProps) {
     keepKeyOnNextSubmit, lastError, lastOperation, duplicateOperationId, saveDraft,
   ]);
 
-  // Escape closes dialog unless a request is currently in flight.
   useEffect(() => {
     function onKey(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape" && step !== "submitting") onClose();
@@ -425,7 +416,6 @@ export function IssueEditor(props: IssueEditorProps) {
     setStep("edit");
   }
 
-  // Validates the form (committing any un-added label/assignee input first) and advances to Review.
   function goToReview() {
     if (demo || !canEditAnything) return;
     setValidationError(null);
@@ -582,7 +572,6 @@ export function IssueEditor(props: IssueEditorProps) {
         setLastError(op.outcome?.error ?? null);
         setStep("unknown");
       } else {
-        // Definite failure (including partial apply where issue was created on GitHub but labels/assignees failed).
         if (isCreate && op.issueNumber) {
           removeStorage(storageKey);
         }
@@ -683,6 +672,10 @@ export function IssueEditor(props: IssueEditorProps) {
     }
   }
 
+  const fields = {
+    title, body, createLabels, createAssignees, addLabels, removeLabels, addAssignees,
+    removeAssignees, targetState,
+  };
   const activeIdx = STEP_INDEX[step];
 
   const confirmedIssue = lastOperation?.outcome?.issue ?? null;
@@ -698,7 +691,6 @@ export function IssueEditor(props: IssueEditorProps) {
       onClick={e => { if (e.target === e.currentTarget && step !== "submitting") onClose(); }}
     >
       <div className="flex max-h-[88vh] w-[min(560px,100%)] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[0_18px_44px_rgba(15,23,42,.22)]">
-        {/* Header + 4-step progress */}
         <div className="flex flex-none flex-col gap-2 border-b border-border p-4">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
@@ -731,7 +723,6 @@ export function IssueEditor(props: IssueEditorProps) {
           </ol>
         </div>
 
-        {/* Body */}
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
           {demo && (
             <div role="status" className="rounded-[10px] border border-demo bg-demo-soft px-3 py-2 text-[13px] text-demo">
@@ -752,300 +743,52 @@ export function IssueEditor(props: IssueEditorProps) {
             </div>
           )}
 
-          {/* STEP 1: EDIT */}
           {step === "edit" && (
-            <>
-              {lastError && (
-                <div role="alert" className="rounded-[10px] border border-destructive bg-destructive-soft px-3 py-2 text-[13px]">
-                  <strong>Previous attempt did not succeed:</strong> {lastError} Your draft was kept below.
-                </div>
-              )}
-
-              {validationError && (
-                <div role="alert" className="rounded-[10px] border border-destructive bg-destructive-soft px-3 py-2 text-[13px]">
-                  {validationError}
-                </div>
-              )}
-
-              {isCreate ? (
-                <div className="flex flex-col gap-3">
-                  <div className="flex flex-col gap-1">
-                    <label htmlFor="issue-title" className="text-xs font-medium text-soft">Title</label>
-                    <input
-                      id="issue-title"
-                      type="text"
-                      value={title}
-                      maxLength={MAX_TITLE}
-                      placeholder="Short summary"
-                      disabled={demo || !canCreate}
-                      onChange={e => { setTitle(e.target.value); setValidationError(null); }}
-                      className={fieldInput}
-                    />
-                  </div>
-
-                  <div className="flex flex-col gap-1">
-                    <label htmlFor="issue-body" className="text-xs font-medium text-soft">Description</label>
-                    <textarea
-                      id="issue-body"
-                      rows={4}
-                      value={body}
-                      placeholder="Context, reproduction steps, or acceptance notes (optional)"
-                      disabled={demo || !canCreate}
-                      onChange={e => { setBody(e.target.value); setValidationError(null); }}
-                      className={fieldInput}
-                    />
-                  </div>
-
-                  <div className="flex flex-col gap-1">
-                    <label htmlFor="issue-labels" className="text-xs font-medium text-soft">Labels (optional)</label>
-                    <div className="flex gap-2">
-                      <input
-                        id="issue-labels"
-                        type="text"
-                        value={labelInput}
-                        placeholder="bug, documentation"
-                        disabled={demo || !canCreateMetadata}
-                        onChange={e => { setLabelInput(e.target.value); setValidationError(null); }}
-                        onKeyDown={onChipInputKeyDown("label")}
-                        className={fieldInput}
-                      />
-                      <Button type="button" variant="outline" size="sm" onClick={handleAddLabel} disabled={demo || !canCreateMetadata || !labelInput.trim()}>Add label</Button>
-                    </div>
-                    {!demo && canCreate && !canCreateMetadata && (
-                      <span className="text-xs text-muted-foreground">Disabled: adding labels on a new issue requires Push access on GitHub.</span>
-                    )}
-                    {createLabels.length > 0 && (
-                      <div className="mt-1 flex flex-wrap gap-1.5">
-                        {createLabels.map(label => (
-                          <span key={label} className={chipClass}>
-                            {label}
-                            <button
-                              type="button"
-                              aria-label={`Remove label ${label}`}
-                              disabled={demo || !canCreateMetadata}
-                              onClick={() => setCreateLabels(prev => removeIgnoreCase(prev, label))}
-                              className="ml-0.5 text-muted-foreground hover:text-foreground"
-                            >×</button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex flex-col gap-1">
-                    <label htmlFor="issue-assignees" className="text-xs font-medium text-soft">Assignees (optional)</label>
-                    <div className="flex gap-2">
-                      <input
-                        id="issue-assignees"
-                        type="text"
-                        list={suggestId}
-                        value={assigneeInput}
-                        placeholder="GitHub username"
-                        disabled={demo || !canCreateMetadata}
-                        onChange={e => { setAssigneeInput(e.target.value); setValidationError(null); }}
-                        onKeyDown={onChipInputKeyDown("assignee")}
-                        className={fieldInput}
-                      />
-                      <Button type="button" variant="outline" size="sm" onClick={handleAddAssignee} disabled={demo || !canCreateMetadata || !assigneeInput.trim()}>Add assignee</Button>
-                    </div>
-                    <datalist id={suggestId}>
-                      {assigneeSuggestions.map(login => <option key={login} value={login} />)}
-                    </datalist>
-                    <span className="text-xs text-muted-foreground">
-                      {!demo && canCreate && !canCreateMetadata
-                        ? "Disabled: adding assignees on a new issue requires Push access on GitHub."
-                        : "RepoOrbit checks GitHub assignability before creating the issue."}
-                    </span>
-                    {createAssignees.length > 0 && (
-                      <div className="mt-1 flex flex-wrap gap-1.5">
-                        {createAssignees.map(login => (
-                          <span key={login} className={chipClass}>
-                            @{login}
-                            <button
-                              type="button"
-                              aria-label={`Remove assignee ${login}`}
-                              disabled={demo || !canCreateMetadata}
-                              onClick={() => setCreateAssignees(prev => removeIgnoreCase(prev, login))}
-                              className="ml-0.5 text-muted-foreground hover:text-foreground"
-                            >×</button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-3">
-                  {issue?.title && (
-                    <div className="rounded-lg border border-border bg-muted px-3 py-2 text-[13px]">
-                      <div className="font-medium">{issue.title}</div>
-                      <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        <span>Current state: <strong className="text-foreground">{issue.state ?? "unknown"}</strong></span>
-                        {issue.authorLogin && <span>· Author: @{issue.authorLogin}</span>}
-                        {safeHref(issue.url) && <a href={safeHref(issue.url)!} target="_blank" rel="noreferrer" className="text-primary underline">Open on GitHub ↗</a>}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* State change */}
-                  <div className="flex flex-col gap-1">
-                    <label htmlFor="issue-state" className="text-xs font-medium text-soft">Open / closed state</label>
-                    <select
-                      id="issue-state"
-                      value={targetState}
-                      disabled={demo || (!canManage && !canAuthorToggleState)}
-                      onChange={e => { setTargetState(e.target.value as "" | "open" | "closed"); setValidationError(null); }}
-                      className={fieldInput}
-                    >
-                      <option value="">Keep current{issue?.state ? ` (${issue.state})` : ""}</option>
-                      <option value="open">Open issue</option>
-                      <option value="closed">Close issue</option>
-                    </select>
-                  </div>
-
-                  {/* Labels delta */}
-                  <div className="flex flex-col gap-1.5">
-                    <label htmlFor="edit-add-labels" className="text-xs font-medium text-soft">Labels (add or remove)</label>
-                    {currentLabels.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {currentLabels.map(name => {
-                          const removing = hasIgnoreCase(removeLabels, name);
-                          return (
-                            <button
-                              key={name}
-                              type="button"
-                              disabled={demo || !canManage}
-                              aria-pressed={removing}
-                              onClick={() => toggleRemoveCurrentLabel(name)}
-                              className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                                removing
-                                  ? "border-destructive bg-destructive-soft text-destructive line-through"
-                                  : "border-border bg-muted text-soft hover:border-border-strong"
-                              }`}
-                            >
-                              {name}
-                              <span aria-hidden="true">{removing ? "↺" : "×"}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                    <div className="flex gap-2">
-                      <input
-                        id="edit-add-labels"
-                        type="text"
-                        value={labelInput}
-                        placeholder="Add label name"
-                        disabled={demo || !canManage}
-                        onChange={e => { setLabelInput(e.target.value); setValidationError(null); }}
-                        onKeyDown={onChipInputKeyDown("label")}
-                        className={fieldInput}
-                      />
-                      <Button type="button" variant="outline" size="sm" onClick={handleAddLabel} disabled={demo || !canManage || !labelInput.trim()}>Add label</Button>
-                    </div>
-                    {addLabels.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {addLabels.map(name => (
-                          <span key={name} className="inline-flex items-center gap-1 rounded-full border border-success bg-success-soft px-2.5 py-0.5 text-xs text-success-foreground">
-                            + {name}
-                            <button type="button" aria-label={`Cancel adding label ${name}`} onClick={() => setAddLabels(prev => removeIgnoreCase(prev, name))}>×</button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Assignees delta */}
-                  <div className="flex flex-col gap-1.5">
-                    <label htmlFor="edit-add-assignees" className="text-xs font-medium text-soft">Assignees (add or remove)</label>
-                    {currentAssignees.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {currentAssignees.map(login => {
-                          const removing = hasIgnoreCase(removeAssignees, login);
-                          return (
-                            <button
-                              key={login}
-                              type="button"
-                              disabled={demo || !canManage}
-                              aria-pressed={removing}
-                              onClick={() => toggleRemoveCurrentAssignee(login)}
-                              className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                                removing
-                                  ? "border-destructive bg-destructive-soft text-destructive line-through"
-                                  : "border-border bg-muted text-soft hover:border-border-strong"
-                              }`}
-                            >
-                              @{login}
-                              <span aria-hidden="true">{removing ? "↺" : "×"}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                    <div className="flex gap-2">
-                      <input
-                        id="edit-add-assignees"
-                        type="text"
-                        list={suggestId}
-                        value={assigneeInput}
-                        placeholder="Add GitHub username"
-                        disabled={demo || !canManage}
-                        onChange={e => { setAssigneeInput(e.target.value); setValidationError(null); }}
-                        onKeyDown={onChipInputKeyDown("assignee")}
-                        className={fieldInput}
-                      />
-                      <Button type="button" variant="outline" size="sm" onClick={handleAddAssignee} disabled={demo || !canManage || !assigneeInput.trim()}>Add assignee</Button>
-                    </div>
-                    <datalist id={suggestId}>
-                      {assigneeSuggestions.map(login => <option key={login} value={login} />)}
-                    </datalist>
-                    {addAssignees.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {addAssignees.map(login => (
-                          <span key={login} className="inline-flex items-center gap-1 rounded-full border border-success bg-success-soft px-2.5 py-0.5 text-xs text-success-foreground">
-                            + @{login}
-                            <button type="button" aria-label={`Cancel adding assignee ${login}`} onClick={() => setAddAssignees(prev => removeIgnoreCase(prev, login))}>×</button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    <span className="text-xs text-muted-foreground">Only added or removed values are sent; concurrent changes by teammates are preserved.</span>
-                  </div>
-                </div>
-              )}
-            </>
+            <EditStep
+              fields={fields}
+              issue={issue}
+              isCreate={isCreate}
+              demo={demo}
+              canCreate={canCreate}
+              canCreateMetadata={canCreateMetadata}
+              canManage={canManage}
+              canAuthorToggleState={canAuthorToggleState}
+              lastError={lastError}
+              validationError={validationError}
+              labelInput={labelInput}
+              assigneeInput={assigneeInput}
+              suggestId={suggestId}
+              assigneeSuggestions={assigneeSuggestions}
+              currentLabels={currentLabels}
+              currentAssignees={currentAssignees}
+              setTitle={setTitle}
+              setBody={setBody}
+              setCreateLabels={setCreateLabels}
+              setCreateAssignees={setCreateAssignees}
+              setAddLabels={setAddLabels}
+              setAddAssignees={setAddAssignees}
+              setTargetState={setTargetState}
+              setValidationError={setValidationError}
+              setLabelInput={setLabelInput}
+              setAssigneeInput={setAssigneeInput}
+              handleAddLabel={handleAddLabel}
+              handleAddAssignee={handleAddAssignee}
+              onChipInputKeyDown={onChipInputKeyDown}
+              toggleRemoveCurrentLabel={toggleRemoveCurrentLabel}
+              toggleRemoveCurrentAssignee={toggleRemoveCurrentAssignee}
+            />
           )}
 
-          {/* STEP 2: REVIEW */}
           {step === "review" && (
-            <div className="flex flex-col gap-3">
-              <p className="m-0 text-[13px]">Exactly what will be sent to GitHub:</p>
-              <div role="region" aria-label="Reviewed changes" className="rounded-[10px] border border-border bg-muted p-3 font-mono text-xs leading-relaxed">
-                {isCreate ? (
-                  <>
-                    <div className="text-success-foreground">+ create issue in {fullName}: &ldquo;{title.trim()}&rdquo;</div>
-                    {body.trim() && <div className="mt-1 whitespace-pre-wrap text-soft">+ body: {body.trim().length > 240 ? `${body.trim().slice(0, 240)}…` : body.trim()}</div>}
-                    {createLabels.map(l => <div key={`l-${l}`} className="text-success-foreground">+ label: {l}</div>)}
-                    {createAssignees.map(a => <div key={`a-${a}`} className="text-success-foreground">+ assignee: @{a}</div>)}
-                  </>
-                ) : (
-                  <>
-                    <div className="text-foreground">~ update issue #{issueNumber} in {fullName}</div>
-                    {addLabels.map(l => <div key={`al-${l}`} className="text-success-foreground">+ add label: {l}</div>)}
-                    {removeLabels.map(l => <div key={`rl-${l}`} className="text-destructive">- remove label: {l}</div>)}
-                    {addAssignees.map(a => <div key={`aa-${a}`} className="text-success-foreground">+ add assignee: @{a}</div>)}
-                    {removeAssignees.map(a => <div key={`ra-${a}`} className="text-destructive">- remove assignee: @{a}</div>)}
-                    {targetState && <div className="text-primary">~ state: {targetState}</div>}
-                  </>
-                )}
-              </div>
-              <p className="m-0 text-xs text-muted-foreground">
-                Sent using your GitHub account{viewerLogin ? ` (@${viewerLogin})` : ""}. Nothing else on the issue changes.
-              </p>
-            </div>
+            <ReviewStep
+              fields={fields}
+              isCreate={isCreate}
+              fullName={fullName}
+              issueNumber={issueNumber}
+              viewerLogin={viewerLogin}
+            />
           )}
 
-          {/* STEP 3: SUBMITTING */}
           {step === "submitting" && (
             <div role="status" className="flex items-center gap-2.5 rounded-[10px] border border-run bg-run-soft px-3 py-3 text-[13px] text-run">
               <span className="size-2 rounded-full bg-current sync-pulse" aria-hidden="true" />
@@ -1053,7 +796,6 @@ export function IssueEditor(props: IssueEditorProps) {
             </div>
           )}
 
-          {/* STEP 4a: CONFIRMED */}
           {step === "confirmed" && (
             <div className="flex flex-col gap-3">
               <div role="status" className="rounded-[10px] border border-success bg-success-soft px-3 py-2.5 text-[13px]">
@@ -1078,134 +820,37 @@ export function IssueEditor(props: IssueEditorProps) {
             </div>
           )}
 
-          {/* STEP 4b: UNKNOWN */}
           {step === "unknown" && (
-            <div className="flex flex-col gap-3">
-              <div role="status" className="rounded-[10px] border border-warning bg-warning-soft px-3 py-2.5 text-[13px]">
-                <strong>Outcome unknown.</strong>{" "}
-                {lastError || "No reliable answer arrived from GitHub. The request may have been applied."}{" "}
-                Your draft is preserved. RepoOrbit will not resend automatically.
-              </div>
-
-              {duplicateOperationId && !lastOperation && (
-                <div className="flex flex-col gap-2 rounded-[10px] border border-border bg-muted p-3 text-[13px]">
-                  <p className="m-0">An earlier create with this title and body is already recorded (operation #{duplicateOperationId}). Inspect and recheck it instead of creating a duplicate.</p>
-                  <div>
-                    <Button variant="outline" size="sm" onClick={() => void inspectDuplicateOperation()} disabled={rechecking}>
-                      {rechecking ? "Loading operation…" : `Inspect operation #${duplicateOperationId}`}
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              {lastOperation && (
-                <div className="flex flex-col gap-2.5 rounded-[10px] border border-border bg-muted p-3 text-[13px]">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-mono text-xs text-muted-foreground">Operation #{lastOperation.id} · {lastOperation.state}</span>
-                    {searchHref && (
-                      <a href={searchHref} target="_blank" rel="noreferrer" className="text-xs text-primary underline">Search GitHub for this issue ↗</a>
-                    )}
-                  </div>
-
-                  {lastOperation.kind === "create" ? (
-                    <form onSubmit={e => void handleRecheck(e)} className="flex flex-col gap-2">
-                      <label htmlFor="recheck-issue-number" className="text-xs font-medium text-soft">
-                        Found the created issue on GitHub? Enter its issue number to verify and link it:
-                      </label>
-                      <div className="flex gap-2">
-                        <input
-                          id="recheck-issue-number"
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={recheckNumber}
-                          onChange={e => { setRecheckNumber(e.target.value); setRecheckError(null); }}
-                          placeholder="e.g. 42"
-                          className={fieldInput}
-                        />
-                        <Button type="submit" disabled={rechecking}>
-                          {rechecking ? "Rechecking…" : "Recheck"}
-                        </Button>
-                      </div>
-                    </form>
-                  ) : (
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs text-muted-foreground">Re-read issue #{lastOperation.issueNumber} from GitHub to check whether the changes landed.</span>
-                      <Button type="button" onClick={() => void handleRecheck()} disabled={rechecking}>
-                        {rechecking ? "Rechecking…" : "Recheck"}
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {!lastOperation && !duplicateOperationId && keepKeyOnNextSubmit && idempotencyKey && (
-                canReplayWithSameKey(attemptedAt) ? (
-                  <div className="flex flex-col gap-2 rounded-[10px] border border-border bg-muted p-3 text-[13px]">
-                    <p className="m-0 text-xs text-muted-foreground">
-                      The server may have already recorded this request under your idempotency key. Retrying with the same key lets the server return any operation it already recorded for this request.
-                    </p>
-                    <div>
-                      <Button variant="outline" size="sm" onClick={() => void submitWrite(true)}>Check recorded status with same key</Button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-1.5 rounded-[10px] border border-warning bg-warning-soft p-3 text-[13px]">
-                    <div className="font-medium">Manual reconciliation required</div>
-                    <p className="m-0 text-xs text-muted-foreground">
-                      This unresolved attempt is outside the 30-day idempotency retention window or has no verified attempt time, so same-key recovery is disabled to avoid creating a duplicate issue. Check GitHub and Write history manually before discarding or re-entering this draft.
-                    </p>
-                  </div>
-                )
-              )}
-
-              {recheckError && (
-                <div role="alert" className="rounded-[10px] border border-destructive bg-destructive-soft px-3 py-2 text-[13px]">
-                  {recheckError}
-                </div>
-              )}
-            </div>
+            <UnknownStep
+              lastError={lastError}
+              duplicateOperationId={duplicateOperationId}
+              lastOperation={lastOperation}
+              inspectDuplicateOperation={inspectDuplicateOperation}
+              rechecking={rechecking}
+              searchHref={searchHref}
+              handleRecheck={handleRecheck}
+              recheckNumber={recheckNumber}
+              setRecheckNumber={setRecheckNumber}
+              setRecheckError={setRecheckError}
+              keepKeyOnNextSubmit={keepKeyOnNextSubmit}
+              idempotencyKey={idempotencyKey}
+              attemptedAt={attemptedAt}
+              submitWrite={submitWrite}
+              recheckError={recheckError}
+            />
           )}
 
-          {/* STEP 4c: FAILED */}
           {step === "failed" && (
-            <div className="flex flex-col gap-3">
-              <div role="alert" className="rounded-[10px] border border-destructive bg-destructive-soft px-3 py-2.5 text-[13px]">
-                <strong>Write did not fully succeed.</strong> {lastError || "GitHub rejected or only partially applied the request."}
-              </div>
-
-              {lastOperation?.outcome?.unapplied && lastOperation.outcome.unapplied.length > 0 && (
-                <div className="rounded-[10px] border border-warning bg-warning-soft px-3 py-2 text-[13px]">
-                  <div className="font-medium">Unapplied changes:</div>
-                  <ul className="m-0 mt-1 list-disc pl-5 text-xs">
-                    {lastOperation.outcome.unapplied.map(item => <li key={item}>{item}</li>)}
-                  </ul>
-                </div>
-              )}
-
-              {confirmedIssue ? (
-                <div className="flex flex-col gap-1.5 rounded-[10px] border border-border bg-muted p-3 text-[13px]">
-                  <div className="font-medium">Issue #{confirmedIssue.number} exists on GitHub</div>
-                  <p className="m-0 text-xs text-muted-foreground">
-                    Follow up by updating issue #{confirmedIssue.number} rather than creating a second issue.
-                  </p>
-                  <div className="mt-1 flex flex-wrap gap-2">
-                    {confirmedIssueHref && <a href={confirmedIssueHref} target="_blank" rel="noreferrer" className={smallBtn}>Open on GitHub ↗</a>}
-                    {onSwitchToEditIssue && (
-                      <Button variant="outline" size="sm" onClick={() => onSwitchToEditIssue(confirmedIssue.number, confirmedIssue)}>
-                        Edit issue #{confirmedIssue.number}
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <p className="m-0 text-xs text-muted-foreground">Your draft is preserved. Return to Edit to adjust and try again, or close and come back later.</p>
-              )}
-            </div>
+            <FailedStep
+              lastError={lastError}
+              lastOperation={lastOperation}
+              confirmedIssue={confirmedIssue}
+              confirmedIssueHref={confirmedIssueHref}
+              onSwitchToEditIssue={onSwitchToEditIssue}
+            />
           )}
         </div>
 
-        {/* Footer */}
         <div className="flex flex-none flex-wrap items-center justify-between gap-2 border-t border-border p-3.5">
           <div>
             {!demo && hasAnyDraft && step !== "submitting" && step !== "confirmed" && !(step === "unknown" && lastOperation) && (
@@ -1243,6 +888,521 @@ export function IssueEditor(props: IssueEditorProps) {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+type IssueFields = Pick<StoredCreateDraft, "title" | "body">
+  & Pick<StoredUpdateDraft, "addLabels" | "removeLabels" | "addAssignees" | "removeAssignees">
+  & { createLabels: string[]; createAssignees: string[]; targetState: StoredUpdateDraft["state"] };
+
+type EditStepProps = {
+  fields: IssueFields;
+  issue: IssueEditorProps["issue"];
+  isCreate: boolean;
+  demo: boolean;
+  canCreate: boolean;
+  canCreateMetadata: boolean;
+  canManage: boolean;
+  canAuthorToggleState: boolean;
+  lastError: string | null;
+  validationError: string | null;
+  labelInput: string;
+  assigneeInput: string;
+  suggestId: string;
+  assigneeSuggestions: string[];
+  currentLabels: string[];
+  currentAssignees: string[];
+  setTitle: (value: string) => void;
+  setBody: (value: string) => void;
+  setCreateLabels: (update: (previous: string[]) => string[]) => void;
+  setCreateAssignees: (update: (previous: string[]) => string[]) => void;
+  setAddLabels: (update: (previous: string[]) => string[]) => void;
+  setAddAssignees: (update: (previous: string[]) => string[]) => void;
+  setTargetState: (state: StoredUpdateDraft["state"]) => void;
+  setValidationError: (error: string | null) => void;
+  setLabelInput: (value: string) => void;
+  setAssigneeInput: (value: string) => void;
+  handleAddLabel: () => void;
+  handleAddAssignee: () => void;
+  onChipInputKeyDown: (kind: "label" | "assignee") => (event: KeyboardEvent<HTMLInputElement>) => void;
+  toggleRemoveCurrentLabel: (value: string) => void;
+  toggleRemoveCurrentAssignee: (value: string) => void;
+};
+
+function EditStep({
+  fields, issue, isCreate, demo, canCreate, canCreateMetadata, canManage, canAuthorToggleState,
+  lastError, validationError, labelInput, assigneeInput, suggestId, assigneeSuggestions,
+  currentLabels, currentAssignees, setTitle, setBody, setCreateLabels, setCreateAssignees,
+  setAddLabels, setAddAssignees, setTargetState, setValidationError, setLabelInput,
+  setAssigneeInput, handleAddLabel, handleAddAssignee, onChipInputKeyDown,
+  toggleRemoveCurrentLabel, toggleRemoveCurrentAssignee,
+}: EditStepProps) {
+  const {
+    title, body, createLabels, createAssignees, addLabels, removeLabels, addAssignees,
+    removeAssignees, targetState,
+  } = fields;
+  return (
+    <>
+      {lastError && (
+        <div role="alert" className="rounded-[10px] border border-destructive bg-destructive-soft px-3 py-2 text-[13px]">
+          <strong>Previous attempt did not succeed:</strong> {lastError} Your draft was kept below.
+        </div>
+      )}
+
+      {validationError && (
+        <div role="alert" className="rounded-[10px] border border-destructive bg-destructive-soft px-3 py-2 text-[13px]">
+          {validationError}
+        </div>
+      )}
+
+      {isCreate ? (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <label htmlFor="issue-title" className="text-xs font-medium text-soft">Title</label>
+            <input
+              id="issue-title"
+              type="text"
+              value={title}
+              maxLength={MAX_TITLE}
+              placeholder="Short summary"
+              disabled={demo || !canCreate}
+              onChange={e => { setTitle(e.target.value); setValidationError(null); }}
+              className={fieldInput}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="issue-body" className="text-xs font-medium text-soft">Description</label>
+            <textarea
+              id="issue-body"
+              rows={4}
+              value={body}
+              placeholder="Context, reproduction steps, or acceptance notes (optional)"
+              disabled={demo || !canCreate}
+              onChange={e => { setBody(e.target.value); setValidationError(null); }}
+              className={fieldInput}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="issue-labels" className="text-xs font-medium text-soft">Labels (optional)</label>
+            <div className="flex gap-2">
+              <input
+                id="issue-labels"
+                type="text"
+                value={labelInput}
+                placeholder="bug, documentation"
+                disabled={demo || !canCreateMetadata}
+                onChange={e => { setLabelInput(e.target.value); setValidationError(null); }}
+                onKeyDown={onChipInputKeyDown("label")}
+                className={fieldInput}
+              />
+              <Button type="button" variant="outline" size="sm" onClick={handleAddLabel} disabled={demo || !canCreateMetadata || !labelInput.trim()}>Add label</Button>
+            </div>
+            {!demo && canCreate && !canCreateMetadata && (
+              <span className="text-xs text-muted-foreground">Disabled: adding labels on a new issue requires Push access on GitHub.</span>
+            )}
+            {createLabels.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {createLabels.map(label => (
+                  <span key={label} className={chipClass}>
+                    {label}
+                    <button
+                      type="button"
+                      aria-label={`Remove label ${label}`}
+                      disabled={demo || !canCreateMetadata}
+                      onClick={() => setCreateLabels(prev => removeIgnoreCase(prev, label))}
+                      className="ml-0.5 text-muted-foreground hover:text-foreground"
+                    >×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="issue-assignees" className="text-xs font-medium text-soft">Assignees (optional)</label>
+            <div className="flex gap-2">
+              <input
+                id="issue-assignees"
+                type="text"
+                list={suggestId}
+                value={assigneeInput}
+                placeholder="GitHub username"
+                disabled={demo || !canCreateMetadata}
+                onChange={e => { setAssigneeInput(e.target.value); setValidationError(null); }}
+                onKeyDown={onChipInputKeyDown("assignee")}
+                className={fieldInput}
+              />
+              <Button type="button" variant="outline" size="sm" onClick={handleAddAssignee} disabled={demo || !canCreateMetadata || !assigneeInput.trim()}>Add assignee</Button>
+            </div>
+            <datalist id={suggestId}>
+              {assigneeSuggestions.map(login => <option key={login} value={login} />)}
+            </datalist>
+            <span className="text-xs text-muted-foreground">
+              {!demo && canCreate && !canCreateMetadata
+                ? "Disabled: adding assignees on a new issue requires Push access on GitHub."
+                : "RepoOrbit checks GitHub assignability before creating the issue."}
+            </span>
+            {createAssignees.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {createAssignees.map(login => (
+                  <span key={login} className={chipClass}>
+                    @{login}
+                    <button
+                      type="button"
+                      aria-label={`Remove assignee ${login}`}
+                      disabled={demo || !canCreateMetadata}
+                      onClick={() => setCreateAssignees(prev => removeIgnoreCase(prev, login))}
+                      className="ml-0.5 text-muted-foreground hover:text-foreground"
+                    >×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {issue?.title && (
+            <div className="rounded-lg border border-border bg-muted px-3 py-2 text-[13px]">
+              <div className="font-medium">{issue.title}</div>
+              <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <span>Current state: <strong className="text-foreground">{issue.state ?? "unknown"}</strong></span>
+                {issue.authorLogin && <span>· Author: @{issue.authorLogin}</span>}
+                {safeHref(issue.url) && <a href={safeHref(issue.url)!} target="_blank" rel="noreferrer" className="text-primary underline">Open on GitHub ↗</a>}
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="issue-state" className="text-xs font-medium text-soft">Open / closed state</label>
+            <select
+              id="issue-state"
+              value={targetState}
+              disabled={demo || (!canManage && !canAuthorToggleState)}
+              onChange={e => { setTargetState(e.target.value as "" | "open" | "closed"); setValidationError(null); }}
+              className={fieldInput}
+            >
+              <option value="">Keep current{issue?.state ? ` (${issue.state})` : ""}</option>
+              <option value="open">Open issue</option>
+              <option value="closed">Close issue</option>
+            </select>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="edit-add-labels" className="text-xs font-medium text-soft">Labels (add or remove)</label>
+            {currentLabels.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {currentLabels.map(name => {
+                  const removing = hasIgnoreCase(removeLabels, name);
+                  return (
+                    <button
+                      key={name}
+                      type="button"
+                      disabled={demo || !canManage}
+                      aria-pressed={removing}
+                      onClick={() => toggleRemoveCurrentLabel(name)}
+                      className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                        removing
+                          ? "border-destructive bg-destructive-soft text-destructive line-through"
+                          : "border-border bg-muted text-soft hover:border-border-strong"
+                      }`}
+                    >
+                      {name}
+                      <span aria-hidden="true">{removing ? "↺" : "×"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                id="edit-add-labels"
+                type="text"
+                value={labelInput}
+                placeholder="Add label name"
+                disabled={demo || !canManage}
+                onChange={e => { setLabelInput(e.target.value); setValidationError(null); }}
+                onKeyDown={onChipInputKeyDown("label")}
+                className={fieldInput}
+              />
+              <Button type="button" variant="outline" size="sm" onClick={handleAddLabel} disabled={demo || !canManage || !labelInput.trim()}>Add label</Button>
+            </div>
+            {addLabels.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {addLabels.map(name => (
+                  <span key={name} className="inline-flex items-center gap-1 rounded-full border border-success bg-success-soft px-2.5 py-0.5 text-xs text-success-foreground">
+                    + {name}
+                    <button type="button" aria-label={`Cancel adding label ${name}`} onClick={() => setAddLabels(prev => removeIgnoreCase(prev, name))}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="edit-add-assignees" className="text-xs font-medium text-soft">Assignees (add or remove)</label>
+            {currentAssignees.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {currentAssignees.map(login => {
+                  const removing = hasIgnoreCase(removeAssignees, login);
+                  return (
+                    <button
+                      key={login}
+                      type="button"
+                      disabled={demo || !canManage}
+                      aria-pressed={removing}
+                      onClick={() => toggleRemoveCurrentAssignee(login)}
+                      className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                        removing
+                          ? "border-destructive bg-destructive-soft text-destructive line-through"
+                          : "border-border bg-muted text-soft hover:border-border-strong"
+                      }`}
+                    >
+                      @{login}
+                      <span aria-hidden="true">{removing ? "↺" : "×"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div className="flex gap-2">
+              <input
+                id="edit-add-assignees"
+                type="text"
+                list={suggestId}
+                value={assigneeInput}
+                placeholder="Add GitHub username"
+                disabled={demo || !canManage}
+                onChange={e => { setAssigneeInput(e.target.value); setValidationError(null); }}
+                onKeyDown={onChipInputKeyDown("assignee")}
+                className={fieldInput}
+              />
+              <Button type="button" variant="outline" size="sm" onClick={handleAddAssignee} disabled={demo || !canManage || !assigneeInput.trim()}>Add assignee</Button>
+            </div>
+            <datalist id={suggestId}>
+              {assigneeSuggestions.map(login => <option key={login} value={login} />)}
+            </datalist>
+            {addAssignees.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {addAssignees.map(login => (
+                  <span key={login} className="inline-flex items-center gap-1 rounded-full border border-success bg-success-soft px-2.5 py-0.5 text-xs text-success-foreground">
+                    + @{login}
+                    <button type="button" aria-label={`Cancel adding assignee ${login}`} onClick={() => setAddAssignees(prev => removeIgnoreCase(prev, login))}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <span className="text-xs text-muted-foreground">Only added or removed values are sent; concurrent changes by teammates are preserved.</span>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+type ReviewStepProps = {
+  fields: IssueFields;
+  isCreate: boolean;
+  fullName: string;
+  issueNumber: number;
+  viewerLogin: string | null;
+};
+
+function ReviewStep({
+  fields, isCreate, fullName, issueNumber, viewerLogin,
+}: ReviewStepProps) {
+  const {
+    title, body, createLabels, createAssignees, addLabels, removeLabels, addAssignees,
+    removeAssignees, targetState,
+  } = fields;
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="m-0 text-[13px]">Exactly what will be sent to GitHub:</p>
+      <div role="region" aria-label="Reviewed changes" className="rounded-[10px] border border-border bg-muted p-3 font-mono text-xs leading-relaxed">
+        {isCreate ? (
+          <>
+            <div className="text-success-foreground">+ create issue in {fullName}: &ldquo;{title.trim()}&rdquo;</div>
+            {body.trim() && <div className="mt-1 whitespace-pre-wrap text-soft">+ body: {body.trim().length > 240 ? `${body.trim().slice(0, 240)}…` : body.trim()}</div>}
+            {createLabels.map(l => <div key={`l-${l}`} className="text-success-foreground">+ label: {l}</div>)}
+            {createAssignees.map(a => <div key={`a-${a}`} className="text-success-foreground">+ assignee: @{a}</div>)}
+          </>
+        ) : (
+          <>
+            <div className="text-foreground">~ update issue #{issueNumber} in {fullName}</div>
+            {addLabels.map(l => <div key={`al-${l}`} className="text-success-foreground">+ add label: {l}</div>)}
+            {removeLabels.map(l => <div key={`rl-${l}`} className="text-destructive">- remove label: {l}</div>)}
+            {addAssignees.map(a => <div key={`aa-${a}`} className="text-success-foreground">+ add assignee: @{a}</div>)}
+            {removeAssignees.map(a => <div key={`ra-${a}`} className="text-destructive">- remove assignee: @{a}</div>)}
+            {targetState && <div className="text-primary">~ state: {targetState}</div>}
+          </>
+        )}
+      </div>
+      <p className="m-0 text-xs text-muted-foreground">
+        Sent using your GitHub account{viewerLogin ? ` (@${viewerLogin})` : ""}. Nothing else on the issue changes.
+      </p>
+    </div>
+  );
+}
+
+type UnknownStepProps = {
+  lastError: string | null;
+  duplicateOperationId: number | null;
+  lastOperation: WriteOperation | null;
+  inspectDuplicateOperation: () => Promise<void>;
+  rechecking: boolean;
+  searchHref: string | null;
+  handleRecheck: (event?: FormEvent) => Promise<void>;
+  recheckNumber: string;
+  setRecheckNumber: (value: string) => void;
+  setRecheckError: (error: string | null) => void;
+  keepKeyOnNextSubmit: boolean;
+  idempotencyKey: string | null;
+  attemptedAt: string | null;
+  submitWrite: (reuseExistingKey: boolean) => Promise<void>;
+  recheckError: string | null;
+};
+
+function UnknownStep({
+  lastError, duplicateOperationId, lastOperation, inspectDuplicateOperation, rechecking,
+  searchHref, handleRecheck, recheckNumber, setRecheckNumber, setRecheckError,
+  keepKeyOnNextSubmit, idempotencyKey, attemptedAt, submitWrite, recheckError,
+}: UnknownStepProps) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div role="status" className="rounded-[10px] border border-warning bg-warning-soft px-3 py-2.5 text-[13px]">
+        <strong>Outcome unknown.</strong>{" "}
+        {lastError || "No reliable answer arrived from GitHub. The request may have been applied."}{" "}
+        Your draft is preserved. RepoOrbit will not resend automatically.
+      </div>
+
+      {duplicateOperationId && !lastOperation && (
+        <div className="flex flex-col gap-2 rounded-[10px] border border-border bg-muted p-3 text-[13px]">
+          <p className="m-0">An earlier create with this title and body is already recorded (operation #{duplicateOperationId}). Inspect and recheck it instead of creating a duplicate.</p>
+          <div>
+            <Button variant="outline" size="sm" onClick={() => void inspectDuplicateOperation()} disabled={rechecking}>
+              {rechecking ? "Loading operation…" : `Inspect operation #${duplicateOperationId}`}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {lastOperation && (
+        <div className="flex flex-col gap-2.5 rounded-[10px] border border-border bg-muted p-3 text-[13px]">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-mono text-xs text-muted-foreground">Operation #{lastOperation.id} · {lastOperation.state}</span>
+            {searchHref && (
+              <a href={searchHref} target="_blank" rel="noreferrer" className="text-xs text-primary underline">Search GitHub for this issue ↗</a>
+            )}
+          </div>
+
+          {lastOperation.kind === "create" ? (
+            <form onSubmit={e => void handleRecheck(e)} className="flex flex-col gap-2">
+              <label htmlFor="recheck-issue-number" className="text-xs font-medium text-soft">
+                Found the created issue on GitHub? Enter its issue number to verify and link it:
+              </label>
+              <div className="flex gap-2">
+                <input
+                  id="recheck-issue-number"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={recheckNumber}
+                  onChange={e => { setRecheckNumber(e.target.value); setRecheckError(null); }}
+                  placeholder="e.g. 42"
+                  className={fieldInput}
+                />
+                <Button type="submit" disabled={rechecking}>
+                  {rechecking ? "Rechecking…" : "Recheck"}
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">Re-read issue #{lastOperation.issueNumber} from GitHub to check whether the changes landed.</span>
+              <Button type="button" onClick={() => void handleRecheck()} disabled={rechecking}>
+                {rechecking ? "Rechecking…" : "Recheck"}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!lastOperation && !duplicateOperationId && keepKeyOnNextSubmit && idempotencyKey && (
+        canReplayWithSameKey(attemptedAt) ? (
+          <div className="flex flex-col gap-2 rounded-[10px] border border-border bg-muted p-3 text-[13px]">
+            <p className="m-0 text-xs text-muted-foreground">
+              The server may have already recorded this request under your idempotency key. Retrying with the same key lets the server return any operation it already recorded for this request.
+            </p>
+            <div>
+              <Button variant="outline" size="sm" onClick={() => void submitWrite(true)}>Check recorded status with same key</Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5 rounded-[10px] border border-warning bg-warning-soft p-3 text-[13px]">
+            <div className="font-medium">Manual reconciliation required</div>
+            <p className="m-0 text-xs text-muted-foreground">
+              This unresolved attempt is outside the 30-day idempotency retention window or has no verified attempt time, so same-key recovery is disabled to avoid creating a duplicate issue. Check GitHub and Write history manually before discarding or re-entering this draft.
+            </p>
+          </div>
+        )
+      )}
+
+      {recheckError && (
+        <div role="alert" className="rounded-[10px] border border-destructive bg-destructive-soft px-3 py-2 text-[13px]">
+          {recheckError}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type FailedStepProps = {
+  lastError: string | null;
+  lastOperation: WriteOperation | null;
+  confirmedIssue: WriteOperationIssue | null;
+  confirmedIssueHref: string | null;
+  onSwitchToEditIssue: IssueEditorProps["onSwitchToEditIssue"];
+};
+
+function FailedStep({
+  lastError, lastOperation, confirmedIssue, confirmedIssueHref, onSwitchToEditIssue,
+}: FailedStepProps) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div role="alert" className="rounded-[10px] border border-destructive bg-destructive-soft px-3 py-2.5 text-[13px]">
+        <strong>Write did not fully succeed.</strong> {lastError || "GitHub rejected or only partially applied the request."}
+      </div>
+
+      {lastOperation?.outcome?.unapplied && lastOperation.outcome.unapplied.length > 0 && (
+        <div className="rounded-[10px] border border-warning bg-warning-soft px-3 py-2 text-[13px]">
+          <div className="font-medium">Unapplied changes:</div>
+          <ul className="m-0 mt-1 list-disc pl-5 text-xs">
+            {lastOperation.outcome.unapplied.map(item => <li key={item}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {confirmedIssue ? (
+        <div className="flex flex-col gap-1.5 rounded-[10px] border border-border bg-muted p-3 text-[13px]">
+          <div className="font-medium">Issue #{confirmedIssue.number} exists on GitHub</div>
+          <p className="m-0 text-xs text-muted-foreground">
+            Follow up by updating issue #{confirmedIssue.number} rather than creating a second issue.
+          </p>
+          <div className="mt-1 flex flex-wrap gap-2">
+            {confirmedIssueHref && <a href={confirmedIssueHref} target="_blank" rel="noreferrer" className={smallBtn}>Open on GitHub ↗</a>}
+            {onSwitchToEditIssue && (
+              <Button variant="outline" size="sm" onClick={() => onSwitchToEditIssue(confirmedIssue.number, confirmedIssue)}>
+                Edit issue #{confirmedIssue.number}
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <p className="m-0 text-xs text-muted-foreground">Your draft is preserved. Return to Edit to adjust and try again, or close and come back later.</p>
+      )}
     </div>
   );
 }
