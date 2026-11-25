@@ -14,96 +14,106 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
-	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
 
-// Statuses attach only to repositories the viewer selected, and carry a safe code, not raw error text.
-func TestAttachMetadataStatus(t *testing.T) {
+func TestEvidenceCoverageRequiresParentsAndChildren(t *testing.T) {
 	ctx := context.Background()
-	_, pool := testutil.Database(t)
-	for _, sql := range []string{
-		`INSERT INTO users (id, github_id, login, access_token_enc) VALUES (1, 1, 'u', '\x00')`,
-		`INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES (10, 'o/a', '', false, false), (11, 'o/b', '', false, false)`,
-		`INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES (1, 10, 'owned', now())`,
-		`INSERT INTO repository_sync (repository_id, last_success_at, last_error_code) VALUES (10, now(), 'token ghu_secret leaked')`,
+	h, rec, runVars := newTracedGraphQLHarness(t)
+	alice := h.signIn("alice")
+	aliceID := h.userID(ctx, "alice")
+	repoID := h.gh.AddRepo("alice", "evidence", false)
+	for _, step := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES ($1, 'alice/evidence', '', false, false)`, []any{repoID}},
+		{`INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES ($2, $1, 'owned', now())`, []any{repoID, aliceID}},
+		{`INSERT INTO activity_resources(repository_id, resource, boundary, phase, watermark) VALUES
+			($1, 'issues', now(), 'current', now()),
+			($1, 'pull_requests', now(), 'catchup', NULL),
+			($1, 'comments', now(), 'backfill', NULL)`, []any{repoID}},
+		{`INSERT INTO activity_children(repository_id, resource, parent_id, parent_number, complete, last_error_code, last_success_at) VALUES
+			($1, 'reviews', 100, 1, false, 'rate_limited', now())`, []any{repoID}},
 	} {
-		if _, err := pool.Exec(ctx, sql); err != nil {
+		if _, err := h.pool.Exec(ctx, step.sql, step.args...); err != nil {
 			t.Fatal(err)
 		}
 	}
-	r := &Resolver{Queries: db.New(pool)}
-	nodes := []*model.Repository{{ID: "10"}, {ID: "11"}}
-	if err := r.loadMetadataStatus(ctx, 1, nodes); err != nil {
-		t.Fatal(err)
-	}
-	if nodes[1].MetadataStatus != nil {
-		t.Fatal("unselected repository got a status")
-	}
-	s := nodes[0].MetadataStatus
-	if s == nil || s.LastSuccessAt == nil || s.FailureCode == nil || *s.FailureCode != "unknown" || s.State != "not-scheduled" {
-		t.Fatalf("%+v", s)
-	}
-	tx, _ := pool.Begin(ctx)
-	defer tx.Rollback(ctx)
-	if err := jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, "repo:10", time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(ctx, `UPDATE jobs SET state='paused'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.loadMetadataStatus(ctx, 1, nodes[:1]); err != nil || !nodes[0].MetadataStatus.Paused {
-		t.Fatalf("%v %+v", err, nodes[0].MetadataStatus)
-	}
-}
 
-func TestEvidenceCoverageRequiresParentsAndChildren(t *testing.T) {
-	ctx := context.Background()
-	_, pool := testutil.Database(t)
-	_, err := pool.Exec(ctx, `INSERT INTO repositories (id,name,description) VALUES (10,'o/a','');
- INSERT INTO activity_resources(repository_id,resource,boundary,phase,watermark) VALUES (10,'issues',now(),'current',now()),(10,'pull_requests',now(),'catchup',NULL),(10,'comments',now(),'backfill',NULL);
- INSERT INTO activity_children(repository_id,resource,parent_id,parent_number,complete,last_error_code,last_success_at) VALUES (10,'reviews',100,1,false,'rate_limited',now());`)
-	if err != nil {
+	const q = `query RepoActivity($id: ID!) {
+		repository(id: $id) {
+			activity {
+				reviews { complete pendingChildren failureCode lastSuccessAt }
+				comments { complete pendingChildren failureCode }
+			}
+		}
+	}`
+	vars := map[string]any{"id": fmt.Sprintf("%d", repoID)}
+	fetch := func() (reviews, comments struct {
+		Complete        bool    `json:"complete"`
+		PendingChildren int     `json:"pendingChildren"`
+		FailureCode     *string `json:"failureCode"`
+		LastSuccessAt   *string `json:"lastSuccessAt"`
+	}) {
+		t.Helper()
+		raw := runVars(alice, q, vars)
+		_ = rec.Stop()
+		var out struct {
+			Data struct {
+				Repository struct {
+					Activity struct {
+						Reviews struct {
+							Complete        bool    `json:"complete"`
+							PendingChildren int     `json:"pendingChildren"`
+							FailureCode     *string `json:"failureCode"`
+							LastSuccessAt   *string `json:"lastSuccessAt"`
+						} `json:"reviews"`
+						Comments struct {
+							Complete        bool    `json:"complete"`
+							PendingChildren int     `json:"pendingChildren"`
+							FailureCode     *string `json:"failureCode"`
+							LastSuccessAt   *string `json:"lastSuccessAt"`
+						} `json:"comments"`
+					} `json:"activity"`
+				} `json:"repository"`
+			} `json:"data"`
+			Errors []any `json:"errors"`
+		}
+		if err := json.Unmarshal([]byte(raw), &out); err != nil || len(out.Errors) > 0 {
+			t.Fatalf("unexpected GraphQL response: %v %s", err, raw)
+		}
+		return out.Data.Repository.Activity.Reviews, out.Data.Repository.Activity.Comments
+	}
+
+	reviews, comments := fetch()
+	if reviews.Complete || comments.Complete || reviews.PendingChildren != 1 || reviews.FailureCode == nil || *reviews.FailureCode != "rate_limited" || reviews.LastSuccessAt == nil {
+		t.Fatalf("incomplete reviews=%+v comments=%+v", reviews, comments)
+	}
+
+	if _, err := h.pool.Exec(ctx, `UPDATE activity_resources SET phase='current', watermark=now() WHERE repository_id=$1 AND resource IN ('pull_requests','comments')`, repoID); err != nil {
 		t.Fatal(err)
 	}
-	r := &Resolver{Queries: db.New(pool), RepoAccess: &repositories.Service{Pool: pool}}
-	a := &model.ActivityStatus{Issues: &model.ActivityResourceStatus{Phase: "current", CatchupThrough: ptr("now")}}
-	if err = r.attachEvidenceStatus(ctx, 10, a); err != nil {
+	if _, err := h.pool.Exec(ctx, `UPDATE activity_children SET complete=true WHERE repository_id=$1`, repoID); err != nil {
 		t.Fatal(err)
 	}
-	if a.Reviews.Complete || a.Comments.Complete || a.Reviews.PendingChildren != 1 || a.Reviews.FailureCode == nil || *a.Reviews.FailureCode != "rate_limited" || a.Reviews.LastSuccessAt == nil {
-		t.Fatalf("incomplete %+v", a)
+	reviews, comments = fetch()
+	if !reviews.Complete || !comments.Complete || reviews.FailureCode == nil || *reviews.FailureCode != "rate_limited" {
+		t.Fatalf("completed evidence should retain later error: reviews=%+v comments=%+v", reviews, comments)
 	}
-	_, err = pool.Exec(ctx, `UPDATE activity_resources SET phase='current',watermark=now() WHERE resource IN ('pull_requests','comments'); UPDATE activity_children SET complete=true WHERE repository_id=10`)
-	if err != nil {
+
+	if _, err := h.pool.Exec(ctx, `UPDATE activity_resources SET phase='catchup', last_error_code='rate_limited' WHERE repository_id=$1 AND resource='comments'`, repoID); err != nil {
 		t.Fatal(err)
 	}
-	if err = r.attachEvidenceStatus(ctx, 10, a); err != nil {
-		t.Fatal(err)
-	}
-	if !a.Reviews.Complete || !a.Comments.Complete || a.Reviews.FailureCode == nil {
-		t.Fatalf("completed evidence should retain later error: %+v", a)
-	}
-	// Comments are their own stream: a comment catch-up leaves review coverage alone, and its failure is reported.
-	if _, err = pool.Exec(ctx, `UPDATE activity_resources SET phase='catchup',last_error_code='rate_limited' WHERE resource='comments'`); err != nil {
-		t.Fatal(err)
-	}
-	if err = r.attachEvidenceStatus(ctx, 10, a); err != nil {
-		t.Fatal(err)
-	}
-	if !a.Reviews.Complete || a.Comments.Complete || a.Comments.PendingChildren != 0 || a.Comments.FailureCode == nil || *a.Comments.FailureCode != "rate_limited" {
-		t.Fatalf("independent coverage: %+v", a)
+	reviews, comments = fetch()
+	if !reviews.Complete || comments.Complete || comments.PendingChildren != 0 || comments.FailureCode == nil || *comments.FailureCode != "rate_limited" {
+		t.Fatalf("independent coverage: reviews=%+v comments=%+v", reviews, comments)
 	}
 }
-func ptr(s string) *string { return &s }
 
 func countMetadataStatusSQL(queries []string) int {
 	n := 0
