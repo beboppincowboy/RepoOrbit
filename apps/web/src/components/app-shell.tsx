@@ -99,7 +99,7 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
 
   return <div data-app-shell className="grid h-full w-full grid-cols-[216px_minmax(0,1fr)] gap-3 max-[900px]:grid-cols-1 max-[900px]:grid-rows-[auto_minmax(0,1fr)]">
     <aside aria-label="Main" className={`${card} flex min-h-0 flex-col gap-0.5 overflow-auto px-3 py-4 max-[900px]:flex-row max-[900px]:items-center max-[900px]:overflow-x-auto max-[900px]:p-2`}>
-      <div className="flex items-center gap-2 px-2 pb-3 text-[15px] font-semibold max-[900px]:hidden"><LogoMark />RepoOrbit</div>
+      <AccountMenu session={session} />
       <nav aria-label="Primary" className="contents">
         <div className={navlabel}>Workspace</div>
         <Link to="/" activeOptions={{ exact: true }} className={navbtn}>{gridIcon}Overview</Link>
@@ -131,7 +131,6 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
             <input placeholder="Jump to repository…" aria-label="Jump to repository" list="repolist" className="w-full border-0 bg-transparent text-foreground outline-none" onChange={e => { jump(e.target.value); if (visible.some(r => r.repo.fullName === e.target.value)) e.target.value = ""; }} />
             <datalist id="repolist">{visible.map(row => <option key={row.repo.id} value={row.repo.fullName} />)}</datalist>
           </label>
-          <AccountMenu session={session} />
         </div>
       </header>
       {demo && <div className="shrink-0 rounded-[10px] border border-demo bg-demo-soft px-3 py-1.5 text-[13px] font-medium text-demo"><span>Demo mode</span> · fictional sample data under a demo identity. GitHub writes are disabled.</div>}
@@ -140,11 +139,22 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
   </div>;
 }
 
+// The viewer's GitHub avatar, or initials for the demo identity or when the image cannot load.
+function Avatar({ login, demo }: { login: string; demo: boolean }) {
+  const [failed, setFailed] = useState(false);
+  if (demo || !login || failed) {
+    return <span aria-hidden="true" className="grid size-7 shrink-0 place-items-center rounded-full bg-primary-soft text-[10px] font-semibold text-primary">{demo ? "DM" : login.slice(0, 2).toUpperCase()}</span>;
+  }
+  return <img src={`https://github.com/${encodeURIComponent(login)}.png?size=56`} alt="" width={28} height={28} loading="lazy" onError={() => setFailed(true)} className="size-7 shrink-0 rounded-full bg-muted" />;
+}
+
+// The signed-in viewer at the top of the sidebar; it opens the account menu. The menu is fixed to the viewport so the
+// scrolling sidebar cannot clip it.
 function AccountMenu({ session }: { session: ViewerSession }) {
   const queryClient = useQueryClient();
   const demo = session.mode === "demo";
   const login = session.user?.login ?? "";
-  const [open, setOpen] = useState(false);
+  const [menuAt, setMenuAt] = useState<{ top: number; left: number }>();
   const [logoutError, setLogoutError] = useState(false);
   async function signOut() {
     setLogoutError(false);
@@ -156,9 +166,15 @@ function AccountMenu({ session }: { session: ViewerSession }) {
       setLogoutError(true);
     }
   }
-  return <nav aria-label="Account" className="relative" onKeyDown={e => { if (e.key === "Escape") setOpen(false); }} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false); }}>
-    <button type="button" aria-label="Account menu" aria-expanded={open} onClick={() => setOpen(o => !o)} className="grid size-7 place-items-center rounded-full bg-primary-soft text-[10px] font-semibold text-primary">{demo ? "DM" : login.slice(0, 2).toUpperCase()}</button>
-    {(open || logoutError) && <div className="absolute right-0 top-9 z-50 flex min-w-48 flex-col gap-2 rounded-xl border border-border bg-card p-3 shadow-[0_18px_44px_rgba(15,23,42,.16)]">
+  return <nav aria-label="Account" className="pb-3 max-[900px]:pb-0" onKeyDown={e => { if (e.key === "Escape") setMenuAt(undefined); }} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setMenuAt(undefined); }}>
+    <button type="button" aria-label="Account menu" aria-expanded={menuAt !== undefined} onClick={e => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      setMenuAt(at => at ? undefined : { top: rect.bottom + 6, left: rect.left });
+    }} className="flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1 text-left text-[15px] font-semibold hover:bg-muted">
+      <Avatar login={login} demo={demo} />
+      <span className="truncate max-[900px]:hidden">{login || "RepoOrbit"}</span>
+    </button>
+    {(menuAt || logoutError) && <div style={menuAt} className="fixed z-50 flex min-w-48 flex-col gap-2 rounded-xl border border-border bg-card p-3 shadow-[0_18px_44px_rgba(15,23,42,.16)]">
       {session.user && <span className="text-muted-foreground">{demo ? "Demo identity" : "Signed in as"} <strong className="text-foreground">{login}</strong></span>}
       {logoutError && <span role="alert" className="text-destructive">Could not sign out. Try again.</span>}
       {!demo && session.user && <button type="button" className="rounded-lg border border-border px-3 py-1.5 text-left hover:bg-muted" onClick={signOut}>Sign out</button>}

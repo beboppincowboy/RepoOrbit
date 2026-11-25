@@ -89,3 +89,8 @@
 @utility sync-pulse { animation: sync-pulse 1.2s ease-in-out infinite; }
 @keyframes sync-pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .sync-pulse { animation: none !important; } }
+
+/* Board cards glide between columns (issue-board.tsx withCardMotion); the rest of the page does not cross-fade. */
+::view-transition-group(*) { animation-duration: 220ms; animation-timing-function: cubic-bezier(.2, .8, .2, 1); }
+::view-transition-old(root), ::view-transition-new(root) { animation: none; }
+@media (prefers-reduced-motion: reduce) { ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; } }

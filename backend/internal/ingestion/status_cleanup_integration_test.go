@@ -215,6 +215,40 @@ func TestClosedIssueLosesStatusLabelThroughApp(t *testing.T) {
 	}
 }
 
+// An issue write holding the per-issue lock makes the cleanup defer at once rather than wait or project under it; the
+// next run settles the removal it already sent.
+func TestCleanupDefersWhileAnIssueWriteHoldsTheLock(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	repoID := statusRepo(t, e, true, statusIssue(1, "closed", "status:review"))
+	write, err := e.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer write.Rollback(ctx)
+	if err := ingestion.LockIssue(ctx, write, repoID, 1); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	var deferred *jobs.Defer
+	if err := e.runCleanup(repoID); !errors.As(err, &deferred) || deferred.Reason != ingestion.CodeAccessMoved {
+		t.Fatalf("got %v, want a deferral while the issue is locked", err)
+	}
+	if waited := time.Since(started); waited > 2*time.Second {
+		t.Fatalf("cleanup waited %v for the issue lock", waited)
+	}
+	if err := write.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.runCleanup(repoID); err != nil {
+		t.Fatal(err)
+	}
+	ops, err := db.New(e.pool).ListAppOperations(ctx, repoID)
+	if err != nil || len(ops) != 1 || ops[0].State != "succeeded" {
+		t.Fatalf("app operations: %+v err=%v", ops, err)
+	}
+}
+
 // The app writes nothing where status labels are off, where no installation covers the repository, where the
 // installation lacks Issues write, or where the issue was reopened on GitHub before the cleanup ran.
 func TestStatusCleanupWritesNothingWithoutAuthority(t *testing.T) {

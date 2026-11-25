@@ -209,11 +209,9 @@ func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs
 			}
 		}
 		err = fence.Commit(ctx, func(tx pgx.Tx) error {
-			var locked bool
-			if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended(format('issue-write:%s:%s', $1::bigint, $2::bigint), 0))`, repoID, c.Number).Scan(&locked); err != nil {
+			if locked, err := tryLockIssue(ctx, tx, repoID, c.Number); err != nil {
 				return err
-			}
-			if !locked {
+			} else if !locked {
 				return errIssueBusy
 			}
 			// Lock the stored row so a concurrent private purge cannot delete it under this refresh (which would turn the
@@ -278,10 +276,7 @@ func (d *Deps) CleanupStatusLabels(ctx context.Context, job jobs.Job, fence jobs
 			if issue.State == "open" || !hasLabel(issue, isStatusLabel) {
 				progressed = true // the issue leaves the candidates
 			}
-			// Not the same-second variant: this readback was taken before the lock, so it must not replace a copy an
-			// issue write projected in the same second. It never enqueues this job again, so a refused removal cannot
-			// make the cleanup schedule itself forever.
-			return projectIssue(ctx, tx, repoID, issue, false, false)
+			return projectCleanupObservation(ctx, tx, repoID, issue)
 		})
 		if errors.Is(err, errIssueBusy) {
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
