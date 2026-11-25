@@ -4,13 +4,10 @@ import { Button } from "@/components/ui/button";
 import { statusLabelsQueryKey, writeOperationsQueryKey } from "@/components/write-history";
 import { canReplayWithSameKey, disableStatusLabels, enableStatusLabels, fetchStatusLabels, generateIdempotencyKey, mayHaveBeenRecorded, type WriteOperation } from "@/lib/api";
 
-// The three labels and the Board state each stands for (ADR 0003). Backlog is an open issue without one; Done is closed.
 const columns: Record<string, string> = { "status:todo": "Todo", "status:in-progress": "In Progress", "status:review": "In Review" };
 
 type Step = "idle" | "review" | "submitting" | "confirm-off";
 
-// Lets an Admin or Maintain user turn a repository's status labels on (through Review → Submit → Confirmed, creating
-// the missing labels) or off. Everyone else sees the current setting and why they cannot change it.
 export function StatusSourceSetup({ repositoryId, viewerKey, demo, frozen }: { repositoryId: string; viewerKey: string; demo: boolean; frozen: boolean }) {
   const queryClient = useQueryClient();
   const queryKey = statusLabelsQueryKey(viewerKey, repositoryId);

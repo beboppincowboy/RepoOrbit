@@ -60,7 +60,6 @@ function parseEditorSearch(raw: unknown): EditorSearch {
 export const Route = createFileRoute("/_shell/workspace/$repositoryId")({
   validateSearch: (search: Record<string, unknown>): { days: MetricWindow; tab: Tab; editor?: "new" | number; issue?: number } => {
     const editor = parseEditorSearch(search.editor);
-    // The Board's task drawer opens for issue=N.
     const issue = parseEditorSearch(search.issue);
     return {
       days: search.days === 7 || search.days === 90 ? search.days : 30,
@@ -76,7 +75,6 @@ type Overview = NonNullable<Awaited<ReturnType<typeof fetchRepositoryOverview>>>
 type Coverage = Overview["openIssues"]["coverage"];
 type Entry = Overview["timeline"][number];
 
-// Prototype D2 classes, as Tailwind strings.
 const card = "rounded-xl border border-border bg-card min-w-0 min-h-0";
 const muted = "text-muted-foreground";
 const lrow = "flex items-center gap-3 border-b border-border px-3 py-2.5 last:border-b-0";
@@ -102,7 +100,6 @@ function ago(iso: string) {
   const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
   return minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.round(minutes / 60)}h ago` : `${Math.round(minutes / 1440)}d ago`;
 }
-// Prototype style: 45m, 4.1h, 11h, 2.3d.
 function duration(seconds: number | null) {
   if (seconds === null) return null;
   const hours = seconds / 3600;
@@ -110,10 +107,8 @@ function duration(seconds: number | null) {
   if (hours < 48) return hours < 10 ? `${hours.toFixed(1)}h` : `${Math.round(hours)}h`;
   return `${(hours / 24).toFixed(1)}d`;
 }
-// Links come from the API; only GitHub URLs are rendered as links.
 const githubHref = (url: string, fallback: string) => url.startsWith("https://github.com/") ? url : fallback;
 
-// KPI sub-line for an uncovered metric: [text, tone]. Partial reasons are amber like the prototype.
 const coverageReasons: Record<string, [string, string]> = {
   not_synchronized: ["Awaiting data", muted],
   window_before_boundary: ["Window predates imported history", "text-warning"],
@@ -154,7 +149,6 @@ function RepositoryWorkspace() {
     gcTime: 0,
     refetchOnWindowFocus: ({ state }) => !(state.error instanceof RepositoryAccessUnverifiedError && state.error.retryAt),
     retry: (count, error) => !(error instanceof RepositoryAccessUnverifiedError || error instanceof GraphQLUnavailableError) && count < 3,
-    // Follow running or not-yet-started sync work; stop once it settles (reconciliation leaves settled streams "queued").
     refetchInterval: ({ state }) => {
       if (state.error instanceof RepositoryAccessUnverifiedError && state.error.retryAt) return false;
       if (!state.data) return false;
@@ -206,8 +200,6 @@ function RepositoryWorkspace() {
     gcTime: 0,
     retry: false,
   });
-  // An editor restored from the URL (after a reload) knows only the issue number: load the imported issue so author-only
-  // actions such as close/reopen are offered again.
   const restoredNumber = typeof search.editor === "number" && selectedEditIssue?.number !== search.editor ? search.editor : null;
   const restoredIssueQuery = useQuery({
     queryKey: ["workspaceIssue", viewerKey, repositoryId, restoredNumber],
@@ -220,7 +212,6 @@ function RepositoryWorkspace() {
     queryKey: ["assignableUsers", viewerKey, repositoryId],
     queryFn: ({ signal }) => fetchAssignableUsers(repositoryId, signal),
     enabled: !demo && !snapshot && Boolean(overview) && (editorOpen || search.tab === "board"),
-    // Each fetch is a live GitHub call on the viewer's token; the assignable list rarely changes.
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
     retry: false,
@@ -296,7 +287,6 @@ function RepositoryWorkspace() {
 
   const [owner, name] = overview.fullName.split("/");
   const github = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-  // Suggest only users GitHub accepts as assignees; demo mode, which cannot write, suggests its sample contributors.
   const assigneeSuggestions = demo ? overview.contributors.filter(c => !c.isBot).map(c => c.login) : assigneesQuery.data ?? [];
   const editingIssue: EditableIssue | undefined = typeof search.editor === "number"
     ? (selectedEditIssue?.number === search.editor ? selectedEditIssue : restoredIssueQuery.data ?? { number: search.editor })
@@ -392,7 +382,6 @@ function RepositoryWorkspace() {
   </div>;
 }
 
-// The header pill opens the full sync status (same copy as SyncStatus: metadata and activity lines) and Refresh activity.
 function SyncDetails({ sync, repositoryId, onRefresh }: { sync: SyncInput; repositoryId: string; onRefresh: () => void }) {
   const [open, setOpen] = useState(false);
   const metadata = sync.metadataStatus ? describeMetadata(sync.metadataStatus) : [];
@@ -417,7 +406,6 @@ const streamNames: [string, (a: Overview["activity"]) => ActivityResourceStatus 
 ];
 const list = (items: string[]) => items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 
-// One state banner under the header, as in the prototype: rate limited, syncing/awaiting, stopped, or partial coverage.
 function Banner({ overview, display, sync }: { overview: Overview; display: string; sync: SyncInput }) {
   const a = overview.activity;
   const note = (text: ReactNode, warn = true) => <div role="status" className={`flex flex-none items-start gap-2.5 rounded-[10px] border px-3 py-2.5 text-[13px] ${warn ? "border-warning bg-warning-soft" : "border-border bg-card"}`}>
@@ -514,7 +502,6 @@ const entryLabel = (e: Entry) => e.kind === "pull_request_merged" ? `PR #${e.num
 const entryHref = (e: Entry, github: string) => githubHref(e.url, e.number === null ? `${github}/releases` : `${github}/${e.kind === "pull_request_merged" ? "pull" : "issues"}/${e.number}`);
 const actor = (e: Entry) => e.actor ? `${e.actor.login}${e.actor.isBot ? " · bot" : ""}` : "ghost";
 
-// Full timeline with GitHub links. A hatched "History gap" row sits where issue-event coverage starts.
 function Timeline({ overview: o, github }: { overview: Overview; github: string }) {
   const gapAt = o.eventsCoveredFrom === null ? o.timeline.length
     : Date.parse(o.eventsCoveredFrom) > Date.parse(o.windowStart) ? o.timeline.findIndex(e => Date.parse(e.occurredAt) < Date.parse(o.eventsCoveredFrom!)) : null;
@@ -533,7 +520,6 @@ function Timeline({ overview: o, github }: { overview: Overview; github: string 
   return <ul aria-label="Activity" className="m-0 list-none p-0">{rows}</ul>;
 }
 
-// Participation, alphabetical, stacked PRs / reviews / comments. Bots are left out of the bars and listed apart.
 function Contributors({ overview: o, days }: { overview: Overview; days: MetricWindow }) {
   const people = o.contributors.filter(p => !p.isBot).sort((x, y) => x.login.localeCompare(y.login));
   const bots = o.contributors.filter(p => p.isBot);

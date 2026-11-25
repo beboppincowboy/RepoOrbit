@@ -24,7 +24,6 @@ function Starred() {
   const [error, setError] = useState<string | null>(null);
   const [savingFollow, setSavingFollow] = useState(false);
 
-  // The first page re-reads stars from GitHub (refresh); "Load more" pages through the stored snapshot.
   const query = useInfiniteQuery({
     queryKey: ["starred"],
     queryFn: ({ pageParam }: { pageParam: StarredParam }) => starredRepositories(pageParam.page, pageParam.refresh),

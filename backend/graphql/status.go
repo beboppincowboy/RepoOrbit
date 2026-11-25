@@ -11,8 +11,6 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
 )
 
-// activityStatus is the honest activity answer: synchronized is claimed only by attachEvidenceStatuses, when every stream is caught up, whatever
-// the metadata refresh did. Demo rows are seeded samples, not GitHub data.
 func activityStatus(demo, selected bool) *model.ActivityStatus {
 	if demo {
 		return &model.ActivityStatus{Synchronized: false, Message: "Demo sample data; not synchronized from GitHub.", FutureResources: []string{"pull requests", "reviews", "comments", "releases", "issue events"}}
@@ -183,7 +181,6 @@ func (r *Resolver) loadActivityStatus(ctx context.Context, nodes []*model.Reposi
 	return nil
 }
 
-// attachEvidenceStatuses derives child completeness only after every relevant parent traversal has caught up.
 func (r *Resolver) attachEvidenceStatuses(ctx context.Context, nodes []parsedRepoNode) error {
 	ids := make([]int64, len(nodes))
 	for i, p := range nodes {
@@ -280,7 +277,6 @@ func (r *Resolver) attachEvidenceStatuses(ctx context.Context, nodes []parsedRep
 		rev := reviews[p.id]
 		complete := (parentComplete(a.PullRequests) || (a.PullRequests != nil && a.PullRequests.Phase == "disabled")) && rev.pending == 0
 		a.Reviews = &model.ChildResourceStatus{Complete: complete, PendingChildren: rev.pending, LastSuccessAt: rfc3339(rev.success), FailureCode: safeActivityCode(rev.code), NextAttemptAt: rfc3339(rev.next)}
-		// Comments are one repository-wide stream; the child shape is kept so clients need no change.
 		if comments := resources[resourceKey{repoID: p.id, resource: "comments"}]; comments != nil {
 			a.Comments = &model.ChildResourceStatus{Complete: parentComplete(comments) && comments.JobState != "dead" && comments.JobState != "paused", LastSuccessAt: comments.LastSuccessAt, FailureCode: comments.FailureCode, NextAttemptAt: comments.NextAttemptAt}
 		}
@@ -296,9 +292,6 @@ func (r *Resolver) attachEvidenceStatuses(ctx context.Context, nodes []parsedRep
 	return nil
 }
 
-// synchronized is true only when every stream is caught up, fresh, failure-free and every child history is complete.
-// The permanent issue-event gap is reported separately and does not block it. Any stale, failed, paused or dead
-// stream keeps the repository from claiming synchronization.
 func synchronized(a *model.ActivityStatus, now time.Time) bool {
 	fresh := func(s *model.ActivityResourceStatus) bool {
 		if s == nil || s.Phase != "current" || s.CatchupThrough == nil || s.LastSuccessAt == nil || s.FailureCode != nil || s.JobState == "dead" || s.JobState == "paused" {

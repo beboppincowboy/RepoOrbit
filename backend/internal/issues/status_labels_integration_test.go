@@ -52,7 +52,6 @@ func (u *user) statusLabelState(repoID int64) statusLabelState {
 	return s
 }
 
-// Write or Triage users cannot turn status labels on or off, forged requests fail, and nothing reaches GitHub.
 func TestStatusLabelsNeedAdminOrMaintain(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -117,7 +116,6 @@ func TestStatusLabelStateUnauthorizedRevokes(t *testing.T) {
 	}
 }
 
-// Turning labels on creates exactly the missing labels through review and reuses an existing one, whatever its case.
 func TestStatusLabelsCreateOnlyMissing(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -158,7 +156,6 @@ func TestStatusLabelsCreateOnlyMissing(t *testing.T) {
 		t.Fatalf("state after enabling: %+v", s)
 	}
 
-	// Turning them on again reuses all three; turning them off writes nothing to GitHub.
 	if _, op := alice.send(statusLabelsPath(repo), "on-2", `{}`); op.State != "succeeded" {
 		t.Fatalf("second enable: %+v", op)
 	}
@@ -173,8 +170,6 @@ func TestStatusLabelsCreateOnlyMissing(t *testing.T) {
 	e.noInstallationAuthority()
 }
 
-// A label create without a reliable answer leaves the operation unknown and the setting off; a recheck that finds all
-// three labels turns status labels on, but only for an actor who is still Admin or Maintain.
 func TestAmbiguousStatusLabelsResolveOnRecheck(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -183,7 +178,7 @@ func TestAmbiguousStatusLabelsResolveOnRecheck(t *testing.T) {
 	dave := e.signIn("dave")
 	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
 		if r.Method == http.MethodPost && r.URL.Path == "/repos/alice/app/labels" {
-			http.Error(w, "gateway timeout", http.StatusGatewayTimeout) // nothing created, but the client cannot know
+			http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -209,8 +204,6 @@ func TestAmbiguousStatusLabelsResolveOnRecheck(t *testing.T) {
 	_ = alice
 }
 
-// A recheck right after an unanswered enable does not fail it while labels may still be on their way, and a recheck
-// that succeeds after another admin turned labels off does not turn them back on.
 func TestStatusLabelsRecheckRespectsInFlightAndTurnOff(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -241,8 +234,6 @@ func TestStatusLabelsRecheckRespectsInFlightAndTurnOff(t *testing.T) {
 	}
 }
 
-// The live conflict check's Board status (a conflict's current.status) agrees with the issue_board_states view, which
-// the Board reads, on the same issues as projected from GitHub.
 func TestBoardStatusAgreesWithView(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -267,7 +258,6 @@ func TestBoardStatusAgreesWithView(t *testing.T) {
 		number := int64(i + 1)
 		resp, _ := alice.send(changes(repo, number), fmt.Sprintf("conflict-%d", number), `{"labels":{"add":["seen"]},"expect":{"status":"backlog","assignees":["nobody"],"statusLabels":[]}}`)
 		live := decodeConflict(t, resp).Current.Status
-		// A confirmed update projects the issue as GitHub shows it; "seen" is not a status label.
 		if resp, op := alice.send(changes(repo, number), fmt.Sprintf("project-%d", number), `{"labels":{"add":["seen"]}}`); op.State != "succeeded" {
 			t.Fatalf("project #%d: %d %+v", number, resp.StatusCode, op)
 		}
