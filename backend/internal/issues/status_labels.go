@@ -16,7 +16,9 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
-var statusLabels = []struct{ name, color string }{
+type statusLabel struct{ name, color string }
+
+var statusLabels = []statusLabel{
 	{"status:todo", "c5def5"},
 	{"status:in-progress", "fbca04"},
 	{"status:review", "0e8a16"},
@@ -138,14 +140,16 @@ func (s *Service) ensureStatusLabels(ctx context.Context, userID int64, token, f
 
 func (s *Service) readStatusLabels(ctx context.Context, token, fullName string, out outcome) (string, outcome) {
 	out.Unapplied = nil
-	for _, l := range statusLabels {
-		exists, err := s.GitHub.LabelExists(ctx, token, fullName, l.name)
-		if err != nil {
-			_, msg := classify(err)
-			out.Error = strings.TrimSpace(out.Error + " Reading the labels back failed: " + msg)
-			return "unknown", out
-		}
-		if !exists {
+	exists, err := mapConcurrent(ctx, statusLabels, func(ctx context.Context, l statusLabel) (bool, error) {
+		return s.GitHub.LabelExists(ctx, token, fullName, l.name)
+	})
+	if err != nil {
+		_, msg := classify(err)
+		out.Error = strings.TrimSpace(out.Error + " Reading the labels back failed: " + msg)
+		return "unknown", out
+	}
+	for i, l := range statusLabels {
+		if !exists[i] {
 			out.Unapplied = append(out.Unapplied, "create label "+l.name)
 		}
 	}

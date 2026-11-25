@@ -11,6 +11,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const failAllStalePendingOperations = `-- name: FailAllStalePendingOperations :exec
+UPDATE write_operations SET state = 'failed',
+ outcome = CASE WHEN draft IS NULL THEN redacted_write_outcome('{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb)
+  ELSE '{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb END,
+ updated_at = now()
+WHERE state = 'pending' AND created_at < now() - interval '1 minute'
+`
+
+func (q *Queries) FailAllStalePendingOperations(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, failAllStalePendingOperations)
+	return err
+}
+
 const failStalePendingCreate = `-- name: FailStalePendingCreate :execrows
 UPDATE write_operations SET state = 'failed',
  outcome = CASE WHEN draft IS NULL THEN redacted_write_outcome('{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb)
@@ -33,16 +46,16 @@ func (q *Queries) FailStalePendingCreate(ctx context.Context, arg FailStalePendi
 	return result.RowsAffected(), nil
 }
 
-const failStalePendingOperations = `-- name: FailStalePendingOperations :exec
+const failStalePendingOperationByID = `-- name: FailStalePendingOperationByID :exec
 UPDATE write_operations SET state = 'failed',
  outcome = CASE WHEN draft IS NULL THEN redacted_write_outcome('{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb)
   ELSE '{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb END,
  updated_at = now()
-WHERE user_id = $1 AND state = 'pending' AND created_at < now() - interval '1 minute'
+WHERE id = $1 AND state = 'pending' AND created_at < now() - interval '1 minute'
 `
 
-func (q *Queries) FailStalePendingOperations(ctx context.Context, userID int64) error {
-	_, err := q.db.Exec(ctx, failStalePendingOperations, userID)
+func (q *Queries) FailStalePendingOperationByID(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, failStalePendingOperationByID, id)
 	return err
 }
 
@@ -172,7 +185,9 @@ func (q *Queries) GetWriteOperation(ctx context.Context, arg GetWriteOperationPa
 }
 
 const getWriteOperationByKey = `-- name: GetWriteOperationByKey :one
-SELECT id, request_hash FROM write_operations WHERE user_id = $1 AND idempotency_key = $2
+SELECT id, request_hash,
+ (state = 'pending' AND created_at < now() - interval '1 minute') AS stale_pending
+FROM write_operations WHERE user_id = $1 AND idempotency_key = $2
 `
 
 type GetWriteOperationByKeyParams struct {
@@ -181,19 +196,22 @@ type GetWriteOperationByKeyParams struct {
 }
 
 type GetWriteOperationByKeyRow struct {
-	ID          int64
-	RequestHash []byte
+	ID           int64
+	RequestHash  []byte
+	StalePending pgtype.Bool
 }
 
 func (q *Queries) GetWriteOperationByKey(ctx context.Context, arg GetWriteOperationByKeyParams) (GetWriteOperationByKeyRow, error) {
 	row := q.db.QueryRow(ctx, getWriteOperationByKey, arg.UserID, arg.IdempotencyKey)
 	var i GetWriteOperationByKeyRow
-	err := row.Scan(&i.ID, &i.RequestHash)
+	err := row.Scan(&i.ID, &i.RequestHash, &i.StalePending)
 	return i, err
 }
 
 const getWriteOperationScope = `-- name: GetWriteOperationScope :one
-SELECT repository_id, state FROM write_operations WHERE id = $1 AND user_id = $2
+SELECT repository_id, state,
+ (state = 'pending' AND created_at < now() - interval '1 minute') AS stale_pending
+FROM write_operations WHERE id = $1 AND user_id = $2
 `
 
 type GetWriteOperationScopeParams struct {
@@ -204,12 +222,13 @@ type GetWriteOperationScopeParams struct {
 type GetWriteOperationScopeRow struct {
 	RepositoryID int64
 	State        string
+	StalePending pgtype.Bool
 }
 
 func (q *Queries) GetWriteOperationScope(ctx context.Context, arg GetWriteOperationScopeParams) (GetWriteOperationScopeRow, error) {
 	row := q.db.QueryRow(ctx, getWriteOperationScope, arg.ID, arg.UserID)
 	var i GetWriteOperationScopeRow
-	err := row.Scan(&i.RepositoryID, &i.State)
+	err := row.Scan(&i.RepositoryID, &i.State, &i.StalePending)
 	return i, err
 }
 

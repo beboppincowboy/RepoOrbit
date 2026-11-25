@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -38,9 +39,9 @@ const (
 	maxItems = 10    // labels or assignees per list; GitHub allows at most 10 assignees
 	maxLabel = 50    // GitHub's label name limit
 
-	HeaderWriteDisposition           = "RepoOrbit-Write-Disposition"
-	WriteDispositionNotRecorded      = "not-recorded"
-	WriteDispositionPossiblyRecorded = "possibly-recorded"
+	headerWriteDisposition           = "RepoOrbit-Write-Disposition"
+	writeDispositionNotRecorded      = "not-recorded"
+	writeDispositionPossiblyRecorded = "possibly-recorded"
 )
 
 type submitWriter struct {
@@ -49,13 +50,13 @@ type submitWriter struct {
 }
 
 func newSubmitWriter(w http.ResponseWriter) *submitWriter {
-	return &submitWriter{ResponseWriter: w, disposition: WriteDispositionNotRecorded}
+	return &submitWriter{ResponseWriter: w, disposition: writeDispositionNotRecorded}
 }
 
 func (sw *submitWriter) WriteHeader(code int) {
 	if code >= http.StatusBadRequest && sw.disposition != "" {
-		if code != http.StatusInternalServerError || sw.disposition == WriteDispositionPossiblyRecorded {
-			sw.Header().Set(HeaderWriteDisposition, sw.disposition)
+		if code != http.StatusInternalServerError || sw.disposition == writeDispositionPossiblyRecorded {
+			sw.Header().Set(headerWriteDisposition, sw.disposition)
 		}
 	}
 	sw.ResponseWriter.WriteHeader(code)
@@ -74,7 +75,7 @@ type Service struct {
 	// Access decides live repository access and permissions; its TokenSource supplies the actor's own user token.
 	// Installation credentials are never used for these writes.
 	Access    *repositories.Service
-	GitHubURL string // browser-facing GitHub origin without a trailing slash (platform.Config.GitHubURL), for an unknown create's searchUrl
+	GitHubURL string
 }
 
 // Register adds the issue write routes to mux; docs/api.md ("REST: issue writes") gives each route's body, status
@@ -398,18 +399,18 @@ func (s *Service) revokeIfUnauthorized(ctx context.Context, userID int64, err er
 func (s *Service) respond(w http.ResponseWriter, ctx context.Context, status int, userID, opID int64, snap accessfence.Snapshot) {
 	row, err := s.Queries.GetWriteOperation(ctx, db.GetWriteOperationParams{ID: opID, UserID: userID})
 	if err != nil {
-		w.Header().Set(HeaderWriteDisposition, WriteDispositionPossiblyRecorded)
+		w.Header().Set(headerWriteDisposition, writeDispositionPossiblyRecorded)
 		s.internal(w, err)
 		return
 	}
 	current, err := snap.Current(ctx, s.Pool)
 	if err != nil {
-		w.Header().Set(HeaderWriteDisposition, WriteDispositionPossiblyRecorded)
+		w.Header().Set(headerWriteDisposition, writeDispositionPossiblyRecorded)
 		s.internal(w, err)
 		return
 	}
 	if !current {
-		w.Header().Set(HeaderWriteDisposition, WriteDispositionPossiblyRecorded)
+		w.Header().Set(headerWriteDisposition, writeDispositionPossiblyRecorded)
 		http.Error(w, "access changed; the operation was recorded and may have been sent: retry with the same Idempotency-Key", http.StatusServiceUnavailable)
 		return
 	}
@@ -478,17 +479,61 @@ func (s *Service) replay(sw *submitWriter, ctx context.Context, userID int64, ke
 		sw.disposition = ""
 		s.internal(sw, err)
 	case !bytes.Equal(prior.RequestHash, hash):
-		sw.disposition = WriteDispositionNotRecorded
+		sw.disposition = writeDispositionNotRecorded
 		http.Error(sw, "idempotency key reused with a different request", http.StatusUnprocessableEntity)
 	default:
-		sw.disposition = WriteDispositionPossiblyRecorded
-		if err := s.Queries.FailStalePendingOperations(ctx, userID); err != nil {
-			s.internal(sw, err)
-			return true
+		sw.disposition = writeDispositionPossiblyRecorded
+		if prior.StalePending.Bool {
+			if err := s.Queries.FailStalePendingOperationByID(ctx, prior.ID); err != nil {
+				s.internal(sw, err)
+				return true
+			}
 		}
 		s.respond(sw, ctx, http.StatusOK, userID, prior.ID, snap)
 	}
 	return true
+}
+
+func mapConcurrent[T, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error)) ([]R, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]R, len(items))
+	errs := make([]error, len(items))
+	var wg sync.WaitGroup
+	for i, item := range items {
+		wg.Add(1)
+		go func(i int, item T) {
+			defer wg.Done()
+			res, err := fn(ctx, item)
+			if err != nil {
+				errs[i] = err
+				cancel()
+				return
+			}
+			results[i] = res
+		}(i, item)
+	}
+	wg.Wait()
+	var firstErr error
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		var api *githubapp.APIError
+		if errors.As(err, &api) && api.Unauthorized() {
+			return nil, err
+		}
+		if firstErr == nil || (errors.Is(firstErr, context.Canceled) && !errors.Is(err, context.Canceled)) {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return results, nil
 }
 
 var errAccessMoved = errors.New("access changed")
@@ -562,14 +607,16 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 			}
 		}
 	}
+	assignable, err := mapConcurrent(ctx, c.assignees, func(ctx context.Context, login string) (bool, error) {
+		return s.GitHub.IsAssignable(ctx, token, d.Repo.FullName, login)
+	})
+	if err != nil {
+		s.upstream(sw, ctx, userID, err)
+		return
+	}
 	var ineligible []string
-	for _, login := range c.assignees {
-		ok, err := s.GitHub.IsAssignable(ctx, token, d.Repo.FullName, login)
-		if err != nil {
-			s.upstream(sw, ctx, userID, err)
-			return
-		}
-		if !ok {
+	for i, login := range c.assignees {
+		if !assignable[i] {
 			ineligible = append(ineligible, login)
 		}
 	}
@@ -611,7 +658,7 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 				continue
 			}
 		}
-		sw.disposition = WriteDispositionNotRecorded
+		sw.disposition = writeDispositionNotRecorded
 		msg := "an earlier create of this issue is still unresolved; recheck it instead of resubmitting"
 		prior, err := s.Queries.FindUnresolvedCreate(ctx, unresolved)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -635,19 +682,19 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 		}
 		return
 	case errors.Is(err, errAccessMoved):
-		sw.disposition = WriteDispositionNotRecorded
+		sw.disposition = writeDispositionNotRecorded
 		http.Error(sw, "access changed while submitting; nothing was sent", http.StatusServiceUnavailable)
 		return
 	case err != nil:
 		s.internal(sw, err)
 		return
 	}
-	sw.disposition = WriteDispositionPossiblyRecorded
+	sw.disposition = writeDispositionPossiblyRecorded
 	if n, err := s.Queries.MarkWriteOperationSent(ctx, opID); err != nil {
 		s.internal(sw, fmt.Errorf("mark sent: %w", err))
 		return
 	} else if n == 0 {
-		if err := s.Queries.FailStalePendingOperations(ctx, userID); err != nil {
+		if err := s.Queries.FailStalePendingOperationByID(ctx, opID); err != nil {
 			s.internal(sw, err)
 			return
 		}

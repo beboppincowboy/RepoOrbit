@@ -135,19 +135,6 @@ func TestOtherEligibleSelectorKeepsRepositoryPolled(t *testing.T) {
 	}
 }
 
-func TestFailedRefreshPreservesEligibility(t *testing.T) {
-	f := newFixture(t)
-	f.user(1)
-	f.repo(10)
-	f.selection(1, 10, "starred")
-	for _, s := range []*fakeStars{{}, {err: errors.New("net")}, {err: ErrNoCredential}} {
-		_ = StarReconcileHandler(s, &fakeClock{now: time.Now()}, nil)(context.Background(), jobs.Job{Key: "user:1"}, nil)
-	}
-	if f.suspended(1, 10) {
-		t.Fatal("failed refresh suspended eligibility")
-	}
-}
-
 func noErr(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

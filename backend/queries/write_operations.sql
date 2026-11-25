@@ -5,10 +5,14 @@ ON CONFLICT (user_id, idempotency_key) DO NOTHING
 RETURNING id;
 
 -- name: GetWriteOperationByKey :one
-SELECT id, request_hash FROM write_operations WHERE user_id = $1 AND idempotency_key = $2;
+SELECT id, request_hash,
+ (state = 'pending' AND created_at < now() - interval '1 minute') AS stale_pending
+FROM write_operations WHERE user_id = $1 AND idempotency_key = $2;
 
 -- name: GetWriteOperationScope :one
-SELECT repository_id, state FROM write_operations WHERE id = $1 AND user_id = $2;
+SELECT repository_id, state,
+ (state = 'pending' AND created_at < now() - interval '1 minute') AS stale_pending
+FROM write_operations WHERE id = $1 AND user_id = $2;
 
 -- name: GetWriteOperation :one
 SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name,
@@ -42,12 +46,19 @@ UPDATE write_operations SET state = 'failed',
  updated_at = now()
 WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND state = 'pending' AND content_hash = $3 AND created_at < now() - interval '1 minute';
 
--- name: FailStalePendingOperations :exec
+-- name: FailStalePendingOperationByID :exec
 UPDATE write_operations SET state = 'failed',
  outcome = CASE WHEN draft IS NULL THEN redacted_write_outcome('{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb)
   ELSE '{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb END,
  updated_at = now()
-WHERE user_id = $1 AND state = 'pending' AND created_at < now() - interval '1 minute';
+WHERE id = $1 AND state = 'pending' AND created_at < now() - interval '1 minute';
+
+-- name: FailAllStalePendingOperations :exec
+UPDATE write_operations SET state = 'failed',
+ outcome = CASE WHEN draft IS NULL THEN redacted_write_outcome('{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb)
+  ELSE '{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb END,
+ updated_at = now()
+WHERE state = 'pending' AND created_at < now() - interval '1 minute';
 
 -- name: WipeActorDrafts :exec
 UPDATE write_operations SET draft = NULL, outcome = redacted_write_outcome(outcome) WHERE user_id = $1 AND repository_id = $2 AND draft IS NOT NULL;
