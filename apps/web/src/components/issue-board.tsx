@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
@@ -6,10 +7,18 @@ import { StatusSourceSetup } from "@/components/status-source-setup";
 import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
 import { BOARD_STATUSES, deriveChange, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
-import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type IssueCapabilities, type ViewerSession } from "@/lib/api";
+import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type BoardStatus, type IssueCapabilities, type ViewerSession } from "@/lib/api";
 import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/lib/selected-repositories";
 
 const panel = "rounded-xl border border-border bg-card min-w-0 min-h-0";
+
+// Runs a drop as a View Transition so the card glides to its new column. Only drops use it: the transition applies
+// the update a frame later, which would make the drawer's controlled inputs flicker. Browsers without the API, and viewers
+// who prefer reduced motion, get the update at once.
+function withCardMotion(update: () => void) {
+  if (!document.startViewTransition || matchMedia("(prefers-reduced-motion: reduce)").matches) return update();
+  document.startViewTransition(() => flushSync(update));
+}
 const muted = "text-muted-foreground";
 const mini = "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-[7px] text-[11px]";
 const th = "sticky top-0 z-[1] whitespace-nowrap border-b border-border bg-card px-3 py-2 text-left text-xs font-medium text-muted-foreground";
@@ -42,6 +51,8 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   const repoVisibility = useRepositoryVisibility(session, repositoryId);
   const [cards, setCards] = useState(() => loadBoardCards(viewerKey, repositoryId));
   const [view, setView] = useState<"board" | "list">("board");
+  const [dragging, setDragging] = useState<BoardIssue>();
+  const [dropTarget, setDropTarget] = useState<BoardStatus>();
   const [assignee, setAssignee] = useState("");
   const [label, setLabel] = useState("");
   const [text, setText] = useState("");
@@ -169,15 +180,22 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto">
       {BOARD_STATUSES.map(status => {
         const items = shown.filter(row => columnOf(row) === status);
+        const isDropTarget = dropTarget === status && dragging !== undefined && columnOf(dragging) !== status;
         return (
           <section
             key={status}
-            className={`${panel} flex min-w-[210px] flex-1 flex-col`}
-            onDragOver={e => { if (!blocked) e.preventDefault(); }}
+            className={`${panel} flex min-w-[210px] flex-1 flex-col transition-[border-color,background-color,box-shadow] duration-150 ${isDropTarget ? "border-primary bg-primary-soft shadow-[inset_0_0_0_1px_var(--primary)]" : ""}`}
+            onDragOver={e => {
+              if (blocked) return;
+              e.preventDefault();
+              if (dropTarget !== status) setDropTarget(status);
+            }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(undefined); }}
             onDrop={e => {
               e.preventDefault();
+              setDropTarget(undefined);
               const row = rows.find(r => r.number === Number(e.dataTransfer.getData("text/plain")));
-              if (row) stage(row, { ...targetOf(row), status });
+              if (row) withCardMotion(() => stage(row, { ...targetOf(row), status }));
             }}
           >
             <h3 className="flex flex-none items-center justify-between gap-2 px-3 pt-3 pb-2 text-[13px]">
@@ -189,8 +207,14 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
                   key={row.number}
                   data-issue-card={row.number}
                   draggable={!blocked && !locked(cardOf(row.number))}
-                  onDragStart={e => e.dataTransfer.setData("text/plain", String(row.number))}
-                  className="flex flex-col gap-1.5 rounded-lg border border-border bg-card p-2.5 hover:border-border-strong"
+                  onDragStart={e => {
+                    e.dataTransfer.setData("text/plain", String(row.number));
+                    e.dataTransfer.effectAllowed = "move";
+                    setDragging(row);
+                  }}
+                  onDragEnd={() => { setDragging(undefined); setDropTarget(undefined); }}
+                  style={{ viewTransitionName: `board-card-${row.number}` }}
+                  className={`flex flex-col gap-1.5 rounded-lg border border-border bg-card p-2.5 transition-[border-color,box-shadow,opacity,transform] duration-150 hover:border-border-strong hover:shadow-sm motion-safe:hover:-translate-y-px [&[draggable=true]]:cursor-grab [&[draggable=true]]:active:cursor-grabbing ${dragging?.number === row.number ? "scale-[.98] opacity-40" : ""}`}
                 >
                   {openButton(row, "leading-snug")}
                   <div className="flex flex-wrap items-center gap-1.5 text-xs">
