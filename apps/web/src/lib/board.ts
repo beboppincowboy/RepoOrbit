@@ -14,8 +14,6 @@ export function isStatusLabel(label: string): boolean {
 // from Backlog to Todo, so the review names that side effect.
 export type BoardTarget = { status: BoardStatus; assigneesAdd: string[]; assigneesRemove: string[]; assignedFromBacklog?: boolean };
 
-// pending exists only in the sending tab's memory: saveBoardCard stores it as unknown, so a reload mid-send offers
-// Check again instead of a stuck pending card.
 export type BoardCardPhase = "staged" | "changed" | "pending" | "unknown" | "failed" | "confirmed";
 
 export type BoardCard = {

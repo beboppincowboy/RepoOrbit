@@ -102,10 +102,15 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     return !card || card.phase === "failed" ? row.status : card.target.status;
   };
   const saver = { login: viewerLogin ?? "", assignable: assignable.some(login => login.toLowerCase() === viewerLogin?.toLowerCase()) };
-  const blocked = demo ? "Demo mode — remote GitHub writes are disabled, so Board changes cannot be staged."
-    : board && !board.statusLabels ? "No status source: turn status labels on to stage Board changes."
-    : capabilitiesError ?? (!capabilities ? "Checking your current GitHub permissions…"
-      : capabilities.canManageIssues ? null : "Moving cards, changing assignees, and closing or reopening issues requires Triage or higher permission on GitHub.");
+  function getBlockedReason(): string | null {
+    if (demo) return "Demo mode — remote GitHub writes are disabled, so Board changes cannot be staged.";
+    if (board && !board.statusLabels) return "No status source: turn status labels on to stage Board changes.";
+    if (capabilitiesError !== null) return capabilitiesError;
+    if (!capabilities) return "Checking your current GitHub permissions…";
+    if (!capabilities.canManageIssues) return "Moving cards, changing assignees, and closing or reopening issues requires Triage or higher permission on GitHub.";
+    return null;
+  }
+  const blocked = getBlockedReason();
 
   function stage(row: BoardIssue, target: BoardTarget) {
     const card = cardOf(row.number);
@@ -213,6 +218,33 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   const openRow = openIssue === undefined ? undefined : rows.find(row => row.number === openIssue);
   const openCard = openIssue === undefined ? undefined : cardOf(openIssue);
 
+  function renderContent(): ReactNode {
+    if (query.isPending) {
+      return <p role="status" className={`${panel} p-4`}>Loading the Board…</p>;
+    }
+    if (query.isError) {
+      return <p role="alert" className={`${panel} p-4`}>{query.error.message} <Button variant="outline" size="sm" onClick={() => void query.refetch()}>Retry</Button></p>;
+    }
+    if (!board) {
+      return <p role="alert" className={`${panel} p-4`}>The Board is unavailable for this repository.</p>;
+    }
+    if (board.statusLabels) {
+      return view === "board" ? boardView : listView;
+    }
+    return (
+      <div className="flex min-h-0 flex-1 gap-3 max-[900px]:flex-col">
+        {listView}
+        <div className="flex min-h-0 flex-[1_1_320px] flex-col gap-3">
+          <section className={`${panel} px-4 py-3`}>
+            <h2 className="m-0 text-sm">No status source</h2>
+            <p className={`m-0 text-xs ${muted}`}>This repository has no status labels, so its issues are listed without columns and cannot be moved.</p>
+          </section>
+          <StatusSourceSetup repositoryId={repositoryId} viewerKey={viewerKey} demo={demo} frozen={false} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <section aria-label="Board controls" className={`${panel} flex flex-none flex-wrap items-center gap-2 px-4 py-3`}>
@@ -242,22 +274,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
           The Board shows only {[openCapped && `the ${OPEN_CAP} most recently updated open issues`, closedCapped && `the ${CLOSED_CAP} most recently closed issues`].filter(Boolean).join(" and ") || "part of this repository's issues"}.
         </p>
       )}
-      {query.isPending ? <p role="status" className={`${panel} p-4`}>Loading the Board…</p>
-        : query.isError ? <p role="alert" className={`${panel} p-4`}>{query.error.message} <Button variant="outline" size="sm" onClick={() => void query.refetch()}>Retry</Button></p>
-        : !board ? <p role="alert" className={`${panel} p-4`}>The Board is unavailable for this repository.</p>
-        : board.statusLabels ? (view === "board" ? boardView : listView)
-        : (
-          <div className="flex min-h-0 flex-1 gap-3 max-[900px]:flex-col">
-            {listView}
-            <div className="flex min-h-0 flex-[1_1_320px] flex-col gap-3">
-              <section className={`${panel} px-4 py-3`}>
-                <h2 className="m-0 text-sm">No status source</h2>
-                <p className={`m-0 text-xs ${muted}`}>This repository has no status labels, so its issues are listed without columns and cannot be moved.</p>
-              </section>
-              <StatusSourceSetup repositoryId={repositoryId} viewerKey={viewerKey} demo={demo} frozen={false} />
-            </div>
-          </div>
-        )}
+      {renderContent()}
       {openIssue !== undefined && board && (
         <TaskDrawer
           key={openIssue}

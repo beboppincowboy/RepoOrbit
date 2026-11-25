@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { SyncStatus } from "@/components/sync-status";
 import { RepositoryCell, RepositoriesHeading, SourceTabs, ToolsRow, noteClass, searchBoxClass, segGroupClass, segItemClass, tableCardClass, tdClass, thClass, warnNoteClass } from "@/components/repository-list";
 import { matchesListSearch, validateListSearch } from "@/lib/list-search";
-import { flattenSelectedRepositoryRows, recordRepositoryRemoved, useSelectedRepositories } from "@/lib/selected-repositories";
+import { flattenSelectedRepositoryRows, recordRepositoriesRemoved, useSelectedRepositories } from "@/lib/selected-repositories";
 import { ownedRepositories, setSelected, type ListedRepo, type OwnedPage } from "@/lib/api";
 
 export const Route = createFileRoute("/_shell/repositories")({
@@ -62,17 +62,19 @@ function Repositories() {
     setOutcomes({});
     const next: Record<string, Outcome> = {};
     const done = new Map<string, boolean>();
+    const removedIds: string[] = [];
     for (const repo of [...toAdd, ...toRemove]) {
       const selected = draft[repo.id];
       try {
         await setSelected(repo.id, selected);
         done.set(repo.id, selected);
-        if (!selected) recordRepositoryRemoved(queryClient, session, repo.id);
+        if (!selected) removedIds.push(repo.id);
         next[repo.id] = { ok: true, text: selected ? "Connected. Awaiting sync." : "Disconnected. RepoOrbit no longer syncs it for you." };
       } catch (e) {
         next[repo.id] = { ok: false, text: e instanceof Error ? e.message : "Something went wrong." };
       }
     }
+    if (removedIds.length > 0) recordRepositoriesRemoved(queryClient, session, removedIds);
     queryClient.setQueryData<InfiniteData<OwnedPage>>(["owned"], old => old && { ...old, pages: old.pages.map(p => ({ ...p, repositories: p.repositories.map(r => (done.has(r.id) ? { ...r, selected: done.get(r.id)!, syncState: done.get(r.id)! ? "awaiting-sync" as const : "not-synchronized" as const } : r)) })) });
     setDraft({});
     setOutcomes(next);
