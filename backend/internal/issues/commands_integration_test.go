@@ -1701,11 +1701,38 @@ func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 		t.Fatalf("GET wiped stale pending: %+v", single)
 	}
 
+	recheckPending := func(id int64) (int, string) {
+		t.Helper()
+		resp := alice.do("POST", opPath(id)+"/recheck", "{}", map[string]string{
+			"Origin":       appURL,
+			"X-CSRF-Token": alice.csrf,
+			"Content-Type": "application/json",
+		})
+		var op struct {
+			State string `json:"state"`
+		}
+		if err := json.Unmarshal(alice.body(resp), &op); err != nil {
+			t.Fatalf("recheck %d decode: %v body=%s", id, err, alice.body(resp))
+		}
+		return resp.StatusCode, op.State
+	}
+	if status, state := recheckPending(freshID); status != http.StatusOK || state != "pending" {
+		t.Fatalf("recheck fresh pending status=%d state=%q, want 200 pending", status, state)
+	}
+
 	if n, err := db.New(pool).MarkWriteOperationSent(ctx, freshID); err != nil || n != 1 {
 		t.Fatalf("MarkWriteOperationSent fresh pending updated %d rows (err=%v), want 1", n, err)
 	}
 	if n, err := db.New(pool).MarkWriteOperationSent(ctx, intactID); err != nil || n != 0 {
 		t.Fatalf("MarkWriteOperationSent stale pending updated %d rows (err=%v), want 0", n, err)
+	}
+
+	if status, state := recheckPending(intactID); status != http.StatusOK || state != "failed" {
+		t.Fatalf("recheck stale pending status=%d state=%q, want 200 failed", status, state)
+	}
+	var settledState string
+	if err := pool.QueryRow(ctx, `SELECT state FROM write_operations WHERE id = $1`, intactID).Scan(&settledState); err != nil || settledState != "failed" {
+		t.Fatalf("stale pending row after recheck: state=%q err=%v, want failed", settledState, err)
 	}
 }
 

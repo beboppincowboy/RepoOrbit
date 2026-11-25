@@ -440,3 +440,113 @@ func TestGraphQLStatusDemandDrivenSelection(t *testing.T) {
 		}
 	})
 }
+
+func TestSelectedRepositoriesActivityBatchesAcrossRepos(t *testing.T) {
+	ctx := context.Background()
+	h, rec, runVars := newTracedGraphQLHarness(t)
+	alice := h.signIn("alice")
+	aliceID := h.userID(ctx, "alice")
+
+	repoA := h.gh.AddRepo("alice", "alpha", false)
+	repoB := h.gh.AddRepo("alice", "beta", false)
+	for _, step := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO repositories (id, name, description, is_private, is_demo, archived) VALUES
+			($1, 'alice/alpha', 'a', false, false, true),
+			($2, 'alice/beta', 'b', false, false, false)`, []any{repoA, repoB}},
+		{`INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES
+			($3, $1, 'owned', now()),
+			($3, $2, 'owned', now())`, []any{repoA, repoB, aliceID}},
+		{`INSERT INTO activity_resources (repository_id, resource, boundary, phase, watermark, last_success_at, last_error_code) VALUES
+			($1, 'issues', now()-interval '90 days', 'current', now(), now(), 'token ghu_secret leaked'),
+			($1, 'pull_requests', now()-interval '90 days', 'current', now(), now(), $3),
+			($1, 'comments', now()-interval '90 days', 'catchup', NULL, NULL, 'rate_limited'),
+			($2, 'issues', now()-interval '90 days', 'current', now(), now(), NULL),
+			($2, 'pull_requests', now()-interval '90 days', 'current', now(), now(), NULL),
+			($2, 'comments', now()-interval '90 days', 'current', now(), now(), NULL)`, []any{repoA, repoB, ingestion.CodePullRequestsDisabled}},
+		{`INSERT INTO activity_children (repository_id, resource, parent_id, parent_number, complete, last_error_code) VALUES
+			($1, 'reviews', 50, 1, false, 'rate_limited')`, []any{repoA}},
+	} {
+		if _, err := h.pool.Exec(ctx, step.sql, step.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const q = `{
+		selectedRepositories(first: 2) {
+			nodes {
+				id fullName
+				activity {
+					archived
+					issues { phase failureCode }
+					pullRequests { phase }
+					reviews { complete pendingChildren failureCode }
+					comments { complete failureCode }
+				}
+			}
+		}
+	}`
+	warmAccessCache(runVars, rec, alice, q, nil)
+
+	raw := runVars(alice, q, nil)
+	qs := rec.Stop()
+	if got := countActivityStatusSQL(qs); got != 4 {
+		t.Fatalf("expected 4 batched activity SQL queries across 2 repos, got %d: %v", got, qs)
+	}
+	var out struct {
+		Data struct {
+			SelectedRepositories struct {
+				Nodes []struct {
+					ID       string `json:"id"`
+					FullName string `json:"fullName"`
+					Activity struct {
+						Archived bool `json:"archived"`
+						Issues   *struct {
+							Phase       string  `json:"phase"`
+							FailureCode *string `json:"failureCode"`
+						} `json:"issues"`
+						PullRequests *struct {
+							Phase string `json:"phase"`
+						} `json:"pullRequests"`
+						Reviews *struct {
+							Complete        bool    `json:"complete"`
+							PendingChildren int     `json:"pendingChildren"`
+							FailureCode     *string `json:"failureCode"`
+						} `json:"reviews"`
+						Comments *struct {
+							Complete    bool    `json:"complete"`
+							FailureCode *string `json:"failureCode"`
+						} `json:"comments"`
+					} `json:"activity"`
+				} `json:"nodes"`
+			} `json:"selectedRepositories"`
+		} `json:"data"`
+		Errors []any `json:"errors"`
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil || len(out.Errors) > 0 {
+		t.Fatalf("unexpected GraphQL response: %v %s", err, raw)
+	}
+	if len(out.Data.SelectedRepositories.Nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d: %s", len(out.Data.SelectedRepositories.Nodes), raw)
+	}
+	byName := map[string]int{}
+	for i, n := range out.Data.SelectedRepositories.Nodes {
+		byName[n.FullName] = i
+	}
+	a := out.Data.SelectedRepositories.Nodes[byName["alice/alpha"]].Activity
+	if !a.Archived || a.Issues == nil || a.Issues.FailureCode == nil || *a.Issues.FailureCode != "unknown" ||
+		a.PullRequests == nil || a.PullRequests.Phase != "disabled" ||
+		a.Reviews == nil || a.Reviews.Complete || a.Reviews.PendingChildren != 1 || a.Reviews.FailureCode == nil || *a.Reviews.FailureCode != "rate_limited" ||
+		a.Comments == nil || a.Comments.Complete || a.Comments.FailureCode == nil || *a.Comments.FailureCode != "rate_limited" {
+		t.Fatalf("unexpected alpha activity: %+v", a)
+	}
+	b := out.Data.SelectedRepositories.Nodes[byName["alice/beta"]].Activity
+	if b.Archived || b.Issues == nil || b.Issues.FailureCode != nil ||
+		b.PullRequests == nil || b.PullRequests.Phase != "current" ||
+		b.Reviews == nil || !b.Reviews.Complete || b.Reviews.PendingChildren != 0 || b.Reviews.FailureCode != nil ||
+		b.Comments == nil || !b.Comments.Complete || b.Comments.FailureCode != nil {
+		t.Fatalf("unexpected beta activity: %+v", b)
+	}
+}
