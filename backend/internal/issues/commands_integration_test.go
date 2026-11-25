@@ -56,7 +56,26 @@ func (e *env) intercept(f func(w http.ResponseWriter, r *http.Request, next http
 // the way cmd/api does.
 func setup(t *testing.T) *env {
 	t.Helper()
-	_, pool := testutil.Database(t)
+	return setupWithTracer(t, nil)
+}
+
+func setupWithTracer(t *testing.T, tr pgx.QueryTracer) *env {
+	t.Helper()
+	dbURL, pool := testutil.Database(t)
+	svcPool := pool
+	if tr != nil {
+		cfg, err := pgxpool.ParseConfig(dbURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.ConnConfig.Tracer = tr
+		tracedPool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(tracedPool.Close)
+		svcPool = tracedPool
+	}
 	gh := fake.New("cid", "secret")
 	e := &env{t: t, pool: pool, gh: gh}
 	ghHandler := gh.Handler()
@@ -69,10 +88,10 @@ func setup(t *testing.T) *env {
 	}))
 	t.Cleanup(ghSrv.Close)
 	client := githubapp.New("cid", "secret", ghSrv.URL, ghSrv.URL, appURL+"/auth/github/callback")
-	q := db.New(pool)
-	authSvc := &auth.Service{Pool: pool, Queries: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
-	repos := &repositories.Service{Queries: q, Pool: pool, GitHub: client, TokenSource: authSvc, TTL: time.Nanosecond, AppURL: appURL}
-	svc := &issues.Service{Pool: pool, Queries: q, GitHub: client, Access: repos, GitHubURL: "https://github.test"}
+	q := db.New(svcPool)
+	authSvc := &auth.Service{Pool: svcPool, Queries: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
+	repos := &repositories.Service{Queries: q, Pool: svcPool, GitHub: client, TokenSource: authSvc, TTL: time.Nanosecond, AppURL: appURL}
+	svc := &issues.Service{Pool: svcPool, Queries: q, GitHub: client, Access: repos, GitHubURL: "https://github.test"}
 	h := &auth.Handler{Service: authSvc, AppURL: appURL}
 	api := http.NewServeMux()
 	api.Handle("/api/", repos.Routes())
@@ -1594,37 +1613,9 @@ func TestStateChangesOrderAroundLabelSteps(t *testing.T) {
 
 func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 	ctx := context.Background()
-	dbURL, pool := testutil.Database(t)
 	tr := &testutil.SQLRecorder{}
-	cfg, err := pgxpool.ParseConfig(dbURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.ConnConfig.Tracer = tr
-	tracedPool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(tracedPool.Close)
-
-	gh := fake.New("cid", "secret")
-	ghSrv := httptest.NewServer(gh.Handler())
-	t.Cleanup(ghSrv.Close)
-	client := githubapp.New("cid", "secret", ghSrv.URL, ghSrv.URL, appURL+"/auth/github/callback")
-	q := db.New(tracedPool)
-	authSvc := &auth.Service{Pool: tracedPool, Queries: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
-	repos := &repositories.Service{Queries: q, Pool: tracedPool, GitHub: client, TokenSource: authSvc, TTL: time.Nanosecond, AppURL: appURL}
-	svc := &issues.Service{Pool: tracedPool, Queries: q, GitHub: client, Access: repos, GitHubURL: "https://github.test"}
-	h := &auth.Handler{Service: authSvc, AppURL: appURL}
-	api := http.NewServeMux()
-	svc.Register(api)
-	mux := http.NewServeMux()
-	mux.Handle("/auth/", h.Routes())
-	mux.Handle("/api/", h.Protect(api))
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	e := &env{t: t, pool: pool, gh: gh, client: client, issues: svc, srv: srv}
+	e := setupWithTracer(t, tr)
+	pool := e.pool
 	alice := e.signIn("alice")
 	repo := e.repo("alice", "app", false)
 
@@ -1801,5 +1792,66 @@ func TestWriteDispositionHeadersAndArchiveRecovery(t *testing.T) {
 	})
 	if resp, _ := alice.send(create(repo), "db-error-500", `{"title":"DB insert error"}`); resp.StatusCode != http.StatusInternalServerError || resp.Header.Get(issues.HeaderWriteDisposition) != "" {
 		t.Fatalf("pre-insert 500 status=%d disposition=%q", resp.StatusCode, resp.Header.Get(issues.HeaderWriteDisposition))
+	}
+}
+
+func TestSubmitCompletesAfterClientDisconnect(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+
+	inGitHub := make(chan struct{})
+	releaseGitHub := make(chan struct{})
+	var once sync.Once
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues") {
+			once.Do(func() { close(inGitHub) })
+			<-releaseGitHub
+		}
+		next.ServeHTTP(w, r)
+	})
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, e.srv.URL+create(repo), strings.NewReader(`{"title":"Survive disconnect"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", appURL)
+	req.Header.Set("X-CSRF-Token", alice.csrf)
+	req.Header.Set("Idempotency-Key", "disconnect-1")
+	req.Header.Set("Content-Type", "application/json")
+
+	done := make(chan error, 1)
+	go func() {
+		resp, err := alice.client.Do(req)
+		if resp != nil {
+			resp.Body.Close()
+		}
+		done <- err
+	}()
+
+	<-inGitHub
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("expected canceled client request to return an error")
+	}
+	close(releaseGitHub)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var state string
+		var num *int64
+		err := e.pool.QueryRow(context.Background(), `SELECT state, issue_number FROM write_operations WHERE idempotency_key = 'disconnect-1'`).Scan(&state, &num)
+		if err == nil && state == "succeeded" && num != nil && *num == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation did not settle after client disconnect: err=%v state=%q num=%v", err, state, num)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if len(e.gh.Issues(repo)) != 1 {
+		t.Fatalf("expected 1 upstream issue after disconnect, got %d", len(e.gh.Issues(repo)))
 	}
 }

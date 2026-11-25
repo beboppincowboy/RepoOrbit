@@ -38,8 +38,6 @@ const (
 	maxItems = 10    // labels or assignees per list; GitHub allows at most 10 assignees
 	maxLabel = 50    // GitHub's label name limit
 
-	// HeaderWriteDisposition tells submit callers whether the server proved this attempt recorded nothing
-	// ("not-recorded") or recorded/replayed an operation whose response was withheld or failed ("possibly-recorded").
 	HeaderWriteDisposition           = "RepoOrbit-Write-Disposition"
 	WriteDispositionNotRecorded      = "not-recorded"
 	WriteDispositionPossiblyRecorded = "possibly-recorded"
@@ -620,8 +618,6 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 		return
 	}
 
-	// Once recording starts, a client disconnect must not strand the row between insert and mark-sent (or abandon the
-	// call and its recorded outcome later). Clear the pre-insert disposition so an opaque DB commit failure stays uncertain.
 	sw.disposition = ""
 	ctx = context.WithoutCancel(ctx)
 	var opID int64
@@ -952,28 +948,9 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	userID, row, d, snap, ok := s.loadOperation(w, r)
+	userID, row, d, snap, ok := s.loadOperation(w, r, true)
 	if !ok {
 		return
-	}
-	if row.State == "pending" {
-		if err := s.Queries.FailStalePendingOperations(r.Context(), userID); err != nil {
-			s.internal(w, err)
-			return
-		}
-		reloaded, err := s.Queries.GetWriteOperation(r.Context(), db.GetWriteOperationParams{ID: row.ID, UserID: userID})
-		if errors.Is(err, pgx.ErrNoRows) {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
-		}
-		if err != nil {
-			s.internal(w, err)
-			return
-		}
-		if !s.fenceHolds(w, r.Context(), snap) {
-			return
-		}
-		row = reloaded
 	}
 	if row.State != "unknown" {
 		writeJSON(w, http.StatusOK, s.view(row))

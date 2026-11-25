@@ -298,7 +298,7 @@ func (d SchedulerDeps) expireWriteOperations(ctx context.Context, now time.Time)
 			outcome = CASE WHEN draft IS NULL THEN redacted_write_outcome('{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb)
 				ELSE '{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb END,
 			updated_at = now()
-			WHERE state = 'pending' AND created_at < now() - interval '1 minute'`); err != nil { // the database clock MarkWriteOperationSent checks
+			WHERE state = 'pending' AND created_at < now() - interval '1 minute'`); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM write_operations WHERE created_at < $1 AND state IN ('succeeded', 'failed')`, cutoff); err != nil {

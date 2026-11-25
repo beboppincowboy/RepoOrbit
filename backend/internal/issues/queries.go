@@ -23,7 +23,7 @@ var (
 func (s *Service) view(row db.GetWriteOperationRow) opView {
 	state := row.State
 	rawOutcome := row.Outcome
-	if row.StalePending.Bool { // decided by the database clock that MarkWriteOperationSent checks
+	if row.StalePending.Bool {
 		state = "failed"
 		if len(row.Draft) == 0 {
 			rawOutcome = abandonedPendingRedactedOutcome
@@ -61,8 +61,6 @@ func (s *Service) capabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"canCreateIssue": canCreate(d.Repo), "canCreateIssueWithMetadata": canCreateWithMetadata(d.Repo), "canManageIssues": canManage(d.Repo)})
 }
 
-// assignees lists the users GitHub would accept as assignees ({"assignees": [login]}), read with the viewer's own
-// token, so editor suggestions pass the submit-time eligibility check. A viewer who cannot assign gets an empty list.
 func (s *Service) assignees(w http.ResponseWriter, r *http.Request) {
 	userID, ok := auth.SignedInUserID(r.Context())
 	repoID, idOK := pathID(r, "id")
@@ -127,7 +125,7 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"operations": out})
 }
 
-func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request) (int64, db.GetWriteOperationRow, repositories.Decision, accessfence.Snapshot, bool) {
+func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request, settleStale bool) (int64, db.GetWriteOperationRow, repositories.Decision, accessfence.Snapshot, bool) {
 	userID, ok := auth.SignedInUserID(r.Context())
 	opID, idOK := pathID(r, "id")
 	if !ok || !idOK {
@@ -154,6 +152,12 @@ func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request) (int64, 
 	if !ok {
 		return 0, row, d, snap, false
 	}
+	if settleStale && row.State == "pending" {
+		if err := s.Queries.FailStalePendingOperations(r.Context(), userID); err != nil {
+			s.internal(w, err)
+			return 0, row, d, snap, false
+		}
+	}
 	if row, ok = load(); !ok || !s.fenceHolds(w, r.Context(), snap) {
 		return 0, row, d, snap, false
 	}
@@ -161,14 +165,11 @@ func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request) (int64, 
 }
 
 func (s *Service) get(w http.ResponseWriter, r *http.Request) {
-	if _, row, _, _, ok := s.loadOperation(w, r); ok {
+	if _, row, _, _, ok := s.loadOperation(w, r, false); ok {
 		writeJSON(w, http.StatusOK, s.view(row))
 	}
 }
 
-// statusLabelState answers GET /api/repositories/{id}/status-labels: {enabled, canChange, labels?}. labels
-// ([{name, exists}], read from GitHub with the viewer's token) is included only for a viewer who could turn status
-// labels on and they are off, so the review step can say which labels will be created and which reused.
 func (s *Service) statusLabelState(w http.ResponseWriter, r *http.Request) {
 	userID, ok := auth.SignedInUserID(r.Context())
 	repoID, idOK := pathID(r, "id")
@@ -199,7 +200,6 @@ func (s *Service) statusLabelState(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		// One at a time: a GitHub 401 must reach upstream unmasked by a canceled sibling check, so it revokes the token.
 		for _, l := range statusLabels {
 			exists, err := s.GitHub.LabelExists(r.Context(), token, d.Repo.FullName, l.name)
 			if err != nil {

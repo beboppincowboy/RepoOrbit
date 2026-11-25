@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// SQLRecorder captures SQL queries executed through a pgxpool connection while active.
 type SQLRecorder struct {
 	mu      sync.Mutex
 	enabled bool
