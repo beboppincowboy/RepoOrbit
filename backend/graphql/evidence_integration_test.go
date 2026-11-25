@@ -149,7 +149,7 @@ func (h *evidenceHarness) userID(ctx context.Context, login string) int64 {
 	return id
 }
 
-func (h *evidenceHarness) runAt(c *http.Client, path, query string) string {
+func (h *evidenceHarness) runAtVars(c *http.Client, path, query string, vars map[string]any) string {
 	h.t.Helper()
 	me, err := c.Get(h.api.URL + "/auth/me")
 	if err != nil {
@@ -165,7 +165,11 @@ func (h *evidenceHarness) runAt(c *http.Client, path, query string) string {
 		h.t.Error(err)
 		return ""
 	}
-	body, err := json.Marshal(map[string]string{"query": query})
+	payload := map[string]any{"query": query}
+	if vars != nil {
+		payload["variables"] = vars
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		h.t.Error(err)
 		return ""
@@ -193,6 +197,11 @@ func (h *evidenceHarness) runAt(c *http.Client, path, query string) string {
 		h.t.Errorf("status %d: %s", resp.StatusCode, b)
 	}
 	return string(b)
+}
+
+func (h *evidenceHarness) runAt(c *http.Client, path, query string) string {
+	h.t.Helper()
+	return h.runAtVars(c, path, query, nil)
 }
 
 func (h *evidenceHarness) run(c *http.Client, query string) string {

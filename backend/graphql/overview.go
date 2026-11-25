@@ -76,7 +76,10 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 	)
 }
 
-const demoAssigneeID = 1
+const (
+	demoAssigneeID             = 1
+	codeOverviewSelectionLimit = "OVERVIEW_SELECTION_LIMIT"
+)
 
 func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (*model.CrossRepositoryOverview, error) {
 	if err := analytics.ValidateMetricWindowDays(days); err != nil {
@@ -115,7 +118,7 @@ func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (
 		return nil, fmt.Errorf("database unavailable")
 	}
 	if len(selected) > maxRepositoryIDs {
-		return nil, codedError("OVERVIEW_SELECTION_LIMIT", fmt.Sprintf("The overview supports up to %d selected repositories. Disconnect or unfollow repositories to view your overview.", maxRepositoryIDs))
+		return nil, codedError(codeOverviewSelectionLimit, fmt.Sprintf("The overview supports up to %d selected repositories. Disconnect or unfollow repositories to view your overview.", maxRepositoryIDs))
 	}
 	auth, err := r.authorizePreselected(ctx, user, selected)
 	if err != nil {

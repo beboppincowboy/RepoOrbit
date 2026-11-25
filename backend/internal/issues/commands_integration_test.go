@@ -60,17 +60,7 @@ func setupWithTracer(t *testing.T, tr pgx.QueryTracer) *env {
 	dbURL, pool := testutil.Database(t)
 	svcPool := pool
 	if tr != nil {
-		cfg, err := pgxpool.ParseConfig(dbURL)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cfg.ConnConfig.Tracer = tr
-		tracedPool, err := pgxpool.NewWithConfig(context.Background(), cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(tracedPool.Close)
-		svcPool = tracedPool
+		svcPool = testutil.OpenTracedPool(t, dbURL, tr)
 	}
 	gh := fake.New("cid", "secret")
 	e := &env{t: t, pool: pool, gh: gh}
@@ -235,6 +225,7 @@ type operation struct {
 		Issue     *issueView `json:"issue"`
 		Unapplied []string   `json:"unapplied"`
 		Error     string     `json:"error"`
+		Redacted  bool       `json:"redacted"`
 	} `json:"outcome"`
 }
 
@@ -1573,15 +1564,7 @@ func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 		t.Fatalf("GET list status %d: %s", listResp.StatusCode, alice.body(listResp))
 	}
 	var list struct {
-		Operations []struct {
-			ID      int64           `json:"id"`
-			State   string          `json:"state"`
-			Draft   json.RawMessage `json:"draft"`
-			Outcome struct {
-				Error    string `json:"error"`
-				Redacted bool   `json:"redacted"`
-			} `json:"outcome"`
-		} `json:"operations"`
+		Operations []operation `json:"operations"`
 	}
 	if err := json.Unmarshal(alice.body(listResp), &list); err != nil {
 		t.Fatal(err)
@@ -1606,42 +1589,17 @@ func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 	}
 
 	tr.Start()
-	getResp := alice.do("GET", opPath(wipedID), "", nil)
+	getResp, single := alice.get(opPath(wipedID))
 	assertNoWriteOpUpdate("GET one", tr.Stop())
 	if getResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET one status %d: %s", getResp.StatusCode, alice.body(getResp))
-	}
-	var single struct {
-		State   string `json:"state"`
-		Outcome struct {
-			Error    string `json:"error"`
-			Redacted bool   `json:"redacted"`
-		} `json:"outcome"`
-	}
-	if err := json.Unmarshal(alice.body(getResp), &single); err != nil {
-		t.Fatal(err)
 	}
 	if single.State != "failed" || !strings.Contains(single.Outcome.Error, "abandoned before sending") || !single.Outcome.Redacted {
 		t.Fatalf("GET wiped stale pending: %+v", single)
 	}
 
-	recheckPending := func(id int64) (int, string) {
-		t.Helper()
-		resp := alice.do("POST", opPath(id)+"/recheck", "{}", map[string]string{
-			"Origin":       appURL,
-			"X-CSRF-Token": alice.csrf,
-			"Content-Type": "application/json",
-		})
-		var op struct {
-			State string `json:"state"`
-		}
-		if err := json.Unmarshal(alice.body(resp), &op); err != nil {
-			t.Fatalf("recheck %d decode: %v body=%s", id, err, alice.body(resp))
-		}
-		return resp.StatusCode, op.State
-	}
-	if status, state := recheckPending(freshID); status != http.StatusOK || state != "pending" {
-		t.Fatalf("recheck fresh pending status=%d state=%q, want 200 pending", status, state)
+	if resp, op := alice.send(opPath(freshID)+"/recheck", "", "{}"); resp.StatusCode != http.StatusOK || op.State != "pending" {
+		t.Fatalf("recheck fresh pending status=%d state=%q, want 200 pending", resp.StatusCode, op.State)
 	}
 
 	if n, err := db.New(pool).MarkWriteOperationSent(ctx, freshID); err != nil || n != 1 {
@@ -1651,8 +1609,8 @@ func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 		t.Fatalf("MarkWriteOperationSent stale pending updated %d rows (err=%v), want 0", n, err)
 	}
 
-	if status, state := recheckPending(intactID); status != http.StatusOK || state != "failed" {
-		t.Fatalf("recheck stale pending status=%d state=%q, want 200 failed", status, state)
+	if resp, op := alice.send(opPath(intactID)+"/recheck", "", "{}"); resp.StatusCode != http.StatusOK || op.State != "failed" {
+		t.Fatalf("recheck stale pending status=%d state=%q, want 200 failed", resp.StatusCode, op.State)
 	}
 	var settledState string
 	if err := pool.QueryRow(ctx, `SELECT state FROM write_operations WHERE id = $1`, intactID).Scan(&settledState); err != nil || settledState != "failed" {
@@ -1666,12 +1624,12 @@ func TestWriteDispositionHeadersAndArchiveRecovery(t *testing.T) {
 	carol := e.signIn("carol")
 	repo := e.repo("alice", "app", false)
 
-	if resp, _ := carol.send(create(repo), "perm-1", `{"title":"No metadata perm","labels":["bug"]}`); resp.StatusCode != http.StatusForbidden || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionNotRecorded {
-		t.Fatalf("403 disposition=%q status=%d", resp.Header.Get(issues.HeaderWriteDisposition), resp.StatusCode)
+	if resp, _ := carol.send(create(repo), "perm-1", `{"title":"No metadata perm","labels":["bug"]}`); resp.StatusCode != http.StatusForbidden || resp.Header.Get("RepoOrbit-Write-Disposition") != "not-recorded" {
+		t.Fatalf("403 disposition=%q status=%d", resp.Header.Get("RepoOrbit-Write-Disposition"), resp.StatusCode)
 	}
 	e.gh.Fail(true)
-	if resp, _ := alice.send(create(repo), "unverified-1", `{"title":"Precheck 503"}`); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionNotRecorded {
-		t.Fatalf("precheck 503 disposition=%q status=%d", resp.Header.Get(issues.HeaderWriteDisposition), resp.StatusCode)
+	if resp, _ := alice.send(create(repo), "unverified-1", `{"title":"Precheck 503"}`); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("RepoOrbit-Write-Disposition") != "not-recorded" {
+		t.Fatalf("precheck 503 disposition=%q status=%d", resp.Header.Get("RepoOrbit-Write-Disposition"), resp.StatusCode)
 	}
 	e.gh.Fail(false)
 
@@ -1689,8 +1647,8 @@ func TestWriteDispositionHeadersAndArchiveRecovery(t *testing.T) {
 	})
 	resp, _ := alice.send(create(repo), "fenced-1", `{"title":"Created before fence moved"}`)
 	body := string(alice.body(resp))
-	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionPossiblyRecorded || !strings.Contains(body, "same Idempotency-Key") {
-		t.Fatalf("fenced 503 status=%d disposition=%q body=%q", resp.StatusCode, resp.Header.Get(issues.HeaderWriteDisposition), body)
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("RepoOrbit-Write-Disposition") != "possibly-recorded" || !strings.Contains(body, "same Idempotency-Key") {
+		t.Fatalf("fenced 503 status=%d disposition=%q body=%q", resp.StatusCode, resp.Header.Get("RepoOrbit-Write-Disposition"), body)
 	}
 
 	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
@@ -1728,8 +1686,8 @@ func TestWriteDispositionHeadersAndArchiveRecovery(t *testing.T) {
 	if len(e.gh.Issues(repo)) != 1 {
 		t.Fatalf("expected 1 upstream issue after recovery replay, got %d", len(e.gh.Issues(repo)))
 	}
-	if resp, _ := alice.send(create(repo), "archived-new", `{"title":"New after archive"}`); resp.StatusCode != http.StatusForbidden || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionNotRecorded {
-		t.Fatalf("fresh archived write status=%d disposition=%q", resp.StatusCode, resp.Header.Get(issues.HeaderWriteDisposition))
+	if resp, _ := alice.send(create(repo), "archived-new", `{"title":"New after archive"}`); resp.StatusCode != http.StatusForbidden || resp.Header.Get("RepoOrbit-Write-Disposition") != "not-recorded" {
+		t.Fatalf("fresh archived write status=%d disposition=%q", resp.StatusCode, resp.Header.Get("RepoOrbit-Write-Disposition"))
 	}
 
 	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) { next.ServeHTTP(w, r) })
@@ -1741,8 +1699,8 @@ func TestWriteDispositionHeadersAndArchiveRecovery(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = e.pool.Exec(ctx, `DROP TRIGGER IF EXISTS test_fail_write_op_insert ON write_operations; DROP FUNCTION IF EXISTS fail_write_op_insert();`)
 	})
-	if resp, _ := alice.send(create(repo), "db-error-500", `{"title":"DB insert error"}`); resp.StatusCode != http.StatusInternalServerError || resp.Header.Get(issues.HeaderWriteDisposition) != "" {
-		t.Fatalf("pre-insert 500 status=%d disposition=%q", resp.StatusCode, resp.Header.Get(issues.HeaderWriteDisposition))
+	if resp, _ := alice.send(create(repo), "db-error-500", `{"title":"DB insert error"}`); resp.StatusCode != http.StatusInternalServerError || resp.Header.Get("RepoOrbit-Write-Disposition") != "" {
+		t.Fatalf("pre-insert 500 status=%d disposition=%q", resp.StatusCode, resp.Header.Get("RepoOrbit-Write-Disposition"))
 	}
 }
 

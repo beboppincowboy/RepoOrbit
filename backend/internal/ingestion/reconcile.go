@@ -280,11 +280,7 @@ const writeOperationRetention = 30 * 24 * time.Hour
 func (d SchedulerDeps) expireWriteOperations(ctx context.Context, now time.Time) error {
 	cutoff := now.Add(-writeOperationRetention)
 	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `UPDATE write_operations SET state = 'failed',
-			outcome = CASE WHEN draft IS NULL THEN redacted_write_outcome('{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb)
-				ELSE '{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb END,
-			updated_at = now()
-			WHERE state = 'pending' AND created_at < now() - interval '1 minute'`); err != nil {
+		if err := db.New(tx).FailAllStalePendingOperations(ctx); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM write_operations WHERE created_at < $1 AND state IN ('succeeded', 'failed')`, cutoff); err != nil {

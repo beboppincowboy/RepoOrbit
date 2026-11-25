@@ -7,13 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
@@ -168,19 +166,9 @@ func warmAccessCache(runVars func(c *http.Client, query string, vars map[string]
 
 func newTracedGraphQLHarness(t *testing.T) (*evidenceHarness, *testutil.SQLRecorder, func(c *http.Client, query string, vars map[string]any) string) {
 	t.Helper()
-	ctx := context.Background()
 	h := newEvidenceHarness(t)
 	rec := &testutil.SQLRecorder{}
-	cfg, err := pgxpool.ParseConfig(h.dbURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.ConnConfig.Tracer = rec
-	tracedPool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(tracedPool.Close)
+	tracedPool := testutil.OpenTracedPool(t, h.dbURL, rec)
 	tracedQ := db.New(tracedPool)
 	tracedAuth := &auth.Service{Pool: tracedPool, Queries: tracedQ, GitHub: h.client, Key: bytes.Repeat([]byte{1}, 32)}
 	tracedRepos := &repositories.Service{Pool: tracedPool, Queries: tracedQ, GitHub: h.client, TokenSource: tracedAuth, TTL: time.Minute}
@@ -188,49 +176,9 @@ func newTracedGraphQLHarness(t *testing.T) (*evidenceHarness, *testutil.SQLRecor
 
 	runVars := func(c *http.Client, query string, vars map[string]any) string {
 		t.Helper()
-		me, err := c.Get(h.api.URL + "/auth/me")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var session struct {
-			CSRFToken string `json:"csrfToken"`
-		}
-		if err := json.NewDecoder(me.Body).Decode(&session); err != nil {
-			me.Body.Close()
-			t.Fatal(err)
-		}
-		me.Body.Close()
-		payload := map[string]any{"query": query}
-		if vars != nil {
-			payload["variables"] = vars
-		}
-		body, err := json.Marshal(payload)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req, err := http.NewRequest("POST", h.api.URL+"/graphql-traced", bytes.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", "http://app.test")
-		req.Header.Set("X-CSRF-Token", session.CSRFToken)
 		rec.Start()
-		resp, err := c.Do(req)
-		if err != nil {
-			rec.Stop()
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			rec.Stop()
-			t.Fatal(err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("status %d: %s", resp.StatusCode, b)
-		}
-		return string(b)
+		defer rec.Stop()
+		return h.runAtVars(c, "/graphql-traced", query, vars)
 	}
 	return h, rec, runVars
 }
@@ -474,8 +422,8 @@ func TestSelectedRepositoriesActivityBatchesAcrossRepos(t *testing.T) {
 		}
 	}
 
-	const q = `{
-		selectedRepositories(first: 2) {
+	const q = `query SelectedActivity($first: Int!) {
+		selectedRepositories(first: $first) {
 			nodes {
 				id fullName
 				activity {
@@ -488,12 +436,17 @@ func TestSelectedRepositoriesActivityBatchesAcrossRepos(t *testing.T) {
 			}
 		}
 	}`
-	warmAccessCache(runVars, rec, alice, q, nil)
+	warmAccessCache(runVars, rec, alice, q, map[string]any{"first": 2})
 
-	raw := runVars(alice, q, nil)
-	qs := rec.Stop()
-	if got := countActivityStatusSQL(qs); got != 4 {
-		t.Fatalf("expected 4 batched activity SQL queries across 2 repos, got %d: %v", got, qs)
+	_ = runVars(alice, q, map[string]any{"first": 1})
+	qs1 := rec.Stop()
+	count1 := countActivityStatusSQL(qs1)
+
+	raw := runVars(alice, q, map[string]any{"first": 2})
+	qs2 := rec.Stop()
+	count2 := countActivityStatusSQL(qs2)
+	if count1 == 0 || count2 != count1 {
+		t.Fatalf("expected constant batched activity SQL count across 1 vs 2 repos, got first=1: %d (%v), first=2: %d (%v)", count1, qs1, count2, qs2)
 	}
 	var out struct {
 		Data struct {

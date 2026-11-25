@@ -1,6 +1,7 @@
 package issues
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -42,7 +43,7 @@ func (s *Service) view(row db.GetWriteOperationRow) opView {
 		if json.Unmarshal(row.Draft, &d) == nil && d.Title != "" {
 			q += ` in:title "` + strings.ReplaceAll(d.Title, `"`, "") + `"`
 		}
-		v.SearchURL = s.GitHubURL + "/" + row.RepositoryName + "/issues?q=" + url.QueryEscape(q)
+		v.SearchURL = strings.TrimRight(s.GitHubURL, "/") + "/" + row.RepositoryName + "/issues?q=" + url.QueryEscape(q)
 	}
 	return v
 }
@@ -145,8 +146,8 @@ func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request, settleSt
 	if !ok {
 		return 0, db.GetWriteOperationRow{}, d, snap, false
 	}
-	if settleStale && scope.State == "pending" {
-		if err := s.Queries.FailStalePendingOperations(r.Context(), userID); err != nil {
+	if settleStale && scope.StalePending.Bool {
+		if err := s.Queries.FailStalePendingOperationByID(r.Context(), opID); err != nil {
 			s.internal(w, err)
 			return 0, db.GetWriteOperationRow{}, d, snap, false
 		}
@@ -202,13 +203,16 @@ func (s *Service) statusLabelState(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		for _, l := range statusLabels {
-			exists, err := s.GitHub.LabelExists(r.Context(), token, d.Repo.FullName, l.name)
-			if err != nil {
-				s.upstream(w, r.Context(), userID, err)
-				return
-			}
-			out.Labels = append(out.Labels, label{l.name, exists})
+		exists, err := mapConcurrent(r.Context(), statusLabels, func(ctx context.Context, l statusLabel) (bool, error) {
+			return s.GitHub.LabelExists(ctx, token, d.Repo.FullName, l.name)
+		})
+		if err != nil {
+			s.upstream(w, r.Context(), userID, err)
+			return
+		}
+		out.Labels = make([]label, len(statusLabels))
+		for i, l := range statusLabels {
+			out.Labels[i] = label{l.name, exists[i]}
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
