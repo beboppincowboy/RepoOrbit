@@ -1,9 +1,8 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { generateIdempotencyKey } from "@/components/issue-editor";
 import { statusLabelsQueryKey, writeOperationsQueryKey } from "@/components/write-history";
-import { canReplayWithSameKey, disableStatusLabels, enableStatusLabels, fetchStatusLabels, mayHaveBeenRecorded, type WriteOperation } from "@/lib/api";
+import { canReplayWithSameKey, disableStatusLabels, enableStatusLabels, fetchStatusLabels, generateIdempotencyKey, mayHaveBeenRecorded, type WriteOperation } from "@/lib/api";
 
 // The three labels and the Board state each stands for (ADR 0003). Backlog is an open issue without one; Done is closed.
 const columns: Record<string, string> = { "status:todo": "Todo", "status:in-progress": "In Progress", "status:review": "In Review" };

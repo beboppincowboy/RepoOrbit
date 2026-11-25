@@ -19,9 +19,9 @@ import {
   recordOverviewUnavailable,
   selectRepositoryVisibility,
   selectedRepositoriesKey,
+  useRepositoryVisibility,
   useSelectedRepositories,
   useSelectedRepositoryMetadata,
-  useSelectionVisibility,
   viewerKeyOf,
 } from "@/lib/selected-repositories";
 import {
@@ -179,8 +179,8 @@ function RepositoryWorkspace() {
   const demo = session.mode === "demo";
   const selection = useSelectedRepositories(session);
   const metadata = useSelectedRepositoryMetadata(session);
-  const visibility = useSelectionVisibility(session);
-  const rowVisibility = selectRepositoryVisibility(metadata, selection, visibility, repositoryId);
+  const repoVisibility = useRepositoryVisibility(session, repositoryId);
+  const rowVisibility = selectRepositoryVisibility(metadata, selection, repoVisibility, repositoryId);
   const row = rowVisibility.row;
   const accessLost = query.isSuccess && overview === null;
   const accessRejected = query.error instanceof RepositoryAccessUnverifiedError || accessLost;
