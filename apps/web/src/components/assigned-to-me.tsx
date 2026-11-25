@@ -8,7 +8,7 @@ import type { AssignedIssue, MetricWindow } from "@/lib/api";
 export function AssignedToMeList({ issues, days }: { issues: AssignedIssue[]; days: MetricWindow }) {
   if (!issues.length) return <p className={emptyListClass}>No open issues are assigned to you.</p>;
   return [...BOARD_STATUSES, null].map(status => {
-    const rows = issues.filter(issue => (issue.status ?? null) === status);
+    const rows = issues.filter(issue => issue.status === status);
     if (!rows.length) return null;
     const name = status ? STATUS_NAMES[status] : "No status source";
     const id = `assigned-${status ?? "none"}`;
