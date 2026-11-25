@@ -292,7 +292,9 @@ func TestIssueSyncFinishesWithoutFetching(t *testing.T) {
 	if _, err := e.pool.Exec(ctx, `UPDATE selections SET deselected_at=now() WHERE repository_id=71`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.pool.Exec(ctx, `INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES (72, 'demo/x', '', false, true)`); err != nil {
+	e.store(uid, 72, false)
+	request(72)
+	if _, err := e.pool.Exec(ctx, `UPDATE repositories SET is_demo=true WHERE id=72`); err != nil {
 		t.Fatal(err)
 	}
 	for name, repoID := range map[string]int64{"current": 70, "no eligible selection": 71, "demo": 72, "missing": 999} {
