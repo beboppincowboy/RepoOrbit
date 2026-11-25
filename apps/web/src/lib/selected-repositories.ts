@@ -9,6 +9,7 @@ import {
   type CrossRepositoryOverview,
   type MetricWindow,
   type RepositoryDetail,
+  type RepositoryConnection,
   type SelectedRepository,
   type SelectedRepositoryBatch,
   type SelectedRepositoryPage,
@@ -173,7 +174,6 @@ export function useSelectedRepositories(session: ViewerSession) {
         });
       }
       applyDetailOutcomes(queryClient, session, updates, startedAtSeq);
-      recordSelectionPage(queryClient, session, page, pageParam === null);
       return { ...page, startedAtSeq };
     },
     initialPageParam: null as string | null,
@@ -183,9 +183,14 @@ export function useSelectedRepositories(session: ViewerSession) {
 
 export function useSelectedRepositoryMetadata(session: ViewerSession) {
   const fetchPage = useSelectedRepositoryMetadataPage(session);
+  const queryClient = useQueryClient();
   return useInfiniteQuery({
     queryKey: [...selectedRepositoriesKey(session), "metadata"],
-    queryFn: ({ pageParam }) => fetchPage(pageParam),
+    queryFn: async ({ pageParam }) => {
+      const page = await fetchPage(pageParam);
+      recordSelectionPage(queryClient, session, page, pageParam === null);
+      return page;
+    },
     initialPageParam: null as string | null,
     getNextPageParam: last => (last.hasNextPage ? last.endCursor : undefined),
   });
@@ -542,11 +547,11 @@ function recordOutOfSelection(queryClient: QueryClient, session: ViewerSession, 
   }
 }
 
-function recordSelectionPage(queryClient: QueryClient, session: ViewerSession, page: SelectedRepositoryPage, startsPass: boolean) {
+function recordSelectionPage(queryClient: QueryClient, session: ViewerSession, page: RepositoryConnection, startsPass: boolean) {
   const viewerKey = viewerKeyOf(session);
   const pass = startsPass ? { ids: new Set<string>(), complete: true } : selectionPassByViewer.get(viewerKey);
   if (!pass) return;
-  for (const batch of page.batches) for (const repo of batch.repositories) pass.ids.add(repo.id);
+  for (const repo of page.nodes) pass.ids.add(repo.id);
   pass.complete &&= page.withheld === 0 && !page.retryAt;
   selectionPassByViewer.set(viewerKey, pass);
   if (page.hasNextPage) return;
