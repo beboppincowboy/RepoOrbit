@@ -1,8 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { demo, mockSelected, mockSession, selectedRepo, signedIn } from './mocks';
 
-// The Board tab (U6d U4): columns from status labels, filters, the task drawer and browser-only staging. Nothing is
-// sent to GitHub before Save, so every test also checks that no POST reached the API.
 
 const covered = { covered: true, reason: null, through: '2026-11-17T08:00:00Z' };
 const stream = { phase: 'current', boundary: '2026-08-01T00:00:00Z', catchupThrough: null, lastSuccessAt: '2026-11-17T08:00:00Z', failureCode: null, jobState: 'queued', nextAttemptAt: '2026-11-17T09:00:00Z' };

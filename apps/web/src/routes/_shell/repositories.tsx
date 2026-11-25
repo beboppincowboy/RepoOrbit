@@ -13,13 +13,11 @@ export const Route = createFileRoute("/_shell/repositories")({
   component: Repositories,
 });
 
-// Keys are the ?install= values GitHub's post-install redirect gets from the backend (repositories.Service.Installed).
 const installMessages: Record<string, string> = { ok: "The GitHub App was installed. Private repositories it can reach are listed below.", rejected: "That installation could not be verified for your account, so it was ignored.", failed: "Could not confirm the installation. Try refreshing in a moment." };
 
 type Outcome = { ok: boolean; text: string };
 const plural = (n: number) => (n === 1 ? "repository" : "repositories");
 
-// Checkbox selection (R2). Nothing changes on the server until Apply; each repository's result is reported separately.
 function Repositories() {
   const { session } = Route.useRouteContext();
   const search = Route.useSearch();
@@ -38,14 +36,12 @@ function Repositories() {
     getNextPageParam: last => (last.nextPage > 0 ? last.nextPage : undefined),
     enabled: !demo,
   });
-  // Demo mode has no GitHub list: it shows the demo selection read-only, as the prototype does.
   const selection = useSelectedRepositories(session);
   const demoRows: ListedRepo[] = flattenSelectedRepositoryRows(selection)
     .filter(row => row.detail?.state === "available")
     .map(({ repo }) => ({ id: repo.id, fullName: repo.fullName, description: repo.description, private: false, selected: true, syncState: repo.syncState }));
   const pages: OwnedPage[] = query.data?.pages ?? [];
   const rows = demo ? demoRows : pages.flatMap(p => p.repositories);
-  // Demo pages the selection; real mode pages the owned GitHub list.
   const pager = demo ? selection : query;
   const listing = pages.at(-1);
   const checked = (repo: ListedRepo) => (repo.id in draft ? draft[repo.id] : repo.selected);
@@ -61,7 +57,6 @@ function Repositories() {
     navigate({ search: prev => ({ ...prev, ...patch }), replace: true });
   }
 
-  // Applies each change in turn. A failure only affects its own repository, so the rest still go through.
   async function apply() {
     setApplying(true);
     setOutcomes({});
@@ -78,7 +73,6 @@ function Repositories() {
         next[repo.id] = { ok: false, text: e instanceof Error ? e.message : "Something went wrong." };
       }
     }
-    // Show successes at once; the refetch below reconciles with GitHub.
     queryClient.setQueryData<InfiniteData<OwnedPage>>(["owned"], old => old && { ...old, pages: old.pages.map(p => ({ ...p, repositories: p.repositories.map(r => (done.has(r.id) ? { ...r, selected: done.get(r.id)!, syncState: done.get(r.id)! ? "awaiting-sync" as const : "not-synchronized" as const } : r)) })) });
     setDraft({});
     setOutcomes(next);

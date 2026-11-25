@@ -1,12 +1,9 @@
-// Browser-local issue drafts (U6b) and staged Board cards (U6d), one localStorage entry each, all under one prefix
-// per viewer so logout and confirmed access loss can wipe them. Every helper no-ops without window or storage access.
 const DRAFT_PREFIX = "repoorbit:issue-draft:";
 
 function repositoryDraftPrefix(viewerKey: string, repositoryId: string): string {
   return `${DRAFT_PREFIX}${viewerKey}:${repositoryId}:`;
 }
 
-// Every staged Board card key of one viewer and repository starts with this.
 export function boardDraftPrefix(viewerKey: string, repositoryId: string): string {
   return `${repositoryDraftPrefix(viewerKey, repositoryId)}board:`;
 }
@@ -28,7 +25,6 @@ function storageKeys(prefix: string): string[] {
   }
 }
 
-// Removes every editor draft and staged Board card of one viewer and repository.
 export function clearRepositoryIssueDrafts(viewerKey: string, repositoryId: string): void {
   for (const key of storageKeys(repositoryDraftPrefix(viewerKey, repositoryId))) removeStorage(key);
 }
@@ -46,7 +42,6 @@ export function readStorage<T>(key: string): T | null {
   }
 }
 
-// Every object readStorage finds under a key starting with prefix.
 export function readStorageByPrefix<T>(prefix: string): T[] {
   return storageKeys(prefix).map(key => readStorage<T>(key)).filter(value => value !== null);
 }

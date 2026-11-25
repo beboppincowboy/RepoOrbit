@@ -43,17 +43,13 @@ type env struct {
 	client *githubapp.Client
 	issues *issues.Service
 	srv    *httptest.Server
-	around atomic.Pointer[func(http.ResponseWriter, *http.Request, http.Handler)] // see intercept
+	around atomic.Pointer[func(http.ResponseWriter, *http.Request, http.Handler)]
 }
 
-// intercept routes every fake GitHub request through f, which serves it by calling next. It lets a test interleave
-// steps with a request deterministically.
 func (e *env) intercept(f func(w http.ResponseWriter, r *http.Request, next http.Handler)) {
 	e.around.Store(&f)
 }
 
-// setup wires the real auth middleware, repository API and issue commands to a migrated database and a fake GitHub,
-// the way cmd/api does.
 func setup(t *testing.T) *env {
 	t.Helper()
 	return setupWithTracer(t, nil)
@@ -105,7 +101,6 @@ func setupWithTracer(t *testing.T, tr pgx.QueryTracer) *env {
 	return e
 }
 
-// repo creates a repository on the fake GitHub and its local row (as a selection would).
 func (e *env) repo(owner, name string, private bool) int64 {
 	e.t.Helper()
 	id := e.gh.AddRepo(owner, name, private)
@@ -124,7 +119,6 @@ func (e *env) count(sql string, args ...any) int {
 	return n
 }
 
-// noInstallationAuthority fails if any issue write carried something other than a user token.
 func (e *env) noInstallationAuthority() {
 	e.t.Helper()
 	for _, tok := range e.gh.WriteTokens() {
@@ -204,7 +198,6 @@ func (u *user) githubID() int64 {
 
 func (u *user) body(resp *http.Response) []byte { b, _ := io.ReadAll(resp.Body); return b }
 
-// send is a well-formed state-changing request: same origin, CSRF token, and (when key != "") an idempotency key.
 func (u *user) send(path, key, body string) (*http.Response, operation) {
 	u.e.t.Helper()
 	headers := map[string]string{"Origin": appURL, "X-CSRF-Token": u.csrf, "Content-Type": "application/json"}
@@ -286,7 +279,6 @@ func seedIssue(number int64, author string, title string) fake.IssueFixture {
 		CreatedAt: now, UpdatedAt: now, User: fake.IssueActor{ID: 5, Login: author, Type: "User"}}
 }
 
-// Covers AE4: an eligible teammate is on the returned GitHub issue and in the local projection.
 func TestCreateAssignsEligibleTeammate(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -314,7 +306,6 @@ func TestCreateAssignsEligibleTeammate(t *testing.T) {
 	e.noInstallationAuthority()
 }
 
-// Covers AE1: forged commands and a permission lost between render and submit fail, without broader authority.
 func TestForgedAndStaleCommandsAreDenied(t *testing.T) {
 	e := setup(t)
 	e.signIn("alice")
@@ -330,7 +321,6 @@ func TestForgedAndStaleCommandsAreDenied(t *testing.T) {
 		t.Fatalf("forged requests: no csrf=%d cross-site=%d", noCSRF.StatusCode, crossSite.StatusCode)
 	}
 
-	// Render: with triage carol may manage issues, but labels or assignees on a new issue need push.
 	var caps struct{ CanCreateIssue, CanCreateIssueWithMetadata, CanManageIssues bool }
 	if resp := carol.do("GET", fmt.Sprintf("/api/repositories/%d/issue-capabilities", repo), "", nil); resp.StatusCode != 200 || json.Unmarshal(carol.body(resp), &caps) != nil || !caps.CanManageIssues || caps.CanCreateIssueWithMetadata || !caps.CanCreateIssue {
 		t.Fatalf("capabilities at render: %d %+v", resp.StatusCode, caps)
@@ -338,7 +328,6 @@ func TestForgedAndStaleCommandsAreDenied(t *testing.T) {
 	if resp, _ := carol.send(create(repo), "triage-create", `{"title":"t","labels":["bug"]}`); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("create-time labels with triage only: %d", resp.StatusCode)
 	}
-	// Submit after GitHub lowered her to read.
 	e.gh.SetPermission("carol", repo, "read")
 	if resp, _ := carol.send(changes(repo, 1), "stale-1", body); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("stale permission submit: %d %s", resp.StatusCode, carol.body(resp))
@@ -377,7 +366,6 @@ func TestSilentAssigneeOmissionIsNotSuccess(t *testing.T) {
 	if op.Outcome.Issue == nil || len(op.Outcome.Issue.Assignees) != 0 {
 		t.Fatalf("outcome must show the issue as GitHub returned it: %+v", op.Outcome.Issue)
 	}
-	// The issue exists: resubmitting the same draft returns this operation rather than a second issue.
 	if resp, again := alice.send(create(repo), "drop-1", `{"title":"Ship it","assignees":["bob"]}`); resp.StatusCode != 200 || again.ID != op.ID {
 		t.Fatalf("resubmit: %d %+v", resp.StatusCode, again)
 	}
@@ -404,20 +392,16 @@ func TestIdempotencyKeys(t *testing.T) {
 	if n := len(e.gh.Issues(repo)); n != 1 {
 		t.Fatalf("issues on GitHub: %d", n)
 	}
-	// Keys belong to a user: another user's identical key is a separate operation.
 	bob := e.signIn("bob")
 	if resp, other := bob.send(create(repo), "same-key", `{"title":"One"}`); resp.StatusCode != http.StatusCreated || other.ID == op.ID {
 		t.Fatalf("other user's key: %d %+v", resp.StatusCode, other)
 	}
 }
 
-// A timeout after the remote create stays unknown, survives a restart, never resends, and resolves only by a verified recheck.
 func TestAmbiguousCreateStaysUnknown(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
 	repo := e.repo("alice", "app", false)
-	// Each candidate fails exactly one check: content (#1), author (#2), age (#4, and #3, an identical issue opened
-	// 30 seconds before the send); #99 does not exist.
 	wrongContent, wrongAuthor, beforeSend, tooOld := seedIssue(1, "alice", "Different title"), seedIssue(2, "mallory", "Ship it"), seedIssue(3, "alice", "Ship it"), seedIssue(4, "alice", "Ship it")
 	wrongContent.Body, wrongAuthor.Body, beforeSend.Body, tooOld.Body = "details", "details", "details", "details"
 	wrongContent.User.ID, beforeSend.User.ID, tooOld.User.ID = alice.githubID(), alice.githubID(), alice.githubID()
@@ -437,7 +421,7 @@ func TestAmbiguousCreateStaysUnknown(t *testing.T) {
 	if stateAtSend != "unknown" {
 		t.Fatalf("a process death mid-send would leave %q, not unknown", stateAtSend)
 	}
-	time.Sleep(time.Second) // let the fake finish creating
+	time.Sleep(time.Second)
 	e.gh.SetIssueWriteFault(fake.IssueWriteFault{})
 	e.client.HTTP.Timeout = 5 * time.Second
 	if n := len(e.gh.Issues(repo)); n != 5 {
@@ -453,7 +437,6 @@ func TestAmbiguousCreateStaysUnknown(t *testing.T) {
 		t.Fatalf("a resubmission created another issue: %d", n)
 	}
 
-	// Restart: a new service over the same database still reports unknown and sends nothing.
 	restarted := &issues.Service{Pool: e.pool, Queries: db.New(e.pool), GitHub: e.client, Access: e.issues.Access, GitHubURL: e.issues.GitHubURL}
 	api := http.NewServeMux()
 	restarted.Register(api)
@@ -486,7 +469,6 @@ func TestAmbiguousCreateStaysUnknown(t *testing.T) {
 	}
 }
 
-// Classification of definite and ambiguous upstream answers to a create.
 func TestCreateErrorClassification(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -511,7 +493,6 @@ func TestCreateErrorClassification(t *testing.T) {
 	}
 }
 
-// Add/remove intent never replaces values someone else changed; the audit row names the actor and holds no secrets.
 func TestAddRemovePreservesConcurrentValues(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
@@ -526,7 +507,6 @@ func TestAddRemovePreservesConcurrentValues(t *testing.T) {
 	seed.Labels = []fake.IssueLabel{{ID: 1, Name: "bug"}, {ID: 2, Name: "external"}}
 	seed.Assignees = []fake.IssueActor{{ID: 11, Login: "bob", Type: "User"}}
 	e.gh.SetIssues(repo, seed)
-	// Someone else edits the issue after alice rendered it.
 	seed.Labels = append(seed.Labels, fake.IssueLabel{ID: 3, Name: "urgent"})
 	seed.Assignees = append(seed.Assignees, fake.IssueActor{ID: 12, Login: "erin", Type: "User"})
 	e.gh.SetIssues(repo, seed)
@@ -566,7 +546,6 @@ func TestAddRemovePreservesConcurrentValues(t *testing.T) {
 	e.noInstallationAuthority()
 }
 
-// Another viewer cannot see an actor's operations; losing private access wipes only the affected actor's drafts.
 func TestOperationsArePrivateToActor(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -590,8 +569,6 @@ func TestOperationsArePrivateToActor(t *testing.T) {
 		t.Fatalf("own read: %d %+v", resp.StatusCode, own)
 	}
 
-	// Private repository: alice reaches it through her installation; bob's operation there is a fixture, since the fake
-	// models private reads as owner-only.
 	private := e.repo("alice", "vault", true)
 	e.gh.Install("alice", 7001, private)
 	resp, mine := alice.send(create(private), "vault-1", `{"title":"Quarterly secret","body":"private draft","labels":["confidential"]}`)
@@ -612,9 +589,6 @@ func TestOperationsArePrivateToActor(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// An installation event names no repositories: the private-repository cleanup job, which knows from the app
-	// inventory which installations still cover the repository, wipes drafts (see the ingestion cleanup tests). Here
-	// alice reaches the repository through a second installation too, so nothing may be wiped yet.
 	e.gh.Install("alice", 7002, private)
 	if _, err := e.pool.Exec(context.Background(), `INSERT INTO installations (user_id, installation_id, account_login) VALUES ($1, 7002, 'alice')`, alice.id); err != nil {
 		t.Fatal(err)
@@ -628,7 +602,6 @@ func TestOperationsArePrivateToActor(t *testing.T) {
 	if drafts(alice.id) != 0 || drafts(bob.id) != 1 {
 		t.Fatalf("user revocation: alice=%d bob=%d", drafts(alice.id), drafts(bob.id))
 	}
-	// The wipe also redacts the outcome: GitHub's issue number, link and state stay; its text and names go.
 	var outcome string
 	if err := e.pool.QueryRow(context.Background(), `SELECT outcome::text FROM write_operations WHERE id = $1`, mine.ID).Scan(&outcome); err != nil {
 		t.Fatal(err)
@@ -637,7 +610,6 @@ func TestOperationsArePrivateToActor(t *testing.T) {
 		t.Fatalf("outcome not redacted: %s", outcome)
 	}
 	e.gh.Uninstall(7002)
-	// Access lost with no webhook: the next read denies and wipes the actor's draft.
 	fixture(alice.id, "alice-3")
 	e.gh.Uninstall(7001)
 	if resp, _ := alice.get(opPath(mine.ID)); resp.StatusCode != http.StatusNotFound {
@@ -648,7 +620,6 @@ func TestOperationsArePrivateToActor(t *testing.T) {
 	}
 }
 
-// Commands never trust the cached 30-second listing: access removed on GitHub after a cached read denies the write.
 func TestCommandsBypassCachedAccess(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -658,7 +629,7 @@ func TestCommandsBypassCachedAccess(t *testing.T) {
 	if resp := alice.do("GET", fmt.Sprintf("/api/repositories/%d/issue-capabilities", repo), "", nil); resp.StatusCode != 200 {
 		t.Fatalf("render: %d", resp.StatusCode)
 	}
-	e.gh.Uninstall(7001) // nothing local learns of this, so the cached listing still holds
+	e.gh.Uninstall(7001)
 	if resp, _ := alice.send(create(repo), "after-uninstall", `{"title":"Private"}`); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("create after access loss: %d", resp.StatusCode)
 	}
@@ -719,7 +690,6 @@ func TestInvalidInputIsRejected(t *testing.T) {
 	}
 }
 
-// Two overlapping creates of the same content under different keys reach GitHub once: the other answers 409.
 func TestOverlappingFreshKeyCreatesSendOnce(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -734,10 +704,10 @@ func TestOverlappingFreshKeyCreatesSendOnce(t *testing.T) {
 			}
 		}
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/assignees/bob"): // the last pre-flight read before the operation is recorded
+		case strings.HasSuffix(r.URL.Path, "/assignees/bob"):
 			arrived <- struct{}{}
 			wait(release, 5*time.Second)
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues"): // keep the first create unresolved
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues"):
 			wait(sent, 2*time.Second)
 		}
 		next.ServeHTTP(w, r)
@@ -757,7 +727,7 @@ func TestOverlappingFreshKeyCreatesSendOnce(t *testing.T) {
 		}
 	}
 	close(release)
-	first := <-statuses // the refused one, while the other is still being sent (or, unfixed, both after the hold)
+	first := <-statuses
 	close(sent)
 	got := []int{first, <-statuses}
 	slices.Sort(got)
@@ -769,7 +739,6 @@ func TestOverlappingFreshKeyCreatesSendOnce(t *testing.T) {
 	}
 }
 
-// A revocation committing while a confirmed outcome is being recorded neither deadlocks nor loses the outcome.
 func TestFinishAndRevocationDoNotDeadlock(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -778,7 +747,6 @@ func TestFinishAndRevocationDoNotDeadlock(t *testing.T) {
 	ctx := context.Background()
 	revoked := make(chan error, 1)
 	e.gh.SetIssueWriteFault(fake.IssueWriteFault{Before: func() {
-		// Hold the fence rows the way InvalidateAccess does, let the server record its outcome, then wipe drafts.
 		tx, err := e.pool.Begin(ctx)
 		if err == nil {
 			err = accessfence.BumpAccess(ctx, tx, accessfence.ScopeUser, alice.id)
@@ -807,7 +775,6 @@ func TestFinishAndRevocationDoNotDeadlock(t *testing.T) {
 	if err := <-revoked; err != nil {
 		t.Fatalf("revocation: %v", err)
 	}
-	// Access moved during the write: the recorded operation is withheld from the response.
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, alice.body(resp))
 	}
@@ -820,8 +787,6 @@ func TestFinishAndRevocationDoNotDeadlock(t *testing.T) {
 	}
 }
 
-// An installation revocation committing mid-write wipes no draft by itself, so the response must not carry it: the
-// operation is withheld, on the submit and on a replay of its key.
 func TestSubmitWithholdsOperationWhenAccessMoved(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -846,17 +811,16 @@ func TestSubmitWithholdsOperationWhenAccessMoved(t *testing.T) {
 	}
 }
 
-// A revocation that commits while access is being checked is never absorbed into the command's fence snapshot.
 func TestRevocationDuringAccessCheckIsNotAbsorbed(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
-	repo := e.repo("bob", "lib", false) // public and not alice's: the check ends by asking GitHub for the repository
+	repo := e.repo("bob", "lib", false)
 	var once sync.Once
 	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
 		rec := httptest.NewRecorder()
 		next.ServeHTTP(rec, r)
 		if r.URL.Path == fmt.Sprintf("/repositories/%d", repo) {
-			once.Do(func() { // GitHub answered "public"; the repository is privatized before the answer arrives
+			once.Do(func() {
 				e.gh.SetPrivate(repo, true)
 				if err := db.InTx(context.Background(), e.pool, func(tx pgx.Tx) error {
 					return accessfence.InvalidateAccess(context.Background(), tx, accessfence.ScopeRepository, repo)
@@ -879,7 +843,6 @@ func TestRevocationDuringAccessCheckIsNotAbsorbed(t *testing.T) {
 	}
 }
 
-// Operation reads check access fresh: a cached listing never serves a draft after access ended.
 func TestOperationReadsBypassCachedAccess(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -890,7 +853,7 @@ func TestOperationReadsBypassCachedAccess(t *testing.T) {
 	if op.State != "succeeded" {
 		t.Fatalf("create: %+v", op)
 	}
-	e.gh.Uninstall(7001) // nothing local learns of this, so the cached listing still holds
+	e.gh.Uninstall(7001)
 	if resp, _ := alice.get(opPath(op.ID)); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("read after access loss: %d", resp.StatusCode)
 	}
@@ -904,7 +867,7 @@ func TestAuthorClosesOwnIssueWithoutTriage(t *testing.T) {
 	e := setup(t)
 	e.signIn("alice")
 	carol := e.signIn("carol")
-	repo := e.repo("alice", "app", false) // carol can only read
+	repo := e.repo("alice", "app", false)
 	mine, theirs := seedIssue(1, "carol", "Mine"), seedIssue(2, "alice", "Theirs")
 	mine.User.ID = carol.githubID()
 	e.gh.SetIssues(repo, mine, theirs)
@@ -924,7 +887,6 @@ func TestAuthorClosesOwnIssueWithoutTriage(t *testing.T) {
 	}
 }
 
-// holdLabelWrites delays every label add until release closes, then applies it: a write still in flight.
 func holdLabelWrites(e *env) (release func()) {
 	ch := make(chan struct{})
 	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
@@ -951,8 +913,6 @@ func (e *env) waitForLabel(repo int64, label string) {
 	e.t.Fatalf("label %q never applied", label)
 }
 
-// An ambiguous change whose effect is not visible yet stays unknown; a recheck confirms it once it shows, and never
-// fails it while the original request may still land.
 func TestAmbiguousUpdateResolvesOnlyWhenConfirmed(t *testing.T) {
 	t.Run("timed out", func(t *testing.T) {
 		e := setup(t)
@@ -1000,7 +960,6 @@ func TestAmbiguousUpdateResolvesOnlyWhenConfirmed(t *testing.T) {
 	})
 }
 
-// A create rechecked after its draft was wiped links the issue but cannot claim the requested assignment.
 func TestRecheckAfterWipeDoesNotClaimAssignment(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1015,14 +974,13 @@ func TestRecheckAfterWipeDoesNotClaimAssignment(t *testing.T) {
 	time.Sleep(time.Second)
 	e.gh.SetIssueWriteFault(fake.IssueWriteFault{})
 	e.client.HTTP.Timeout = 5 * time.Second
-	if _, err := e.pool.Exec(context.Background(), `UPDATE write_operations SET draft = NULL`); err != nil { // access lost and regained
+	if _, err := e.pool.Exec(context.Background(), `UPDATE write_operations SET draft = NULL`); err != nil {
 		t.Fatal(err)
 	}
 	resp, got := alice.send(opPath(op.ID)+"/recheck", "", fmt.Sprintf(`{"issueNumber":%d}`, e.gh.Issues(repo)[0].Number))
 	if resp.StatusCode != 200 || got.State != "failed" || got.IssueNumber == nil {
 		t.Fatalf("recheck: %d %+v", resp.StatusCode, got)
 	}
-	// Recorded after the wipe, the outcome is stored redacted: the unverified request survives only as a count.
 	if n := e.count(`SELECT count(*) FROM write_operations WHERE (outcome->>'unappliedCount')::int = 1`); n != 1 {
 		t.Fatalf("unverified assignment not recorded: %d", n)
 	}
@@ -1045,9 +1003,6 @@ func TestAssigneeSwapAtLimit(t *testing.T) {
 	}
 }
 
-// A create recorded but never marked sent (the process stopped first, so nothing reached GitHub) does not block the
-// same content forever: once stale it is failed and a fresh key proceeds. A recent pending create still blocks, with
-// its real operation id.
 func TestStalePendingCreateDoesNotBlockRetry(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1083,8 +1038,6 @@ func TestStalePendingCreateDoesNotBlockRetry(t *testing.T) {
 	}
 }
 
-// Two changes to one issue read back within the same GitHub second: the later readback is projected last, so an older
-// readback never overwrites a newer one even though their updated_at ties.
 func TestLaterReadbackWinsSameSecondProjection(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1110,7 +1063,7 @@ func TestLaterReadbackWinsSameSecondProjection(t *testing.T) {
 				m["updated_at"] = second.Format(time.RFC3339) // GitHub's one-second resolution
 				b, _ = json.Marshal(m)
 			}
-			if aPosted.Load() && captured.CompareAndSwap(false, true) { // A's readback: fetched now, delivered late
+			if aPosted.Load() && captured.CompareAndSwap(false, true) {
 				close(readA)
 				select {
 				case <-proceed:
@@ -1140,7 +1093,6 @@ func TestLaterReadbackWinsSameSecondProjection(t *testing.T) {
 		resp, _ := alice.send(changes(repo, 1), "b-1", `{"labels":{"add":["b"]}}`)
 		doneB <- resp.StatusCode
 	}()
-	// Unserialized, B finishes now; serialized, B waits for A's projection.
 	statusB := 0
 	for deadline := time.Now().Add(3 * time.Second); statusB == 0 && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		select {
@@ -1171,8 +1123,6 @@ func TestLaterReadbackWinsSameSecondProjection(t *testing.T) {
 	}
 }
 
-// A blocker that resolves between the conflicting insert and its lookup may have been sent and may have succeeded:
-// the new create is refused (409 naming it), never resent.
 func TestBlockerResolvingDuringConflictIsNotResent(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1184,7 +1134,6 @@ func TestBlockerResolvingDuringConflictIsNotResent(t *testing.T) {
 		VALUES ($1, $2, 'blocker', 'create', '\x00', $3, '{"title":"Stuck","body":"body"}', 'pending', now() - interval '2 minutes') RETURNING id`, alice.id, repo, sum[:]).Scan(&blocker); err != nil {
 		t.Fatal(err)
 	}
-	// Row-lock the blocker: the new insert still conflicts at once, but its stale-pending recovery waits on the lock.
 	tx, err := e.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -1204,7 +1153,6 @@ func TestBlockerResolvingDuringConflictIsNotResent(t *testing.T) {
 	if !waited {
 		t.Fatal("the conflicting create never waited on the blocker")
 	}
-	// The blocker was sent after all, and succeeded.
 	issue := seedIssue(1, "alice", "Stuck")
 	issue.Body = "body"
 	e.gh.SetIssues(repo, issue)
@@ -1224,8 +1172,6 @@ func TestBlockerResolvingDuringConflictIsNotResent(t *testing.T) {
 	}
 }
 
-// singleConnection rewires the API onto a pool of one connection, so any request that needs a second connection
-// while it holds one never completes.
 func (e *env) singleConnection() {
 	e.t.Helper()
 	cfg := e.pool.Config()
@@ -1258,7 +1204,6 @@ func within(t *testing.T, d time.Duration, f func() *http.Response) *http.Respon
 	}
 }
 
-// A readback answered 401 revokes the actor only after the locked transaction released its connection.
 func TestReadbackUnauthorizedDoesNotStarvePool(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1267,7 +1212,7 @@ func TestReadbackUnauthorizedDoesNotStarvePool(t *testing.T) {
 	e.singleConnection()
 	var reads atomic.Int32
 	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
-		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/1") && reads.Add(1) == 2 { // the readback
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues/1") && reads.Add(1) == 2 {
 			http.Error(w, "bad credentials", http.StatusUnauthorized)
 			return
 		}
@@ -1277,7 +1222,7 @@ func TestReadbackUnauthorizedDoesNotStarvePool(t *testing.T) {
 		r, _ := alice.send(changes(repo, 1), "ro-1", `{"labels":{"add":["a"]}}`)
 		return r
 	})
-	if resp.StatusCode != http.StatusServiceUnavailable { // the revocation moved the actor's fence: the operation is withheld
+	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status %d %s", resp.StatusCode, alice.body(resp))
 	}
 	if n := e.count(`SELECT count(*) FROM sessions WHERE user_id = $1`, alice.id); n != 0 {
@@ -1288,7 +1233,6 @@ func TestReadbackUnauthorizedDoesNotStarvePool(t *testing.T) {
 	}
 }
 
-// A recheck that cannot confirm answers its 409 after the locked transaction released its connection.
 func TestRecheckMismatchDoesNotStarvePool(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1309,8 +1253,6 @@ func TestRecheckMismatchDoesNotStarvePool(t *testing.T) {
 	}
 }
 
-// A create that fails before anything is sent (here GitHub reports a full name the client cannot address) is failed,
-// not unknown: nothing can have been applied.
 func TestPreSendCreateErrorIsFailed(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1324,8 +1266,6 @@ func TestPreSendCreateErrorIsFailed(t *testing.T) {
 	}
 }
 
-// An operation that stops being pending before it is marked sent (a concurrent stale-pending recovery failed it) is
-// answered as a replay, and nothing is sent.
 func TestLostSendClaimAnswersRecordedOperation(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1343,8 +1283,6 @@ func TestLostSendClaimAnswersRecordedOperation(t *testing.T) {
 	}
 }
 
-// An update recorded but never marked sent (the process stopped in between) cannot stay pending forever: once stale,
-// a replay of its key, a read, or a listing fails it as never sent, and nothing is sent.
 func TestStalePendingUpdateIsFailedOnRead(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1356,7 +1294,6 @@ func TestStalePendingUpdateIsFailedOnRead(t *testing.T) {
 		if resp.StatusCode != http.StatusCreated || op.State != "succeeded" {
 			t.Fatalf("update: %d %+v", resp.StatusCode, op)
 		}
-		// Rewind it to a row recorded two minutes ago and never marked sent.
 		if _, err := e.pool.Exec(context.Background(), `UPDATE write_operations SET state='pending', sent_at=NULL, outcome='{}', created_at=now()-interval '2 minutes' WHERE id=$1`, op.ID); err != nil {
 			t.Fatal(err)
 		}
@@ -1380,8 +1317,6 @@ func TestStalePendingUpdateIsFailedOnRead(t *testing.T) {
 	}
 }
 
-// A recheck whose body arrives after access ended and the draft was wiped must not answer with the draft it loaded
-// before reading the body.
 func TestRecheckReadsBodyBeforeLoadingOperation(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1404,7 +1339,7 @@ func TestRecheckReadsBodyBeforeLoadingOperation(t *testing.T) {
 		}
 		done <- resp
 	}()
-	time.Sleep(300 * time.Millisecond) // the handler is waiting for the body
+	time.Sleep(300 * time.Millisecond)
 	e.gh.Uninstall(7001)
 	if err := db.InTx(context.Background(), e.pool, func(tx pgx.Tx) error {
 		return accessfence.InvalidateAccess(context.Background(), tx, accessfence.ScopeInstallation, 7001)
@@ -1427,7 +1362,6 @@ func TestRecheckReadsBodyBeforeLoadingOperation(t *testing.T) {
 	}
 }
 
-// Assignee suggestions come from GitHub's assignable users, so a suggestion never fails the R12 eligibility check.
 func TestAssigneeSuggestionsListOnlyAssignableUsers(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1451,7 +1385,6 @@ func TestAssigneeSuggestionsListOnlyAssignableUsers(t *testing.T) {
 	e.noInstallationAuthority()
 }
 
-// boardIssue is an open or closed issue by alice carrying labels (spelled as given) and assignees.
 func boardIssue(number int64, state string, labels []string, assignees ...string) fake.IssueFixture {
 	issue := seedIssue(number, "alice", fmt.Sprintf("Card %d", number))
 	issue.State = state
@@ -1464,7 +1397,6 @@ func boardIssue(number int64, state string, labels []string, assignees ...string
 	return issue
 }
 
-// conflict is an update's 409 when its expect no longer matches the issue on GitHub.
 type conflict struct {
 	Error   string `json:"error"`
 	Current struct {
@@ -1486,8 +1418,6 @@ func decodeConflict(t *testing.T, resp *http.Response) conflict {
 	return c
 }
 
-// writeLog records every write the fake GitHub receives, in arrival order, as "METHOD path body". A write for which
-// reject (nil for none) is true is answered 422 instead of served.
 func (e *env) writeLog(reject func(call string) bool) func() []string {
 	var mu sync.Mutex
 	var calls []string
@@ -1509,20 +1439,18 @@ func (e *env) writeLog(reject func(call string) bool) func() []string {
 	return func() []string { mu.Lock(); defer mu.Unlock(); return slices.Clone(calls) }
 }
 
-// Covers AE9 (server side): a Board change whose expect no longer matches GitHub's status, status labels or assignees
-// is refused with the current values, before anything is recorded or sent. Permission is decided first.
 func TestBoardChangeRefusedWhenChangedOnGitHub(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
-	carol := e.signIn("carol") // read only
+	carol := e.signIn("carol")
 	repo := e.repo("alice", "app", false)
 	e.gh.SetPermission("bob", repo, "write")
 	moved := boardIssue(1, "open", []string{"status:in-progress", "bug"})
 	e.gh.SetIssues(repo, moved,
-		boardIssue(2, "open", []string{"status:review"}),                       // flagged with todo + review when staged
-		boardIssue(3, "open", []string{"status:review", "status:in-progress"}), // In Review when staged; in-progress added since
-		boardIssue(4, "open", []string{"status:todo"}, "bob"),                  // unassigned when staged
-		boardIssue(5, "open", nil),                                             // backlog, staged as todo; by alice, not carol
+		boardIssue(2, "open", []string{"status:review"}),
+		boardIssue(3, "open", []string{"status:review", "status:in-progress"}),
+		boardIssue(4, "open", []string{"status:todo"}, "bob"),
+		boardIssue(5, "open", nil),
 	)
 
 	resp, _ := alice.send(changes(repo, 1), "stale-1", `{"labels":{"add":["status:review"],"remove":["status:todo"]},"expect":{"status":"todo","assignees":[],"statusLabels":["status:todo"]}}`)
@@ -1547,8 +1475,6 @@ func TestBoardChangeRefusedWhenChangedOnGitHub(t *testing.T) {
 	}
 }
 
-// Covers AE6 (server side): a matching expect, compared case-insensitively, goes ahead and swaps the status label
-// without touching other labels; the same key then replays the operation although GitHub now shows the new status.
 func TestBoardChangeWithMatchingExpect(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -1575,8 +1501,6 @@ func TestBoardChangeWithMatchingExpect(t *testing.T) {
 	}
 }
 
-// Covers AE8: a reopen is sent before the label steps and a close after them, as completed. A closed issue matches
-// expect "done" whatever status labels the app's cleanup removed since. A rejected reopen applies no labels.
 func TestStateChangesOrderAroundLabelSteps(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")

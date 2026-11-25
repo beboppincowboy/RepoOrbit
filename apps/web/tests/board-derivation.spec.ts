@@ -2,7 +2,6 @@ import { test, expect } from '@playwright/test';
 import { IssueWriteError, canReplayWithSameKey, classifyWriteFailure, mayHaveBeenRecorded, type BoardIssue, type BoardSnapshot } from '../src/lib/api';
 import { deriveChange, isChangedOnGitHub, stageAssignees, type BoardCard, type BoardCardPhase, type BoardTarget } from '../src/lib/board';
 
-// Pure tests of the Board's change derivation (KTD2) and conflict check (KTD3); no page is opened.
 
 const ada = { login: 'ada', assignable: true };
 const t0 = '2026-11-20T10:00:00Z';

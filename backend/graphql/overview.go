@@ -76,12 +76,8 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 	)
 }
 
-// demoAssigneeID is the GitHub user ID testdata/demo.sql assigns demo issues to, standing in for auth.DemoViewer.
 const demoAssigneeID = 1
 
-// crossRepositoryOverview summarizes the viewer's selected repositories that pass the access check, under one fence:
-// unverified repositories are counted in Withheld without being named, and a fence move discards everything (ACCESS_UNVERIFIED).
-// Demo mode summarizes the demo repositories without an access check.
 func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (*model.CrossRepositoryOverview, error) {
 	if err := analytics.ValidateMetricWindowDays(days); err != nil {
 		return nil, err

@@ -96,7 +96,6 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/repositories/{id}/status-labels", s.disableStatusLabels)
 }
 
-// createDraft is a new issue as the user reviewed it.
 type createDraft struct {
 	Title     string   `json:"title"`
 	Body      string   `json:"body"`
@@ -104,36 +103,29 @@ type createDraft struct {
 	Assignees []string `json:"assignees"`
 }
 
-// delta expresses add/remove intent; values not named are never touched. Names compare case-insensitively, and one
-// name may not appear in both lists.
 type delta struct {
 	Add    []string `json:"add"`
 	Remove []string `json:"remove"`
 }
 
-// updateDraft changes an existing issue: labels and assignees by add/remove, and optionally its state.
 type updateDraft struct {
 	Labels    delta        `json:"labels"`
 	Assignees delta        `json:"assignees"`
-	State     string       `json:"state"`            // requested issue state: "" (unchanged), "open" or "closed"
-	Expect    *expectation `json:"expect,omitempty"` // Board changes only; absent, a draft marshals and hashes as before it existed
+	State     string       `json:"state"`
+	Expect    *expectation `json:"expect,omitempty"`
 }
 
-// expectation is the issue's Board-relevant state as the user staged the change over it. When the live issue differs
-// in its Board state, its assignees or, while open, its status labels (each compared case-insensitively, as sets), the
-// update is refused with 409 and current values before anything is recorded or sent.
 type expectation struct {
-	Status       string   `json:"status"` // one of boardStates
+	Status       string   `json:"status"`
 	Assignees    []string `json:"assignees"`
-	StatusLabels []string `json:"statusLabels"` // the issue's status labels, in any spelling
+	StatusLabels []string `json:"statusLabels"`
 }
 
-// issueView is an issue as GitHub returned or re-read it.
 type issueView struct {
 	Number    int64    `json:"number"`
 	URL       string   `json:"url"`
 	Title     string   `json:"title"`
-	State     string   `json:"state"` // the issue's GitHub state, "open" or "closed" (not the operation's state)
+	State     string   `json:"state"`
 	Labels    []string `json:"labels"`
 	Assignees []string `json:"assignees"`
 }
@@ -148,12 +140,11 @@ type issueView struct {
 type outcome struct {
 	Issue            *issueView `json:"issue,omitempty"`
 	Unapplied        []string   `json:"unapplied,omitempty"`
-	Created          []string   `json:"created,omitempty"` // status_labels only: the labels this operation created (the others were reused)
-	Error            string     `json:"error,omitempty"`   // a summary that never quotes credentials or content
+	Created          []string   `json:"created,omitempty"`
+	Error            string     `json:"error,omitempty"`
 	AllStepsAnswered bool       `json:"allStepsAnswered,omitempty"`
 }
 
-// opView is one write operation as the API returns it.
 type opView struct {
 	ID           int64           `json:"id"`
 	RepositoryID int64           `json:"repositoryId"`        // the repository's GitHub ID
@@ -168,9 +159,6 @@ type opView struct {
 	UpdatedAt    time.Time       `json:"updatedAt"`
 }
 
-// --- input -------------------------------------------------------------------------------------
-
-// decodeStrict reads exactly one JSON object with no unknown fields.
 func decodeStrict(w http.ResponseWriter, r *http.Request, out any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	dec.DisallowUnknownFields()
@@ -183,7 +171,6 @@ func decodeStrict(w http.ResponseWriter, r *http.Request, out any) error {
 	return nil
 }
 
-// names validates a label or login list, returning nil for an empty one.
 func names(list []string, what string, valid func(string) bool) ([]string, error) {
 	if len(list) > maxItems {
 		return nil, fmt.Errorf("at most %d %ss", maxItems, what)
@@ -259,7 +246,6 @@ func (d *updateDraft) validate() (err error) {
 	return nil
 }
 
-// matches reports whether the live issue still shows what e expects (see expectation).
 func (e *expectation) matches(issue *issueView) bool {
 	sameSet := func(a, b []string) bool {
 		within := func(x, y []string) bool { return !slices.ContainsFunc(x, func(v string) bool { return !has(y, v) }) }
@@ -272,14 +258,11 @@ func (e *expectation) matches(issue *issueView) bool {
 	return issue.State == "closed" || sameSet(live, e.StatusLabels)
 }
 
-// contentHash identifies an issue's text, so a recheck can verify a candidate even after the draft is wiped.
 func contentHash(title, body string) []byte {
 	norm := func(s string) string { return strings.ReplaceAll(strings.TrimSpace(s), "\r\n", "\n") }
 	sum := sha256.Sum256([]byte(norm(title) + "\x00" + norm(body)))
 	return sum[:]
 }
-
-// --- permissions -------------------------------------------------------------------------------
 
 // Per-action rules follow GitHub: anyone who can read may open a plain issue; labels or assignees on a new issue need
 // push (GitHub silently drops them otherwise); changing labels or assignees later and closing or reopening need
@@ -297,8 +280,6 @@ func canManage(r githubapp.Repo) bool {
 	return writable(r) && canTriage(r)
 }
 
-// --- HTTP plumbing -----------------------------------------------------------------------------
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -310,11 +291,6 @@ func pathID(r *http.Request, name string) (int64, bool) {
 	return id, err == nil && id > 0
 }
 
-// access rechecks the viewer's live access to a stored repository. It answers 404 (denied or not stored) or 503
-// (unverifiable) itself and returns ok=false. A definite denial on a private repository wipes the viewer's drafts
-// there, since no webhook may ever report that their access ended.
-// ponytail: a silently removed collaborator keeps their drafts until their next read here or a user/installation
-// revocation; handle GitHub's member webhook or sweep drafts periodically if that window matters.
 func (s *Service) access(w http.ResponseWriter, r *http.Request, userID, repoID int64, fresh bool) (repositories.Decision, bool) {
 	private, err := s.Queries.GetRepositoryIsPrivate(r.Context(), repoID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -345,9 +321,6 @@ func (s *Service) access(w http.ResponseWriter, r *http.Request, userID, repoID 
 	return d, true
 }
 
-// checkedAccess is access checked fresh against GitHub, with the fence snapshot taken before the check, so a
-// revocation committing during the check is never absorbed. The check may itself record a changed installation list
-// and move the fence; it then runs once more, and a second move answers 503.
 func (s *Service) checkedAccess(w http.ResponseWriter, r *http.Request, userID, repoID int64) (repositories.Decision, accessfence.Snapshot, bool) {
 	for attempt := 0; ; attempt++ {
 		snap, err := accessfence.Take(r.Context(), s.Pool, userID, repoID)
@@ -373,7 +346,6 @@ func (s *Service) checkedAccess(w http.ResponseWriter, r *http.Request, userID, 
 	}
 }
 
-// fenceHolds answers 503 itself and reports false when access changed since snap: what was loaded under it is withheld.
 func (s *Service) fenceHolds(w http.ResponseWriter, ctx context.Context, snap accessfence.Snapshot) bool {
 	current, err := snap.Current(ctx, s.Pool)
 	if err != nil {
@@ -387,11 +359,10 @@ func (s *Service) fenceHolds(w http.ResponseWriter, ctx context.Context, snap ac
 }
 
 func (s *Service) internal(w http.ResponseWriter, err error) {
-	log.Printf("issues: %v", err) // database errors only; GitHub errors are summarized before they get here
+	log.Printf("issues: %v", err)
 	http.Error(w, "temporarily unavailable", http.StatusInternalServerError)
 }
 
-// token returns the actor's user token, answering 401/503 itself when there is none.
 func (s *Service) token(w http.ResponseWriter, ctx context.Context, userID int64) (string, bool) {
 	token, err := s.Access.TokenSource.AccessToken(ctx, userID)
 	switch {
@@ -405,7 +376,6 @@ func (s *Service) token(w http.ResponseWriter, ctx context.Context, userID int64
 	return "", false
 }
 
-// upstream answers a failed pre-flight GitHub read (nothing was written): 401 revokes the actor, anything else is 503.
 func (s *Service) upstream(w http.ResponseWriter, ctx context.Context, userID int64, err error) {
 	if s.revokeIfUnauthorized(ctx, userID, err) {
 		http.Error(w, "sign in required", http.StatusUnauthorized)
@@ -414,8 +384,6 @@ func (s *Service) upstream(w http.ResponseWriter, ctx context.Context, userID in
 	http.Error(w, "GitHub could not be reached; nothing was sent", http.StatusServiceUnavailable)
 }
 
-// revokeIfUnauthorized revokes the actor's GitHub authorization when err is GitHub's 401 and reports whether it was.
-// The revocation takes its own pool connection, so never call it inside a transaction.
 func (s *Service) revokeIfUnauthorized(ctx context.Context, userID int64, err error) bool {
 	var api *githubapp.APIError
 	if !errors.As(err, &api) || !api.Unauthorized() {
@@ -427,9 +395,6 @@ func (s *Service) revokeIfUnauthorized(ctx context.Context, userID int64, err er
 	return true
 }
 
-// respond reads the operation back and writes it, unless access changed since snap (the snapshot the request's access
-// check was made under): then it is withheld with 503, as other fenced reads are. The operation exists and may have
-// been sent, so the client must retry under the same key, never a fresh one.
 func (s *Service) respond(w http.ResponseWriter, ctx context.Context, status int, userID, opID int64, snap accessfence.Snapshot) {
 	row, err := s.Queries.GetWriteOperation(ctx, db.GetWriteOperationParams{ID: opID, UserID: userID})
 	if err != nil {
@@ -449,23 +414,20 @@ func (s *Service) respond(w http.ResponseWriter, ctx context.Context, status int
 		return
 	}
 	if status == http.StatusCreated && row.State == "unknown" {
-		status = http.StatusAccepted // recorded and possibly applied; the outcome is not known
+		status = http.StatusAccepted
 	}
 	writeJSON(w, status, s.view(row))
 }
 
-// --- commands ----------------------------------------------------------------------------------
-
-// command is one validated write, ready to record and send.
 type command struct {
-	kind        string // "create", "update" or "status_labels"
-	issueNumber int64  // update target
-	draft       any    // *createDraft, *updateDraft or *statusLabelsDraft
-	contentHash []byte // create only
-	hasMetadata bool   // create only: labels or assignees requested
+	kind        string
+	issueNumber int64
+	draft       any
+	contentHash []byte
+	hasMetadata bool
 	assignees   []string
-	allowed     func(githubapp.Repo) bool // the per-action permission rule
-	authorMay   bool                      // update only: the issue's author may do this without allowed (close/reopen)
+	allowed     func(githubapp.Repo) bool
+	authorMay   bool
 }
 
 func (s *Service) create(w http.ResponseWriter, r *http.Request) {
@@ -507,8 +469,6 @@ func (s *Service) update(w http.ResponseWriter, r *http.Request) {
 	s.submit(sw, r, command{kind: "update", issueNumber: number, draft: &d, assignees: d.Assignees.Add, allowed: canManage, authorMay: stateOnly})
 }
 
-// replay answers a reused idempotency key: the existing operation for the same request, 422 for a different one.
-// It reports false when the key is unused.
 func (s *Service) replay(sw *submitWriter, ctx context.Context, userID int64, key string, hash []byte, snap accessfence.Snapshot) bool {
 	prior, err := s.Queries.GetWriteOperationByKey(ctx, db.GetWriteOperationByKeyParams{UserID: userID, IdempotencyKey: key})
 	switch {
@@ -634,10 +594,6 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 			return err
 		})
 	}
-	// An unresolved create of the same content blocks the insert: a second one could duplicate the issue. Only a
-	// blocker this request itself fails as a stale, never-sent pending create frees the content for one retry. Any other
-	// blocker may have been sent, and may have succeeded even if it no longer blocks, so nothing is resent: the answer
-	// is 409 naming the unresolved create, else the latest create of the same content, else 503.
 	for attempt := 0; ; attempt++ {
 		err = insert()
 		var pgErr *pgconn.PgError
@@ -673,7 +629,7 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 		return
 	}
 	switch {
-	case errors.Is(err, pgx.ErrNoRows): // the same key was recorded concurrently
+	case errors.Is(err, pgx.ErrNoRows):
 		if !s.replay(sw, ctx, userID, key, hash, snap) {
 			s.internal(sw, errors.New("idempotency key vanished"))
 		}
@@ -687,7 +643,6 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 		return
 	}
 	sw.disposition = WriteDispositionPossiblyRecorded
-	// From here the request may reach GitHub: the row says unknown first, so a crash can never read as "not sent".
 	if n, err := s.Queries.MarkWriteOperationSent(ctx, opID); err != nil {
 		s.internal(sw, fmt.Errorf("mark sent: %w", err))
 		return
@@ -704,8 +659,6 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 		state, out := s.ensureStatusLabels(ctx, userID, token, d.Repo.FullName)
 		err = s.finishStatusLabels(ctx, opID, repoID, snap, state, out)
 	case "create":
-		// A create's confirmed copy is GitHub's create response: nothing stored for the new issue is older, so it is
-		// projected without ordering against earlier readbacks and never replaces a same-second copy.
 		state, out, confirmed := s.sendCreate(ctx, userID, token, d.Repo.FullName, c.draft.(*createDraft))
 		err = s.finish(ctx, opID, repoID, snap, 0, confirmed != nil, func() (string, outcome, *githubapp.Issue, error) { return state, out, confirmed, nil })
 	default:
@@ -717,7 +670,7 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 			readErr = fetchErr
 			return state, out, confirmed, nil
 		})
-		s.revokeIfUnauthorized(ctx, userID, readErr) // only now: finish's transaction has released its connection
+		s.revokeIfUnauthorized(ctx, userID, readErr)
 	}
 	if err != nil {
 		s.internal(sw, err)
@@ -726,9 +679,6 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 	s.respond(sw, ctx, http.StatusCreated, userID, opID, snap)
 }
 
-// classify maps a failed write to an operation state and summary: an error raised before sending
-// (githubapp.ErrNotSent) or a 4xx is definite (failed); anything else may have been applied (unknown). It has no side
-// effects; callers revoke a 401 themselves (revokeIfUnauthorized).
 func classify(err error) (string, string) {
 	if errors.Is(err, githubapp.ErrNotSent) {
 		return "failed", "the request could not be prepared; nothing was sent to GitHub"
@@ -758,7 +708,6 @@ func has(list []string, v string) bool {
 	return slices.ContainsFunc(list, func(o string) bool { return strings.EqualFold(o, v) })
 }
 
-// unapplied lists requested changes that the confirmed issue does not show.
 func unapplied(issue *issueView, labels, assignees delta, state string) []string {
 	var out []string
 	for _, x := range []struct {
@@ -785,12 +734,11 @@ func unapplied(issue *issueView, labels, assignees delta, state string) []string
 
 func resolved(out outcome) string {
 	if len(out.Unapplied) > 0 {
-		return "failed" // GitHub accepted the request but did not do all of it: never reported as success
+		return "failed"
 	}
 	return "succeeded"
 }
 
-// sendCreate sends the create once. It is never retried: an ambiguous answer leaves the operation unknown.
 func (s *Service) sendCreate(ctx context.Context, userID int64, token, fullName string, d *createDraft) (string, outcome, *githubapp.Issue) {
 	issue, err := s.GitHub.CreateIssue(ctx, token, fullName, githubapp.NewIssue{Title: d.Title, Body: d.Body, Labels: d.Labels, Assignees: d.Assignees})
 	if err != nil {
@@ -834,17 +782,13 @@ func (s *Service) applyUpdate(ctx context.Context, userID int64, token, fullName
 			s.revokeIfUnauthorized(ctx, userID, err)
 			var state string
 			state, out.Error = classify(err)
-			out.AllStepsAnswered = state == "failed" // rejected or never sent; an ambiguous step may still land
+			out.AllStepsAnswered = state == "failed"
 			break
 		}
 	}
 	return out
 }
 
-// readBack reads the issue after applyUpdate: the outcome is whatever the read shows. A step without a reliable answer
-// may still land after the read, so the operation then stays unknown unless the read already shows every change;
-// without a readable result it stays unknown too, and the read's error is returned for the caller to act on (a 401
-// revokes the actor) once outside finish's transaction. It touches no database.
 func (s *Service) readBack(ctx context.Context, token, fullName string, number int64, d *updateDraft, out outcome) (string, outcome, *githubapp.Issue, error) {
 	issue, err := s.GitHub.FetchIssue(ctx, token, fullName, number)
 	if err != nil {
@@ -862,21 +806,8 @@ func (s *Service) readBack(ctx context.Context, token, fullName string, number i
 
 var errAlreadyLinked = errors.New("issue already linked to another operation")
 
-var errMismatch = errors.New("not confirmed") // a recheck read that found nothing to confirm: answer 409, record nothing
+var errMismatch = errors.New("not confirmed")
 
-// finish records the outcome of an unknown operation, as read supplies it inside the transaction, and, when the access
-// fence still holds, projects the confirmed issue locally. link records a create's issue number. With lock (an issue
-// number, 0 for none) the transaction first takes a per-issue advisory lock, so the readbacks of one issue and their
-// projections happen one at a time: the later readback is projected last and may replace a stored copy with the same
-// updated_at (GitHub's timestamps have one-second resolution). Without it a tie never replaces, and the per-issue lock
-// is taken only to project, so a signed deletion of the issue cannot interleave with the projection. The fence rows
-// are locked before the operation row, the order accessfence.InvalidateAccess takes them in, so the two cannot
-// deadlock. An unknown outcome with a confirmed read is recorded without projecting it. read runs while the
-// transaction holds a pool connection: it may call GitHub and compute, but must not use the pool (no queries, no
-// revocation) or write the HTTP response; an error it returns aborts the transaction and is returned as is, and the
-// caller acts on it after finish returns.
-// ponytail: a locked finish holds one pool connection while GitHub answers its readback; lock waiters give up after
-// 10s (the operation stays unknown and a recheck resolves it), so a crowded issue cannot exhaust the pool for good.
 func (s *Service) finish(ctx context.Context, opID, repoID int64, snap accessfence.Snapshot, lock int64, link bool, read func() (string, outcome, *githubapp.Issue, error)) error {
 	err := db.InTx(ctx, s.Pool, func(tx pgx.Tx) (err error) {
 		if lock != 0 {
@@ -910,12 +841,11 @@ func (s *Service) finish(ctx context.Context, opID, repoID int64, snap accessfen
 		}
 		n, err := s.Queries.WithTx(tx).FinishWriteOperation(ctx, db.FinishWriteOperationParams{ID: opID, State: state, Outcome: body, IssueNumber: number})
 		if err != nil || n == 0 || !current {
-			return err // access moved: keep the recorded outcome, let the next sync project the issue
+			return err
 		}
 		if lock != 0 {
 			return ingestion.ProjectConfirmedIssue(ctx, tx, repoID, *confirmed)
 		}
-		// A new issue needs no ordering against older readbacks, but a signed deletion of it must not interleave.
 		if err = ingestion.LockIssue(ctx, tx, repoID, confirmed.Number); err != nil {
 			return err
 		}
@@ -928,19 +858,9 @@ func (s *Service) finish(ctx context.Context, opID, repoID int64, snap accessfen
 	return err
 }
 
-// sendSkew is how much earlier than the recorded send a candidate issue's GitHub created_at may be.
-// ponytail: a fixed allowance for clock skew between this database and GitHub; an issue opened by hand within it,
-// with identical title and body, is indistinguishable. Widen it if real skew is larger.
 const sendSkew = 5 * time.Second
 
-// recheck resolves an unknown operation without resending it. A status_labels operation re-reads the labels under a
-// fresh Admin or Maintain check (recheckStatusLabels). A create needs the issue number the actor found on
-// GitHub; it is linked only when that issue is in this repository, authored by the actor, has the drafted title and
-// body, and was created no earlier than the send. Anything else keeps the operation unknown (409) with its draft. An
-// update is re-read: it succeeds only once every requested change shows, fails only when no request of it can still
-// land, and otherwise stays unknown (409).
 func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
-	// The body is read first: a slow body must not hold an operation loaded under access that has since ended.
 	var in struct {
 		IssueNumber int64 `json:"issueNumber"`
 	}
@@ -973,13 +893,11 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	mismatch := func() { // the draft is withheld when access changed during the GitHub read
+	mismatch := func() {
 		if s.fenceHolds(w, ctx, snap) {
 			writeJSON(w, http.StatusConflict, s.view(row))
 		}
 	}
-	// The read runs under the issue's lock (see finish); it only decides, and the answer is written after finish
-	// returned. errMismatch, or a failed GitHub read (fetchErr), ends the recheck unrecorded.
 	var fetchErr error
 	err := s.finish(context.WithoutCancel(ctx), row.ID, row.RepositoryID, snap, number, row.Kind == "create", func() (string, outcome, *githubapp.Issue, error) {
 		issue, err := s.GitHub.FetchIssue(ctx, token, d.Repo.FullName, number)
@@ -1007,18 +925,18 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 					return "", outcome{}, nil, err
 				}
 				out.Unapplied = unapplied(out.Issue, delta{Add: draft.Labels}, delta{Add: draft.Assignees}, "")
-			case row.HasRequestedMetadata: // the draft was wiped: the requested labels and assignees cannot be verified
+			case row.HasRequestedMetadata:
 				out.Unapplied = []string{"requested labels or assignees (unverifiable: the draft was removed)"}
 			}
 		} else {
 			var draft updateDraft
 			var sent outcome
 			if row.Draft == nil || json.Unmarshal(row.Draft, &draft) != nil || json.Unmarshal(row.Outcome, &sent) != nil {
-				return "", outcome{}, nil, errMismatch // nothing left to verify against
+				return "", outcome{}, nil, errMismatch
 			}
 			out.Unapplied = unapplied(out.Issue, draft.Labels, draft.Assignees, draft.State)
 			if len(out.Unapplied) > 0 && !sent.AllStepsAnswered {
-				return "", outcome{}, nil, errMismatch // not visible yet, and the original request may still land
+				return "", outcome{}, nil, errMismatch
 			}
 			out.Error, out.AllStepsAnswered = sent.Error, sent.AllStepsAnswered
 		}

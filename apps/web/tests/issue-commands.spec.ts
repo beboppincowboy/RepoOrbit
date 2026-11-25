@@ -176,7 +176,6 @@ test('creates a new issue through Edit -> Review -> Submit -> Confirmed and show
   await dialog.getByLabel('Description').fill('Add shortcuts for workspace tabs.');
   await dialog.getByLabel('Labels (optional)').fill('enhancement');
   await dialog.getByRole('button', { name: 'Add label' }).click();
-  // Suggestions are the users GitHub accepts as assignees, not every recent contributor.
   const suggestions = dialog.locator(`#${await dialog.getByLabel('Assignees (optional)').getAttribute('list')} option`);
   await expect(suggestions).toHaveCount(2);
   await expect(suggestions.nth(1)).toHaveAttribute('value', 'alex');
@@ -348,7 +347,6 @@ test('unknown create never resends, rejects mismatched recheck, and links verifi
   );
   expect(createCalls).toBe(1);
 
-  // Mismatched issue number cannot resolve the operation and does not resend the create.
   await dialog.getByLabel(/Found the created issue on GitHub/).fill('99');
   await dialog.getByRole('button', { name: 'Recheck' }).click();
   await expect(dialog.getByRole('alert')).toContainText('Issue #99 could not be matched to this draft');
@@ -356,7 +354,6 @@ test('unknown create never resends, rejects mismatched recheck, and links verifi
   expect(createCalls).toBe(1);
   expect(recheckCalls).toEqual([99]);
 
-  // Reloading preserves the unknown operation and lets the user resolve it with the real issue number.
   await page.reload();
   const reloadedDialog = page.getByRole('dialog', { name: 'New issue' });
   await expect(reloadedDialog.getByText('Outcome unknown.')).toBeVisible();
@@ -417,7 +414,6 @@ test('failed submit preserves draft across reload and retries with a new idempot
   await dialog.getByRole('button', { name: 'Submit to GitHub' }).click();
   await expect(dialog.getByRole('alert')).toContainText('cannot be assigned in this repository: stranger');
 
-  // Reloading restores the failed state and full draft without losing entered text.
   await page.reload();
   const reloaded = page.getByRole('dialog', { name: 'New issue' });
   await expect(reloaded.getByRole('alert')).toContainText('cannot be assigned in this repository: stranger');
@@ -445,7 +441,6 @@ test('disables disallowed actions with the GitHub permission reason', async ({ p
 
   await page.goto('/workspace/1?tab=issues');
 
-  // New issue: Read user can create plain issue, but labels/assignees are disabled with Push reason.
   await page.getByRole('region', { name: 'Repository issues' }).getByRole('button', { name: '+ New issue' }).click();
   let dialog = page.getByRole('dialog', { name: 'New issue' });
   await expect(dialog.getByLabel('Title')).toBeEnabled();
@@ -454,7 +449,6 @@ test('disables disallowed actions with the GitHub permission reason', async ({ p
   await expect(dialog).toContainText('requires Push access on GitHub');
   await dialog.getByRole('button', { name: 'Close issue editor' }).click();
 
-  // Edit another user's issue (#12, authored by alex): all controls disabled with Triage reason.
   await page.getByRole('button', { name: 'Edit issue #12' }).click();
   dialog = page.getByRole('dialog', { name: 'Edit issue #12' });
   await expect(dialog).toContainText('requires Triage or higher permission on GitHub');
@@ -463,14 +457,12 @@ test('disables disallowed actions with the GitHub permission reason', async ({ p
   await expect(dialog.getByRole('button', { name: 'Review' })).toBeDisabled();
   await dialog.getByRole('button', { name: 'Close issue editor' }).click();
 
-  // Edit viewer's own issue (#15, authored by ada): state is enabled, labels/assignees stay disabled.
   await page.getByRole('button', { name: 'Edit issue #15' }).click();
   dialog = page.getByRole('dialog', { name: 'Edit issue #15' });
   await expect(dialog).toContainText('With Read access you can close or reopen issues you authored');
   await expect(dialog.getByLabel('Open / closed state')).toBeEnabled();
   await expect(dialog.getByLabel('Labels (add or remove)')).toBeDisabled();
 
-  // After a reload the editor knows only the number from the URL; it loads the issue so the author keeps close/reopen.
   await page.reload();
   dialog = page.getByRole('dialog', { name: 'Edit issue #15' });
   await expect(dialog).toContainText('With Read access you can close or reopen issues you authored');
@@ -560,7 +552,6 @@ test('write history supports inline recheck of unknown operations and follow-up 
   const history = page.getByRole('region', { name: 'Write history' });
   await expect(history).toContainText('Unapplied: add assignee octocat');
 
-  // Inline recheck in Write history rejects mismatch and resolves on match.
   await history.getByLabel('Issue number for operation #901').fill('12');
   await history.getByRole('button', { name: 'Recheck' }).click();
   await expect(history.getByRole('alert')).toContainText('Issue #12 did not match this draft');
@@ -569,7 +560,6 @@ test('write history supports inline recheck of unknown operations and follow-up 
   await history.getByRole('button', { name: 'Recheck' }).click();
   await expect(history.getByRole('link', { name: /#55/ })).toHaveAttribute('href', 'https://github.com/ada/repo-1/issues/55');
 
-  // Clicking "Edit issue #45" opens the update editor for that linked issue instead of creating a duplicate.
   await history.getByRole('button', { name: 'Edit issue #45' }).click();
   await expect(page.getByRole('dialog', { name: 'Edit issue #45' })).toBeVisible();
 });

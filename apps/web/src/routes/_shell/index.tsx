@@ -21,8 +21,6 @@ import {
 
 const windows = [7, 30, 90] as const;
 
-// Engineering overview (plan U5d, prototype D2 VIEWS.overview). ?days= is the 7/30/90-day window; absent means 30,
-// so plain links to "/" need no search.
 export const Route = createFileRoute("/_shell/")({
   validateSearch: (search: Record<string, unknown>): { days?: MetricWindow } => ({ days: search.days === 7 || search.days === 30 || search.days === 90 ? search.days : undefined }),
   component: Overview,
@@ -30,7 +28,6 @@ export const Route = createFileRoute("/_shell/")({
 
 const card = "min-h-0 min-w-0 rounded-xl border border-border bg-card";
 const plural = (n: number) => (n === 1 ? "repository" : "repositories");
-// Short coverage labels for overview totals.
 const coverageLabels: Record<string, string> = {
   not_synchronized: "Awaiting data",
   window_before_boundary: "Window predates imported history",
@@ -56,7 +53,6 @@ function Overview() {
       return { overview, startedAtSeq };
     },
     enabled: rows.length > 0 || selection.hasNextPage,
-    // The first read after an access revocation answers ACCESS_UNVERIFIED once; the second read is authoritative.
     retry: (count, error) => count < 1 && error instanceof RepositoryAccessUnverifiedError,
     retryDelay: 0,
     placeholderData: keepPreviousData,
@@ -123,7 +119,6 @@ function Overview() {
   </div>;
 }
 
-// Count of selected repositories that could not be shown, never their names; renders nothing when there are none.
 function WithheldNote({ withheld, retryAt }: { withheld: number; retryAt: string | null }) {
   if (!withheld && !retryAt) return null;
   return <p role="status" className={warnNoteClass}>
@@ -132,8 +127,6 @@ function WithheldNote({ withheld, retryAt }: { withheld: number; retryAt: string
   </p>;
 }
 
-// Fold state per viewer in localStorage (in memory when storage is unavailable). The server snapshot is "nothing folded",
-// so the server render and hydration agree.
 const foldMemory = new Map<string, string>();
 const foldEvent = "repoorbit:overview-fold";
 const subscribeFold = (notify: () => void) => { window.addEventListener(foldEvent, notify); return () => window.removeEventListener(foldEvent, notify); };
@@ -151,7 +144,6 @@ function useFold(key: string) {
   return [fold, toggle] as const;
 }
 
-// Foldable card (prototype panel()): the header button keeps the title and count; a folded panel gives its height to the next one.
 function Panel({ id, title, count, extra, fold, onToggle, children }: { id: string; title: string; count?: number; extra?: ReactNode; fold: Record<string, boolean>; onToggle: (id: string) => void; children: ReactNode }) {
   const folded = !!fold[id];
   return <section aria-label={title} className={`${card} flex flex-col ${folded ? "flex-none" : "flex-[1_1_0]"} max-[900px]:flex-none`}>
@@ -167,7 +159,6 @@ function Panel({ id, title, count, extra, fold, onToggle, children }: { id: stri
   </section>;
 }
 
-// One cell of the stat strip (prototype stat()). An unknown value shows "—" and its coverage reason, never 0.
 function Stat({ icon, metric, label, sub, warn }: { icon: ReactNode; metric: CrossRepositoryOverview["openIssues"]; label: string; sub: string; warn?: boolean }) {
   const known = metric.value !== null;
   return <div className="flex flex-col gap-0.5 border-l border-border px-4 py-3 first:border-l-0">
@@ -178,7 +169,6 @@ function Stat({ icon, metric, label, sub, warn }: { icon: ReactNode; metric: Cro
   </div>;
 }
 
-// PRs merged and issues opened per day, on the shared LineChart (gaps for days without imported data, hatched leading days).
 function ActivityChart({ daily }: { daily: CrossRepositoryOverview["daily"] }) {
   const days = useMemo(() => daily.map(d => d.day), [daily]);
   const series = useMemo<ChartSeries[]>(() => [
