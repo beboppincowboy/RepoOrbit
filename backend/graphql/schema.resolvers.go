@@ -72,8 +72,6 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
-	// The cursor and next-page flag come from the stored rows, before access filtering, so a page whose rows are
-	// all denied or unverified still advances.
 	result.HasNextPage = len(rows) > n
 	rows = rows[:min(len(rows), n)]
 	ids := make([]int64, len(rows))
@@ -93,11 +91,11 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 			result.Withheld++
 			result.RetryAt = laterRetry(result.RetryAt, d.RetryAt)
 		}
-		if d.Allowed { // current GitHub metadata, not the stored copy
+		if d.Allowed {
 			result.Nodes = append(result.Nodes, &model.Repository{ID: cursorID, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: true, SyncState: string(repositories.SyncStateFor(true)), Activity: activityStatus(false, true)})
 		}
 	}
-	if err := r.attachMetadataStatus(ctx, userID, result.Nodes); err != nil {
+	if err := r.loadSelectedStatuses(ctx, userID, result.Nodes, selectedRepositoryStatusSelection(ctx)); err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
 	current, err := readFence.Current(ctx, r.RepoAccess.Pool)
@@ -140,7 +138,7 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 		return nil, unverifiedError(d.RetryAt)
 	}
 	if !d.Allowed {
-		return nil, nil // indistinguishable from a repository that does not exist
+		return nil, nil
 	}
 	selected, err := r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: userID, RepositoryIds: []int64{repoID}})
 	if err != nil {
@@ -148,7 +146,7 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 	}
 	repo := &model.Repository{ID: id, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: len(selected) == 1, SyncState: string(repositories.SyncStateFor(len(selected) == 1)), Activity: activityStatus(false, len(selected) == 1)}
 	if len(selected) == 1 {
-		if err := r.attachMetadataStatus(ctx, userID, []*model.Repository{repo}); err != nil {
+		if err := r.loadSelectedStatuses(ctx, userID, []*model.Repository{repo}, repositoryStatusSelection(ctx)); err != nil {
 			return nil, fmt.Errorf("database unavailable")
 		}
 	}
@@ -197,6 +195,11 @@ func (r *queryResolver) RepositoryOverview(ctx context.Context, id string, days 
 // CrossRepositoryOverview is the resolver for the crossRepositoryOverview field.
 func (r *queryResolver) CrossRepositoryOverview(ctx context.Context, days int) (*model.CrossRepositoryOverview, error) {
 	return r.crossRepositoryOverview(ctx, days)
+}
+
+// RepositoryBoard is the resolver for the repositoryBoard field.
+func (r *queryResolver) RepositoryBoard(ctx context.Context, id string, include []int) (*model.RepositoryBoard, error) {
+	return r.repositoryBoard(ctx, id, include)
 }
 
 // AssignedIssue returns AssignedIssueResolver implementation.

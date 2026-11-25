@@ -7,12 +7,20 @@ import { ChevronIcon, IssueIcon, NeedsAttentionList, PullRequestIcon } from "@/c
 import { segGroupClass, segItemClass, warnNoteClass } from "@/components/repository-list";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { RepositoryAccessUnverifiedError, fetchCrossRepositoryOverview, type CrossRepositoryOverview, type MetricWindow } from "@/lib/api";
-import { flattenSelectedRepositoryRows, useSelectedRepositories } from "@/lib/selected-repositories";
+import {
+  crossRepositoryOverviewKey,
+  currentAccessSeq,
+  filterAggregateByVisibility,
+  selectVisibleRows,
+  selectWithheldSummary,
+  useSelectedRepositories,
+  useSelectedRepositoryMetadata,
+  useSelectionVisibility,
+  viewerKeyOf,
+} from "@/lib/selected-repositories";
 
 const windows = [7, 30, 90] as const;
 
-// Engineering overview (plan U5d, prototype D2 VIEWS.overview). ?days= is the 7/30/90-day window; absent means 30,
-// so plain links to "/" need no search.
 export const Route = createFileRoute("/_shell/")({
   validateSearch: (search: Record<string, unknown>): { days?: MetricWindow } => ({ days: search.days === 7 || search.days === 30 || search.days === 90 ? search.days : undefined }),
   component: Overview,
@@ -20,29 +28,31 @@ export const Route = createFileRoute("/_shell/")({
 
 const card = "min-h-0 min-w-0 rounded-xl border border-border bg-card";
 const plural = (n: number) => (n === 1 ? "repository" : "repositories");
-// Short coverage labels for overview totals.
 const coverageLabels: Record<string, string> = {
   not_synchronized: "Awaiting data",
   window_before_boundary: "Window predates imported history",
   historical_gap: "Issue event history is incomplete",
   children_incomplete: "Related activity is still importing",
+  access_changed: "Refreshing after access change",
 };
 
 function Overview() {
   const { session } = Route.useRouteContext();
   const days = Route.useSearch().days ?? 30;
   const selection = useSelectedRepositories(session);
-  const rows = flattenSelectedRepositoryRows(selection);
-  // Repositories the selection itself withheld (no rows at all); like flattenSelectedRepositoryRows, a failed revalidation drops them.
-  const selectionPages = selection.isRefetchError ? [] : selection.data?.pages ?? [];
-  const selectionWithheld = selectionPages.reduce((sum, p) => sum + p.withheld, 0);
-  const selectionRetryAt = selectionPages.map(p => p.retryAt).filter(Boolean).at(-1) ?? null;
-  const [fold, toggleFold] = useFold(`repoorbit:overview-fold:${session.mode}:${session.user?.login ?? ""}`);
+  const metadata = useSelectedRepositoryMetadata(session);
+  const visibility = useSelectionVisibility(session);
+  const rows = selectVisibleRows(metadata, selection, visibility);
+  const { withheldCount: selectionWithheld, retryAt: selectionRetryAt } = selectWithheldSummary(metadata, selection, rows, visibility);
+  const [fold, toggleFold] = useFold(`repoorbit:overview-fold:${viewerKeyOf(session)}`);
   const query = useQuery({
-    queryKey: ["crossRepositoryOverview", session.mode, session.user?.login, days],
-    queryFn: ({ signal }) => fetchCrossRepositoryOverview(days, signal),
+    queryKey: [...crossRepositoryOverviewKey(session), days],
+    queryFn: async ({ signal }) => {
+      const startedAtSeq = currentAccessSeq();
+      const overview = await fetchCrossRepositoryOverview(days, signal);
+      return { overview, startedAtSeq };
+    },
     enabled: rows.length > 0 || selection.hasNextPage,
-    // The first read after an access revocation answers ACCESS_UNVERIFIED once; the second read is authoritative.
     retry: (count, error) => count < 1 && error instanceof RepositoryAccessUnverifiedError,
     retryDelay: 0,
     placeholderData: keepPreviousData,
@@ -53,7 +63,7 @@ function Overview() {
     <p>Could not load repositories. Check that the local services are running.</p>
     <Button className="mt-3" onClick={() => void selection.refetch()}>Retry</Button>
   </div>;
-  const data = query.data;
+  const data = query.data ? filterAggregateByVisibility(query.data.overview, query.data.startedAtSeq, visibility) : undefined;
   const total = data ? data.repositoriesCounted + data.repositoriesSyncing : rows.length;
   const empty = selection.hasNextPage ? !!data && !query.isError && total === 0 : rows.length === 0;
   if (empty && (data?.withheld || data?.retryAt || selectionWithheld || selectionRetryAt)) return <div className="flex flex-col gap-3">
@@ -109,7 +119,6 @@ function Overview() {
   </div>;
 }
 
-// Count of selected repositories that could not be shown, never their names; renders nothing when there are none.
 function WithheldNote({ withheld, retryAt }: { withheld: number; retryAt: string | null }) {
   if (!withheld && !retryAt) return null;
   return <p role="status" className={warnNoteClass}>
@@ -118,8 +127,6 @@ function WithheldNote({ withheld, retryAt }: { withheld: number; retryAt: string
   </p>;
 }
 
-// Fold state per viewer in localStorage (in memory when storage is unavailable). The server snapshot is "nothing folded",
-// so the server render and hydration agree.
 const foldMemory = new Map<string, string>();
 const foldEvent = "repoorbit:overview-fold";
 const subscribeFold = (notify: () => void) => { window.addEventListener(foldEvent, notify); return () => window.removeEventListener(foldEvent, notify); };
@@ -137,7 +144,6 @@ function useFold(key: string) {
   return [fold, toggle] as const;
 }
 
-// Foldable card (prototype panel()): the header button keeps the title and count; a folded panel gives its height to the next one.
 function Panel({ id, title, count, extra, fold, onToggle, children }: { id: string; title: string; count?: number; extra?: ReactNode; fold: Record<string, boolean>; onToggle: (id: string) => void; children: ReactNode }) {
   const folded = !!fold[id];
   return <section aria-label={title} className={`${card} flex flex-col ${folded ? "flex-none" : "flex-[1_1_0]"} max-[900px]:flex-none`}>
@@ -153,7 +159,6 @@ function Panel({ id, title, count, extra, fold, onToggle, children }: { id: stri
   </section>;
 }
 
-// One cell of the stat strip (prototype stat()). An unknown value shows "—" and its coverage reason, never 0.
 function Stat({ icon, metric, label, sub, warn }: { icon: ReactNode; metric: CrossRepositoryOverview["openIssues"]; label: string; sub: string; warn?: boolean }) {
   const known = metric.value !== null;
   return <div className="flex flex-col gap-0.5 border-l border-border px-4 py-3 first:border-l-0">
@@ -164,7 +169,6 @@ function Stat({ icon, metric, label, sub, warn }: { icon: ReactNode; metric: Cro
   </div>;
 }
 
-// PRs merged and issues opened per day, on the shared LineChart (gaps for days without imported data, hatched leading days).
 function ActivityChart({ daily }: { daily: CrossRepositoryOverview["daily"] }) {
   const days = useMemo(() => daily.map(d => d.day), [daily]);
   const series = useMemo<ChartSeries[]>(() => [

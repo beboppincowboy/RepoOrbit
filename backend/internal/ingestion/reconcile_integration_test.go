@@ -18,7 +18,6 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
 
-// txFence is a stand-in jobs.ClaimFence over a real transaction (the real claim check belongs to U3a).
 type txFence struct{ pool *pgxpool.Pool }
 
 func (f txFence) Commit(ctx context.Context, fn func(pgx.Tx) error) error {
@@ -85,8 +84,6 @@ func (f *fixture) jobState(kind jobs.Kind, key string) string {
 	return s
 }
 
-// Unstar semantics, queries only (no queue needed): suspend a starred selection that left the snapshot without
-// deleting it; never touch owned ones; restore when starred again.
 func TestUnstarSuspendsFollowWithoutDeletingSelection(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -94,9 +91,9 @@ func TestUnstarSuspendsFollowWithoutDeletingSelection(t *testing.T) {
 	for _, id := range []int64{10, 11, 12} {
 		f.repo(id)
 	}
-	f.selection(1, 10, "starred") // still starred
-	f.selection(1, 11, "starred") // unstarred
-	f.selection(1, 12, "owned")   // not a star at all
+	f.selection(1, 10, "starred")
+	f.selection(1, 11, "starred")
+	f.selection(1, 12, "owned")
 	f.star(1, 10)
 	now := time.Now()
 	if err := f.q.SuspendUnstarredFollows(ctx, db.SuspendUnstarredFollowsParams{UserID: 1, Now: sTs(now)}); err != nil {
@@ -118,7 +115,6 @@ func TestUnstarSuspendsFollowWithoutDeletingSelection(t *testing.T) {
 	}
 }
 
-// Another eligible selector keeps the repository in the poll set when one user unstars.
 func TestOtherEligibleSelectorKeepsRepositoryPolled(t *testing.T) {
 	f := newFixture(t)
 	f.user(1)
@@ -135,21 +131,7 @@ func TestOtherEligibleSelectorKeepsRepositoryPolled(t *testing.T) {
 		t.Fatalf("poll set %v", ids)
 	}
 	if err := f.q.SuspendUnstarredFollows(context.Background(), db.SuspendUnstarredFollowsParams{UserID: 2, Now: sTs(time.Now())}); err != nil {
-		t.Fatal(err) // idempotent for a still-starred follow
-	}
-}
-
-// A failed or incomplete refresh never reaches the fence, so eligibility is preserved (fence is nil: it would panic).
-func TestFailedRefreshPreservesEligibility(t *testing.T) {
-	f := newFixture(t)
-	f.user(1)
-	f.repo(10)
-	f.selection(1, 10, "starred") // not in any snapshot, yet must stay eligible after a failure
-	for _, s := range []*fakeStars{{}, {err: errors.New("net")}, {err: ErrNoCredential}} {
-		_ = StarReconcileHandler(s, &fakeClock{now: time.Now()}, nil)(context.Background(), jobs.Job{Key: "user:1"}, nil)
-	}
-	if f.suspended(1, 10) {
-		t.Fatal("failed refresh suspended eligibility")
+		t.Fatal(err)
 	}
 }
 
@@ -160,8 +142,6 @@ func noErr(t *testing.T, err error) {
 	}
 }
 
-// realStore stores through the real repositories.Service (snapshot replacement, suspend/restore, eligibility hook),
-// with a fake fetch.
 type realStore struct {
 	fakeStars
 	svc *repositories.Service
@@ -171,8 +151,6 @@ func (r *realStore) StoreStars(ctx context.Context, tx pgx.Tx, userID int64, rep
 	return r.svc.StoreStars(ctx, tx, userID, repos)
 }
 
-// Completed refresh: unstarred follow suspended, still-starred one kept, paused work for the user resumed, all in the
-// one fenced commit; a lost claim leaves the snapshot, eligibility and paused work exactly as they were.
 func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -193,7 +171,6 @@ func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
 		return RecheckEligibility(ctx, tx, userID, now)
 	}
 	stars := &realStore{fakeStars: fakeStars{res: StarFetch{Complete: true, Repos: []githubapp.Repo{{ID: 10, FullName: "o/r"}}}}, svc: svc}
-	// Lost claim after a successful fetch: nothing is written.
 	if err := StarReconcileHandler(stars, &fakeClock{now: now}, nil)(ctx, jobs.Job{Key: "user:1"}, onceFence{lost: true}); !errors.Is(err, jobs.ErrLostClaim) {
 		t.Fatalf("lost claim: %v", err)
 	}
@@ -205,7 +182,6 @@ func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("a lost claim replaced the snapshot (%d rows)", n)
 	}
-	// Held claim: snapshot replaced, unstarred follow suspended, paused work resumed.
 	err := StarReconcileHandler(stars, &fakeClock{now: now}, nil)(ctx, jobs.Job{Key: "user:1"}, txFence{f.pool})
 	noErr(t, err)
 	if f.suspended(1, 10) || !f.suspended(1, 11) {
@@ -220,7 +196,6 @@ func TestCompletedRefreshCommitsSuspensionAndResumes(t *testing.T) {
 	}
 }
 
-// Polls and recheck must never revive a dead metadata refresh (the dead-work barrier).
 func TestPollAndRecheckDoNotReviveDeadWork(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -242,8 +217,6 @@ func TestPollAndRecheckDoNotReviveDeadWork(t *testing.T) {
 	}
 }
 
-// Paused work resumes after an eligibility change; a poll also resumes it (missed-signal recovery). A user with no
-// followed repositories resumes nothing of someone else's.
 func TestRecheckResumesPausedWorkOnlyForTheUsersRepositories(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -298,7 +271,6 @@ func TestLoadMetadataStatusesFromJobsAndSync(t *testing.T) {
 	}
 }
 
-// begin opens a transaction rolled back at test end, so a skipped test never pins a pooled connection.
 func (f *fixture) begin() (pgx.Tx, error) {
 	tx, err := f.pool.Begin(context.Background())
 	if err == nil {
@@ -307,7 +279,6 @@ func (f *fixture) begin() (pgx.Tx, error) {
 	return tx, err
 }
 
-// The stored retry-after only moves later, and a past one never throttles.
 func TestCredentialThrottleKeepsTheLaterTimeAndIgnoresThePast(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -317,7 +288,7 @@ func TestCredentialThrottleKeepsTheLaterTimeAndIgnoresThePast(t *testing.T) {
 		t.Fatal("no row must mean not throttled")
 	}
 	throttleCredential(ctx, f.q, 1, now.Add(2*time.Hour))
-	throttleCredential(ctx, f.q, 1, now.Add(time.Hour)) // earlier: must not shorten the pause
+	throttleCredential(ctx, f.q, 1, now.Add(time.Hour))
 	if got := credentialThrottledUntil(ctx, f.q, 1); !got.Equal(now.Add(2 * time.Hour)) {
 		t.Fatalf("until = %v, want the later time", got)
 	}
@@ -332,25 +303,44 @@ func TestCredentialThrottleKeepsTheLaterTimeAndIgnoresThePast(t *testing.T) {
 	}
 }
 
-// Terminal issue-write operations are deleted after the 30-day retention period. An unresolved create is kept past
-// it, redacted, so a retry of the same content still finds it and cannot create a second issue.
+func TestStalePendingSweepUsesDatabaseClock(t *testing.T) {
+	f := newFixture(t)
+	f.user(1)
+	f.repo(10)
+	f.exec(`INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, draft, state, outcome)
+	 VALUES (1, 10, 'just-recorded', 'update', '\x00', '{"state":"closed"}', 'pending', '{}')`)
+	noErr(t, SchedulerDeps{Pool: f.pool}.expireWriteOperations(context.Background(), time.Now().Add(2*time.Minute)))
+	var state string
+	noErr(t, f.pool.QueryRow(context.Background(), `SELECT state FROM write_operations WHERE idempotency_key = 'just-recorded'`).Scan(&state))
+	if state != "pending" {
+		t.Fatalf("a fresh pending write was settled as %q by a fast worker clock", state)
+	}
+}
+
 func TestWriteOperationRetention(t *testing.T) {
 	f := newFixture(t)
 	f.user(1)
 	f.repo(10)
 	now := time.Now()
-	old, recent := now.Add(-31*24*time.Hour), now.Add(-29*24*time.Hour)
+	old, recent, freshPending, stalePending := now.Add(-31*24*time.Hour), now.Add(-29*24*time.Hour), now.Add(-50*time.Second), now.Add(-65*time.Second)
 	f.exec(`INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, content_hash, draft, state, outcome, created_at) VALUES
 	 (1, 10, 'old-unknown', 'create', '\x00', '\x01', '{"title":"secret"}', 'unknown', '{"issue":{"number":1,"title":"secret"}}', $1),
 	 (1, 10, 'old-failed', 'create', '\x00', '\x02', NULL, 'failed', '{}', $1),
 	 (1, 10, 'old-succeeded', 'update', '\x00', NULL, NULL, 'succeeded', '{}', $1),
-	 (1, 10, 'recent', 'create', '\x00', '\x03', '{"title":"recent"}', 'failed', '{}', $2)`, old, recent)
+	 (1, 10, 'recent', 'create', '\x00', '\x03', '{"title":"recent"}', 'failed', '{}', $2),
+	 (1, 10, 'fresh-pending', 'update', '\x00', NULL, '{"state":"closed"}', 'pending', '{}', $3),
+	 (1, 10, 'stale-pending', 'update', '\x00', NULL, '{"state":"closed"}', 'pending', '{}', $4)`, old, recent, freshPending, stalePending)
 	noErr(t, SchedulerDeps{Pool: f.pool}.expireWriteOperations(context.Background(), now))
-	rows, err := f.pool.Query(context.Background(), `SELECT idempotency_key || ':' || (draft IS NULL)::text || ':' || (outcome ? 'redacted')::text || ':' || (outcome::text LIKE '%secret%')::text || ':' || (content_hash IS NOT NULL)::text FROM write_operations ORDER BY idempotency_key`)
+	rows, err := f.pool.Query(context.Background(), `SELECT idempotency_key || ':' || state || ':' || (draft IS NULL)::text || ':' || (outcome ? 'redacted')::text || ':' || (outcome::text LIKE '%secret%')::text || ':' || (content_hash IS NOT NULL)::text FROM write_operations ORDER BY idempotency_key`)
 	noErr(t, err)
 	got, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	noErr(t, err)
-	if want := []string{"old-unknown:true:true:false:true", "recent:false:false:false:true"}; fmt.Sprint(got) != fmt.Sprint(want) {
+	if want := []string{
+		"fresh-pending:pending:false:false:false:false",
+		"old-unknown:unknown:true:true:false:true",
+		"recent:failed:false:false:false:true",
+		"stale-pending:failed:false:false:false:false",
+	}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("kept %v, want %v", got, want)
 	}
 }

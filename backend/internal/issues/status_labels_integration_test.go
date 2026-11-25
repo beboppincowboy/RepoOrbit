@@ -8,7 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/repoorbit/repoorbit/backend/internal/githubapp/fake"
 )
 
 func statusLabelsPath(repoID int64) string {
@@ -48,7 +52,6 @@ func (u *user) statusLabelState(repoID int64) statusLabelState {
 	return s
 }
 
-// Write or Triage users cannot turn status labels on or off, forged requests fail, and nothing reaches GitHub.
 func TestStatusLabelsNeedAdminOrMaintain(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -87,7 +90,32 @@ func TestStatusLabelsNeedAdminOrMaintain(t *testing.T) {
 	e.noInstallationAuthority()
 }
 
-// Turning labels on creates exactly the missing labels through review and reuses an existing one, whatever its case.
+func TestStatusLabelStateUnauthorizedRevokes(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/labels/status:review"):
+			http.Error(w, "bad credentials", http.StatusUnauthorized)
+			return
+		case strings.HasSuffix(r.URL.Path, "/labels/status:todo"):
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(300 * time.Millisecond):
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+	if resp := alice.do("GET", statusLabelsPath(repo), "", nil); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status %d %s", resp.StatusCode, alice.body(resp))
+	}
+	if n := e.count(`SELECT count(*) FROM sessions WHERE user_id = $1`, alice.id); n != 0 {
+		t.Fatalf("a 401 label check must revoke the viewer: %d sessions left", n)
+	}
+}
+
 func TestStatusLabelsCreateOnlyMissing(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -128,7 +156,6 @@ func TestStatusLabelsCreateOnlyMissing(t *testing.T) {
 		t.Fatalf("state after enabling: %+v", s)
 	}
 
-	// Turning them on again reuses all three; turning them off writes nothing to GitHub.
 	if _, op := alice.send(statusLabelsPath(repo), "on-2", `{}`); op.State != "succeeded" {
 		t.Fatalf("second enable: %+v", op)
 	}
@@ -143,8 +170,6 @@ func TestStatusLabelsCreateOnlyMissing(t *testing.T) {
 	e.noInstallationAuthority()
 }
 
-// A label create without a reliable answer leaves the operation unknown and the setting off; a recheck that finds all
-// three labels turns status labels on, but only for an actor who is still Admin or Maintain.
 func TestAmbiguousStatusLabelsResolveOnRecheck(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -153,7 +178,7 @@ func TestAmbiguousStatusLabelsResolveOnRecheck(t *testing.T) {
 	dave := e.signIn("dave")
 	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
 		if r.Method == http.MethodPost && r.URL.Path == "/repos/alice/app/labels" {
-			http.Error(w, "gateway timeout", http.StatusGatewayTimeout) // nothing created, but the client cannot know
+			http.Error(w, "gateway timeout", http.StatusGatewayTimeout)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -179,8 +204,6 @@ func TestAmbiguousStatusLabelsResolveOnRecheck(t *testing.T) {
 	_ = alice
 }
 
-// A recheck right after an unanswered enable does not fail it while labels may still be on their way, and a recheck
-// that succeeds after another admin turned labels off does not turn them back on.
 func TestStatusLabelsRecheckRespectsInFlightAndTurnOff(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -208,5 +231,43 @@ func TestStatusLabelsRecheckRespectsInFlightAndTurnOff(t *testing.T) {
 	}
 	if resp, done := alice.send(opPath(op.ID)+"/recheck", "", `{}`); resp.StatusCode != http.StatusOK || done.State != "succeeded" || e.statusLabelsOn(repo) {
 		t.Fatalf("late recheck: %d %+v on=%v", resp.StatusCode, done, e.statusLabelsOn(repo))
+	}
+}
+
+func TestBoardStatusAgreesWithView(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+	cases := []struct {
+		state  string
+		labels []string
+		want   string
+	}{
+		{"open", nil, "backlog"},
+		{"open", []string{"status:todo"}, "todo"},
+		{"open", []string{"bug", "status:in-progress"}, "in_progress"},
+		{"open", []string{"Status:Review", "status:todo"}, "in_review"},
+		{"closed", []string{"status:review"}, "done"},
+	}
+	var seeds []fake.IssueFixture
+	for i, c := range cases {
+		seeds = append(seeds, boardIssue(int64(i+1), c.state, c.labels))
+	}
+	e.gh.SetIssues(repo, seeds...)
+	for i, c := range cases {
+		number := int64(i + 1)
+		resp, _ := alice.send(changes(repo, number), fmt.Sprintf("conflict-%d", number), `{"labels":{"add":["seen"]},"expect":{"status":"backlog","assignees":["nobody"],"statusLabels":[]}}`)
+		live := decodeConflict(t, resp).Current.Status
+		if resp, op := alice.send(changes(repo, number), fmt.Sprintf("project-%d", number), `{"labels":{"add":["seen"]}}`); op.State != "succeeded" {
+			t.Fatalf("project #%d: %d %+v", number, resp.StatusCode, op)
+		}
+		var view string
+		if err := e.pool.QueryRow(context.Background(), `SELECT v.status FROM issue_board_states v JOIN activity_issues i ON i.source_id = v.issue_id
+			WHERE i.repository_id = $1 AND i.number = $2`, repo, number).Scan(&view); err != nil {
+			t.Fatal(err)
+		}
+		if live != c.want || view != c.want {
+			t.Fatalf("%s %v: live check %q, view %q, want %q", c.state, c.labels, live, view, c.want)
+		}
 	}
 }

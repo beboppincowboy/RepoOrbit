@@ -1,4 +1,3 @@
-import { repositorySnapshotPrefix } from "@/lib/repository-snapshots";
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -6,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { SyncStatus } from "@/components/sync-status";
 import { RepositoryCell, RepositoriesHeading, SourceTabs, ToolsRow, noteClass, searchBoxClass, tableCardClass, tdClass, thClass, warnNoteClass } from "@/components/repository-list";
 import { matchesListSearch, validateListSearch } from "@/lib/list-search";
+import { recordRepositoryRemoved } from "@/lib/selected-repositories";
 import { setFollowed, starredRepositories, type ListedRepo, type StarredPage } from "@/lib/api";
 
 export const Route = createFileRoute("/_shell/starred")({
@@ -24,7 +24,6 @@ function Starred() {
   const [error, setError] = useState<string | null>(null);
   const [savingFollow, setSavingFollow] = useState(false);
 
-  // The first page re-reads stars from GitHub (refresh); "Load more" pages through the stored snapshot.
   const query = useInfiniteQuery({
     queryKey: ["starred"],
     queryFn: ({ pageParam }: { pageParam: StarredParam }) => starredRepositories(pageParam.page, pageParam.refresh),
@@ -44,7 +43,7 @@ function Starred() {
     try {
       await setFollowed(repo.id, !repo.selected);
       const selected = !repo.selected;
-      if (!selected) queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repo.id) });
+      if (!selected) recordRepositoryRemoved(queryClient, session, repo.id);
       queryClient.setQueryData<InfiniteData<StarredPage>>(["starred"], old => old && { ...old, pages: old.pages.map(p => ({ ...p, repositories: p.repositories.map(r => (r.id === repo.id ? { ...r, selected, syncState: selected ? "awaiting-sync" as const : "not-synchronized" as const } : r)) })) });
       setError(null);
       void queryClient.invalidateQueries({ queryKey: ["selectedRepositories"] });

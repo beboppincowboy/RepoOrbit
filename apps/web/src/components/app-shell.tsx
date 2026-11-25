@@ -1,12 +1,23 @@
 import { repositorySnapshotsKey } from "@/lib/repository-snapshots";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
-import { useMutation, useQueryClient, type InfiniteData } from "@tanstack/react-query";
-import { fetchRepositoryDetails, fetchSelectedRepositoryDetailsPage, logout, GraphQLUnavailableError, type ViewerSession, type MetricWindow } from "@/lib/api";
-import { selectedRepositoriesKey, flattenSelectedRepositoryRows, useSelectedRepositories, useSelectedRepositoryMetadata, type SelectedBatch, type SelectedRow } from "@/lib/selected-repositories";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { logout, GraphQLUnavailableError, type ViewerSession, type MetricWindow } from "@/lib/api";
+import {
+  cancelDetailRetries,
+  resetViewerSelection,
+  retryDetailBatch,
+  selectFailedDetailBatches,
+  selectVisibleRows,
+  selectWithheldSummary,
+  useSelectedRepositories,
+  useSelectedRepositoryMetadata,
+  useSelectionVisibility,
+  type SelectedBatch,
+  type VisibleSelectedRow,
+} from "@/lib/selected-repositories";
 import { LoadingCircle, SyncDot, syncDisplay, syncLabels } from "@/components/sync-status";
 
-// RepoOrbit mark: a planet with an orbit ring (prototype D2 logo).
 export function LogoMark() {
   return <i className="grid size-[26px] place-items-center rounded-[7px] bg-primary">
     <svg width="16" height="16" viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="4" fill="#fff" /><ellipse cx="13" cy="13" rx="10" ry="4.5" fill="none" stroke="#fff" strokeWidth="2" transform="rotate(-25 13 13)" /></svg>
@@ -21,47 +32,32 @@ const navbtn = "flex w-full items-center gap-2.5 whitespace-nowrap rounded-lg px
 const navlabel = "px-2 pt-3 pb-1 font-mono text-[11px] font-medium uppercase tracking-[.06em] text-muted-foreground max-[900px]:hidden";
 const card = "rounded-xl border border-border bg-card";
 
-// A row can remain navigable while its activity access check is unavailable.
-function rowDisplay({ repo, detail }: SelectedRow) {
-  if (detail?.state === "access-unverified") return syncDisplay({ syncState: repo.syncState, withheld: 1, retryAt: detail.retryAt });
-  return syncDisplay({ syncState: repo.syncState, activity: detail?.activity ?? null, metadataStatus: repo.metadataStatus, retryAt: detail?.issues.retryAt ?? null });
+function rowDisplay(row: VisibleSelectedRow) {
+  if (row.availability === "unverified") return syncDisplay({ syncState: row.repo.syncState, withheld: 1, retryAt: row.retryAt });
+  const detail = row.detail?.state === "available" ? row.detail : undefined;
+  return syncDisplay({ syncState: row.repo.syncState, activity: detail?.activity ?? null, metadataStatus: row.repo.metadataStatus, retryAt: detail?.issues.retryAt ?? null });
 }
 
-// Prototype D2 shell: sidebar (Overview, Repositories, then each selected repository) | top bar (breadcrumb, repository
-// jump, avatar menu) | view. The viewport is fixed; each screen scrolls its own lists.
 export function AppShell({ session, children }: { session: ViewerSession; children: ReactNode }) {
   const demo = session.mode === "demo";
   const pathname = useRouterState({ select: state => state.location.pathname });
   const navigate = useNavigate();
   const selection = useSelectedRepositories(session);
   const metadata = useSelectedRepositoryMetadata(session);
+  const visibility = useSelectionVisibility(session);
   const queryClient = useQueryClient();
   const retryDetails = useMutation({
-    mutationFn: async (batch: SelectedBatch) => {
-      const details = await fetchRepositoryDetails(batch.repositories.map(repo => repo.id));
-      queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof fetchSelectedRepositoryDetailsPage>>>>(
-        selectedRepositoriesKey(session),
-        previous => previous && {
-          ...previous,
-          pages: previous.pages.map(page => ({
-            ...page,
-            batches: page.batches.map(current => current === batch ? { ...batch, details } : current),
-          })),
-        },
-      );
-    },
+    mutationFn: (batch: SelectedBatch) => retryDetailBatch(queryClient, session, batch),
   });
-  const failedBatches = selection.isRefetchError ? [] : selection.data?.pages.flatMap(page => page.batches.filter(batch => batch.details === null)) ?? [];
-  const details = new Map(flattenSelectedRepositoryRows(selection).map(row => [row.repo.id, row.detail]));
-  const rows = metadata.isRefetchError || selection.isRefetchError ? [] : (metadata.data?.pages ?? []).flatMap(page =>
-    page.nodes.map(repo => ({ repo, detail: details.get(repo.id) })),
-  );
-  const retryAt = [
-    ...(metadata.data?.pages ?? []).map(page => page.retryAt),
-    ...rows.map(row => row.detail?.state === "access-unverified" ? row.detail.retryAt : null),
-  ].filter((value): value is string => !!value).sort().at(-1);
-  const retryTime = retryAt ? Date.parse(retryAt) : NaN;
-  const limited = Number.isFinite(retryTime);
+  useEffect(() => () => {
+    cancelDetailRetries(session);
+  }, [pathname, session]);
+
+  const failedBatches = selectFailedDetailBatches(selection);
+  const rows = selectVisibleRows(metadata, selection, visibility);
+  const navigableRows = rows.filter(row => row.availability !== "denied");
+  const visible = navigableRows.filter(row => row.canRevealName);
+  const { retryTime, limited } = selectWithheldSummary(metadata, selection, rows, visibility);
   const { mode, user } = session;
   const login = user?.login;
   useEffect(() => {
@@ -74,12 +70,18 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
     }, Math.max(1000, delay + 1000));
     return () => window.clearTimeout(timer);
   }, [login, mode, queryClient, retryTime]);
-  const visible = rows.filter(row => row.detail?.state !== "access-unverified");
   const saved = new Map<string, { fullName: string; days: MetricWindow }>();
   if (!demo && (limited || metadata.error instanceof GraphQLUnavailableError)) {
+    const rowIds = new Set(rows.map(row => row.repo.id));
     for (const [key, snapshot] of queryClient.getQueriesData<{ fullName: string }>({ queryKey: repositorySnapshotsKey(session) })) {
       const [, , , id, days] = key;
-      if (snapshot && typeof id === "string" && (days === 7 || days === 30 || days === 90) && !rows.some(row => row.repo.id === id)) {
+      if (
+        snapshot
+        && typeof id === "string"
+        && (days === 7 || days === 30 || days === 90)
+        && !rowIds.has(id)
+        && visibility.get(id)?.status !== "denied"
+      ) {
         saved.set(id, { fullName: snapshot.fullName, days });
       }
     }
@@ -101,15 +103,14 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
       <nav aria-label="Primary" className="contents">
         <div className={navlabel}>Workspace</div>
         <Link to="/" activeOptions={{ exact: true }} className={navbtn}>{gridIcon}Overview</Link>
-        <Link to="/repositories" aria-current={reposActive ? "page" : undefined} className={navbtn}>{repoIcon}Repositories{rows.length > 0 && <span aria-hidden="true" className="ml-auto font-mono text-xs font-normal text-muted-foreground">{rows.length}</span>}</Link>
-        {rows.length > 0 && <div className={navlabel}>Repositories</div>}
+        <Link to="/repositories" aria-current={reposActive ? "page" : undefined} className={navbtn}>{repoIcon}Repositories{navigableRows.length > 0 && <span aria-hidden="true" className="ml-auto font-mono text-xs font-normal text-muted-foreground">{navigableRows.length}</span>}</Link>
+        {navigableRows.length > 0 && <div className={navlabel}>Repositories</div>}
         {metadata.isPending && <span role="status" className={`${navbtn} text-xs`}><LoadingCircle />Loading repositories…</span>}
         {limited && <span role="status" className={`${navbtn} text-xs`}>Waiting for GitHub</span>}
-        {rows.map(row => {
+        {navigableRows.map(row => {
           const display = rowDisplay(row);
-          const name = row.detail?.state === "access-unverified" ? "Repository" : row.repo.fullName.split("/")[1] || "Repository";
-          return <Link key={row.repo.id} to="/workspace/$repositoryId" params={{ repositoryId: row.repo.id }} search={{ days: 30, tab: "overview" }} activeOptions={{ includeSearch: false }} title={`${name} · ${syncLabels[display]}`} className={`${navbtn} text-[12.5px] max-[900px]:hidden`}>
-            <SyncDot display={display} /><span className="truncate">{name}</span>
+          return <Link key={row.repo.id} to="/workspace/$repositoryId" params={{ repositoryId: row.repo.id }} search={{ days: 30, tab: "overview" }} activeOptions={{ includeSearch: false }} title={`${row.displayName} · ${syncLabels[display]}`} className={`${navbtn} text-[12.5px] max-[900px]:hidden`}>
+            <SyncDot display={display} /><span className="truncate">{row.displayName}</span>
           </Link>;
         })}
         {[...saved].map(([id, { fullName, days }]) => <Link key={id} to="/workspace/$repositoryId" params={{ repositoryId: id }} search={{ days, tab: "overview" }} activeOptions={{ includeSearch: false }} title={`${fullName} · Saved data`} className={`${navbtn} text-[12.5px] max-[900px]:hidden`}>
@@ -139,8 +140,8 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
   </div>;
 }
 
-// Avatar with the signed-in identity and Sign out (real mode only).
 function AccountMenu({ session }: { session: ViewerSession }) {
+  const queryClient = useQueryClient();
   const demo = session.mode === "demo";
   const login = session.user?.login ?? "";
   const [open, setOpen] = useState(false);
@@ -149,6 +150,7 @@ function AccountMenu({ session }: { session: ViewerSession }) {
     setLogoutError(false);
     try {
       await logout();
+      resetViewerSelection(queryClient, session);
       window.location.assign("/login");
     } catch {
       setLogoutError(true);

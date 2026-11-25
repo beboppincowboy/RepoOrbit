@@ -149,7 +149,7 @@ func (h *evidenceHarness) userID(ctx context.Context, login string) int64 {
 	return id
 }
 
-func (h *evidenceHarness) runAt(c *http.Client, path, query string) string {
+func (h *evidenceHarness) runAtVars(c *http.Client, path, query string, vars map[string]any) string {
 	h.t.Helper()
 	me, err := c.Get(h.api.URL + "/auth/me")
 	if err != nil {
@@ -165,7 +165,11 @@ func (h *evidenceHarness) runAt(c *http.Client, path, query string) string {
 		h.t.Error(err)
 		return ""
 	}
-	body, err := json.Marshal(map[string]string{"query": query})
+	payload := map[string]any{"query": query}
+	if vars != nil {
+		payload["variables"] = vars
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		h.t.Error(err)
 		return ""
@@ -193,6 +197,11 @@ func (h *evidenceHarness) runAt(c *http.Client, path, query string) string {
 		h.t.Errorf("status %d: %s", resp.StatusCode, b)
 	}
 	return string(b)
+}
+
+func (h *evidenceHarness) runAt(c *http.Client, path, query string) string {
+	h.t.Helper()
+	return h.runAtVars(c, path, query, nil)
 }
 
 func (h *evidenceHarness) run(c *http.Client, query string) string {
@@ -258,7 +267,6 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 		t.Fatalf("unexpected cross-user overview: %s", got)
 	}
 
-	// Review state per PR: unknown until that PR's review history has converged, then derived from human reviews.
 	reviewStates := fmt.Sprintf(`{ pullRequestEvidence(repositoryIds:["%d"]) { nodes { number reviewState } } }`, repo)
 	if got = run(alice, reviewStates); !strings.Contains(got, `{"number":1,"reviewState":null}`) {
 		t.Fatalf("review state before review history: %s", got)
@@ -308,7 +316,6 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Cross-repository overview: an uninstalled repository is denied and excluded; the other still counts.
 	hidden := gh.AddRepo("alice", "hidden-repo", true)
 	gh.Install("alice", 10, hidden)
 	if err := repos.Connect(ctx, aliceID, hidden); err != nil {
@@ -344,7 +351,6 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 			}
 		}
 	}
-	// The first read after the uninstall discovers the revocation, which moves the fence: nothing is returned.
 	if got = run(alice, crossOverviewQuery); !strings.Contains(got, `"crossRepositoryOverview":null`) || strings.Contains(got, "hidden") {
 		t.Fatalf("read that discovered the revocation: %s", got)
 	}
@@ -365,7 +371,6 @@ func TestEvidenceViewerAuthorizationAndFence(t *testing.T) {
 		t.Fatalf("other viewer cross overview: %s", got)
 	}
 
-	// Pause each read after authorization so the final fence must discard its result.
 	for _, scenario := range []struct {
 		name, query, blockedSQL string
 	}{
@@ -569,14 +574,12 @@ func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 	})
 
 	run, runAt := h.run, h.runAt
-	// Duplicate repositoryIds deduplicates withheld to 1.
 	h.limitRepo.Store(pub)
 	wantRetry := time.Unix(h.resetUnix, 0).UTC().Format(time.RFC3339)
 	if got := run(alice, fmt.Sprintf(`{ issues(repositoryIds: ["%d","%d"], first: 1) { nodes { title } withheld retryAt } }`, pub, pub)); !strings.Contains(got, fmt.Sprintf(`"nodes":[],"withheld":1,"retryAt":"%s"`, wantRetry)) {
 		t.Fatalf("duplicate repositoryIds withheld count wrong: %s", got)
 	}
 
-	// Mid-read revocation across issues and all four remaining evidence list readers resets cursors and preserves pre-read retryAt.
 	for _, tc := range []struct {
 		name, field, table, blockedSQL string
 	}{
@@ -637,7 +640,6 @@ func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 	limitRepo := &h.limitRepo
 	limitRepo.Store(0)
 
-	// 1-connection pool test: pullRequestEvidence(first: 1) with HasNextPage == true must close rows before fence.Current.
 	t.Run("single_conn_pool_releases_before_fence_check", func(t *testing.T) {
 		got := runAt(alice, "/graphql-single", fmt.Sprintf(`{ pullRequestEvidence(repositoryIds:["%d"], first: 1) { nodes { number } hasNextPage endCursor } }`, repo))
 		if !strings.Contains(got, `"hasNextPage":true`) || strings.Contains(got, `"errors"`) {
@@ -645,7 +647,6 @@ func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 		}
 	})
 
-	// Read-phase DB error directly against Server handler with short ctx while activity_issues is locked.
 	t.Run("read_phase_db_error_returns_database_unavailable", func(t *testing.T) {
 		tx, err := pool.Begin(ctx)
 		if err != nil {
@@ -661,7 +662,6 @@ func TestGuardedListInvariantsAndMidReadRevocation(t *testing.T) {
 		}
 	})
 
-	// Demo-mode pullRequestEvidence with mixed demo + real repo IDs returns only demo PRs with RepoAccess: nil.
 	t.Run("demo_pull_request_evidence_mixed_ids", func(t *testing.T) {
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO repositories(id, name, description, is_private, is_demo) VALUES (1, 'orbit/example', 'demo', false, true) ON CONFLICT DO NOTHING;
@@ -693,7 +693,6 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 	bob := h.signIn("bob")
 	aliceID, bobID := h.userID(ctx, "alice"), h.userID(ctx, "bob")
 
-	// Setup Alice's sole private installed repo and verify sole-repository installation removal on crossRepositoryOverview.
 	priv := gh.AddRepo("alice", "sole-secret", true)
 	gh.Install("alice", 20, priv)
 	if err := repos.Connect(ctx, aliceID, priv); err != nil {
@@ -708,7 +707,6 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 		t.Fatalf("sole-repo revocation second read: %s", got)
 	}
 
-	// Reinstall (first read discovers the installation and advances the fence; second read succeeds) and verify unselected, pre-read unverified with retryAt, follow-suspended, and mid-read attachMetadataStatus revocation.
 	gh.Install("alice", 21, priv)
 	_ = run(alice, crossQ)
 	unselected := gh.AddRepo("carol", "unselected", false)
@@ -720,7 +718,6 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 		t.Fatalf("unselected repositoryOverview made %d GitHub hits, want 0", afterGH-beforeGH)
 	}
 
-	// Follow-suspended public star stays readable in both repositoryOverview and crossRepositoryOverview.
 	pub := gh.AddRepo("carol", "suspended-star", false)
 	if _, err := pool.Exec(ctx, `INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES ($1, 'carol/suspended-star', '', false, false)`, pub); err != nil {
 		t.Fatal(err)
@@ -735,14 +732,12 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 		t.Fatalf("suspended-follow crossRepositoryOverview: %s", got)
 	}
 
-	// Pre-read rate-limited repositoryOverview returns ACCESS_UNVERIFIED with extensions.retryAt.
 	limitRepo.Store(pub)
 	wantRetry := time.Unix(h.resetUnix, 0).UTC().Format(time.RFC3339)
 	if got := run(alice, fmt.Sprintf(`{ repositoryOverview(id: "%d", days: 7) { fullName } }`, pub)); !strings.Contains(got, "ACCESS_UNVERIFIED") || !strings.Contains(got, fmt.Sprintf(`"retryAt":"%s"`, wantRetry)) {
 		t.Fatalf("pre-read rate-limited repositoryOverview: %s", got)
 	}
 
-	// All-unverified crossRepositoryOverview (only pub selected on bob, rate-limited) returns non-null overview with withheld=1, retryAt, and full daily series.
 	if _, err := pool.Exec(ctx, `INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES ($1, $2, 'starred', now())`, bobID, pub); err != nil {
 		t.Fatal(err)
 	}
@@ -771,24 +766,23 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 	}
 	limitRepo.Store(0)
 
-	// Mid-read revocation inside attachMetadataStatus (after LoadRepositoryOverview finishes) returns ACCESS_UNVERIFIED without retryAt.
-	t.Run("mid_read_attach_metadata_status", func(t *testing.T) {
+	t.Run("mid_read_load_activity_status", func(t *testing.T) {
 		tx, err := pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		if _, err = tx.Exec(ctx, `LOCK TABLE repository_sync IN ACCESS EXCLUSIVE MODE`); err != nil {
+		if _, err = tx.Exec(ctx, `LOCK TABLE jobs IN ACCESS EXCLUSIVE MODE`); err != nil {
 			t.Fatal(err)
 		}
 		resCh := make(chan string, 1)
 		go func() {
-			resCh <- run(alice, fmt.Sprintf(`{ repositoryOverview(id: "%d", days: 7) { fullName } }`, priv))
+			resCh <- run(alice, fmt.Sprintf(`{ repositoryOverview(id: "%d", days: 7) { fullName activity { synchronized issues { phase } } } }`, priv))
 		}()
 		deadline := time.Now().Add(2 * time.Second)
 		blocked := false
 		for time.Now().Before(deadline) {
-			if err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%name: ListMetadataStatuses%')`).Scan(&blocked); err != nil {
+			if err = pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%name: ListActivityStatuses%')`).Scan(&blocked); err != nil {
 				t.Fatal(err)
 			}
 			if blocked {
@@ -797,13 +791,13 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		if !blocked {
-			t.Fatal("repositoryOverview did not block in attachMetadataStatus on repository_sync")
+			t.Fatal("repositoryOverview did not block in loadActivityStatus on jobs")
 		}
 		fenceTx, err := pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = accessfence.InvalidateAccess(ctx, fenceTx, accessfence.ScopeUser, aliceID); err != nil {
+		if err = accessfence.BumpAccess(ctx, fenceTx, accessfence.ScopeUser, aliceID); err != nil {
 			t.Fatal(err)
 		}
 		if err = fenceTx.Commit(ctx); err != nil {
@@ -814,13 +808,12 @@ func TestOverviewGuardedReadsAndEdges(t *testing.T) {
 		}
 		got := <-resCh
 		if !strings.Contains(got, `"repositoryOverview":null`) || !strings.Contains(got, "ACCESS_UNVERIFIED") || strings.Contains(got, `"retryAt"`) {
-			t.Fatalf("fenced attachMetadataStatus leaked or wrong error: %s", got)
+			t.Fatalf("fenced loadActivityStatus leaked or wrong error: %s", got)
 		}
 	})
 
-	// Selection limit on crossRepositoryOverview: 100 succeeds, 101 fails with OVERVIEW_SELECTION_LIMIT and 0 GitHub calls.
 	t.Run("cross_overview_selection_limit_100_vs_101", func(t *testing.T) {
-		for i := 0; i < 99; i++ { // bob already has 1 selection (pub)
+		for i := 0; i < 99; i++ {
 			id := gh.AddRepo("bob", fmt.Sprintf("r-%03d", i), false)
 			if _, err := pool.Exec(ctx, `INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES ($1, $2, '', false, false)`, id, fmt.Sprintf("bob/r-%03d", i)); err != nil {
 				t.Fatal(err)

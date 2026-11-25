@@ -60,8 +60,10 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 				return nil, fmt.Errorf("database unavailable")
 			}
 			repo := &model.Repository{ID: strconv.FormatInt(targetID, 10), Activity: activityStatus(false, true)}
-			if err := r.attachMetadataStatus(ctx, auth.userID, []*model.Repository{repo}); err != nil {
-				return nil, fmt.Errorf("database unavailable")
+			if overviewActivitySelected(ctx) {
+				if err := r.loadActivityStatus(ctx, []*model.Repository{repo}); err != nil {
+					return nil, fmt.Errorf("database unavailable")
+				}
 			}
 			return &model.RepositoryOverview{
 				Overview: overview, FullName: auth.checks[targetID].Repo.FullName,
@@ -74,12 +76,11 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 	)
 }
 
-// demoAssigneeID is the GitHub user ID testdata/demo.sql assigns demo issues to, standing in for auth.DemoViewer.
-const demoAssigneeID = 1
+const (
+	demoAssigneeID             = 1
+	codeOverviewSelectionLimit = "OVERVIEW_SELECTION_LIMIT"
+)
 
-// crossRepositoryOverview summarizes the viewer's selected repositories that pass the access check, under one fence:
-// unverified repositories are counted in Withheld without being named, and a fence move discards everything (ACCESS_UNVERIFIED).
-// Demo mode summarizes the demo repositories without an access check.
 func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (*model.CrossRepositoryOverview, error) {
 	if err := analytics.ValidateMetricWindowDays(days); err != nil {
 		return nil, err
@@ -117,7 +118,7 @@ func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (
 		return nil, fmt.Errorf("database unavailable")
 	}
 	if len(selected) > maxRepositoryIDs {
-		return nil, codedError("OVERVIEW_SELECTION_LIMIT", fmt.Sprintf("The overview supports up to %d selected repositories. Disconnect or unfollow repositories to view your overview.", maxRepositoryIDs))
+		return nil, codedError(codeOverviewSelectionLimit, fmt.Sprintf("The overview supports up to %d selected repositories. Disconnect or unfollow repositories to view your overview.", maxRepositoryIDs))
 	}
 	auth, err := r.authorizePreselected(ctx, user, selected)
 	if err != nil {

@@ -17,12 +17,11 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 )
 
-// Fixed operating limits (no tuning controls until measurements justify them).
 const (
 	MetadataPollInterval  = 15 * time.Minute
 	StarReconcileInterval = time.Hour
-	jitterFraction        = 0.1 // each period varies by up to +-10%
-	enqueueSpreadDivisor  = 15  // due times spread over interval/15 (one minute of a poll)
+	jitterFraction        = 0.1
+	enqueueSpreadDivisor  = 15
 )
 
 // ErrNoCredential means the user has no usable GitHub credential (repositories.ErrSignedOut, mapped by the worker's
@@ -117,7 +116,7 @@ func StarReconcileHandler(stars StarRefresher, clock jobs.Clock, q *db.Queries) 
 			return jobs.Permanent(fmt.Errorf("bad star reconcile key %q", job.Key))
 		}
 		if until := credentialThrottledUntil(ctx, q, userID); until.After(clock.Now()) {
-			return &jobs.Defer{RetryAt: until, Reason: "rate limited"} // pace the credential: no GitHub call at all
+			return &jobs.Defer{RetryAt: until, Reason: "rate limited"}
 		}
 		res, err := stars.FetchStars(ctx, userID)
 		if err == nil && !res.Complete && res.RetryAt != nil {
@@ -131,18 +130,16 @@ func StarReconcileHandler(stars StarRefresher, clock jobs.Clock, q *db.Queries) 
 		case !res.Complete && res.RetryAt != nil:
 			return &jobs.Defer{RetryAt: *res.RetryAt, Reason: "rate limited"}
 		case !res.Complete:
-			return errors.New("star refresh incomplete") // backoff retry; the previous snapshot and eligibility stay
+			return errors.New("star refresh incomplete")
 		}
 		return fence.Commit(ctx, func(tx pgx.Tx) error { return stars.StoreStars(ctx, tx, userID, res.Repos) })
 	}
 }
 
-// jittered returns base varied by up to +-jitterFraction.
 func jittered(base time.Duration, rnd func() float64) time.Duration {
 	return time.Duration(float64(base) * (1 + (rnd()*2-1)*jitterFraction))
 }
 
-// duty is one periodic job of the scheduler.
 type duty struct {
 	name  string
 	every time.Duration
@@ -150,8 +147,6 @@ type duty struct {
 	next  time.Time
 }
 
-// runDuties runs each duty at startup and then every period (jittered), until ctx ends. A failing run is logged and
-// retried next period; it never stops the loop.
 func runDuties(ctx context.Context, clock jobs.Clock, sleep func(context.Context, time.Duration) error, rnd func() float64, duties []*duty) {
 	start := clock.Now()
 	for _, d := range duties {
@@ -219,8 +214,6 @@ func StartScheduler(ctx context.Context, d SchedulerDeps) <-chan struct{} {
 	return done
 }
 
-// pollMetadata enqueues a refresh for every followed repository (jittered due time) and resumes paused ones.
-// Dead repositories stay dead: Enqueue records intent only, Resume ignores them.
 func (d SchedulerDeps) pollMetadata(ctx context.Context, now time.Time) error {
 	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
 		if err := accessfence.InvalidateAccess(ctx, tx, accessfence.ScopeGlobal, 0); err != nil {
@@ -244,8 +237,6 @@ func (d SchedulerDeps) scheduleStars(ctx context.Context, now time.Time) error {
 	})
 }
 
-// enqueueAndResume records intent for each id at a jittered due time, then unparks it if paused. Enqueue never
-// revives dead work and Resume ignores it.
 func (d SchedulerDeps) enqueueAndResume(ctx context.Context, tx pgx.Tx, kind jobs.Kind, keyOf func(int64) string, ids []int64, now time.Time, interval time.Duration) error {
 	for _, id := range ids {
 		at := now.Add(spread(interval, d.Rand))
@@ -263,9 +254,6 @@ func spread(interval time.Duration, rnd func() float64) time.Duration {
 	return time.Duration(rnd() * float64(interval) / enqueueSpreadDivisor)
 }
 
-// pollActivity repairs missed webhooks: every followed repository's caught-up streams are reopened for a catch-up
-// scan at a jittered time, and paused streams resume. Public and private repositories take the same path; access
-// is re-verified by the jobs themselves. Dead streams stay dead.
 func (d SchedulerDeps) pollActivity(ctx context.Context, now time.Time) error {
 	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
 		ids, err := db.New(tx).ListFollowedRepositoryIDs(ctx)
@@ -287,17 +275,14 @@ func (d SchedulerDeps) pollActivity(ctx context.Context, now time.Time) error {
 	})
 }
 
-// writeOperationRetention is the age, measured from write_operations.created_at, after which a succeeded or failed
-// issue-write operation is deleted and an unresolved one is wiped and redacted (and then kept indefinitely).
 const writeOperationRetention = 30 * 24 * time.Hour
 
-// expireWriteOperations deletes the app's own operations and succeeded and failed issue-write operations older than
-// writeOperationRetention, and
-// wipes and redacts the rest of that age. Those are unresolved (pending or unknown), and an unknown create must stay: its
-// content hash is what stops a retry of the same content from creating a second issue.
 func (d SchedulerDeps) expireWriteOperations(ctx context.Context, now time.Time) error {
 	cutoff := now.Add(-writeOperationRetention)
 	return db.InTx(ctx, d.Pool, func(tx pgx.Tx) error {
+		if err := db.New(tx).FailAllStalePendingOperations(ctx); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM write_operations WHERE created_at < $1 AND state IN ('succeeded', 'failed')`, cutoff); err != nil {
 			return err
 		}

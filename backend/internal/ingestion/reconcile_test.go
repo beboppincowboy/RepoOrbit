@@ -104,6 +104,9 @@ func TestStarHandlerFailurePathsCommitNothingAndSpendNoAttempt(t *testing.T) {
 			if err := h(context.Background(), jobs.Job{Key: "user:7"}, nil); !c.check(err) {
 				t.Fatalf("got %v", err)
 			}
+			if c.stars.stored != 0 {
+				t.Fatalf("a failed refresh stored a star snapshot; eligibility would be suspended from partial data")
+			}
 		})
 	}
 	h := StarReconcileHandler(&fakeStars{}, &fakeClock{}, nil)

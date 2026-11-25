@@ -1,31 +1,31 @@
+import { clearAllIssueDrafts } from "@/lib/drafts";
+
 export type Issue = { id: string; repositoryId: string; title: string; state: string };
-// User-facing label for an unverified repository access check.
 const ACCESS_UNVERIFIED_MESSAGE = "Access could not be verified";
 // Wire values of the backend's repositories.SyncState; "demo" appears only in Demo mode.
 export type SyncState = "demo" | "awaiting-sync" | "not-synchronized";
 // Shared metadata refresh status (null when not selected, and in Demo mode). Times are RFC 3339; failureCode is a safe machine code.
 // "paused" means waiting for a usable GitHub credential; "dead" needs an operator requeue.
 export type MetadataStatus = { state: "not-scheduled" | "queued" | "running" | "paused" | "dead"; lastSuccessAt: string | null; nextAttemptAt: string | null; paused: boolean; failureCode: string | null; followSuspended: boolean };
-// Activity coverage is separate from metadata: synchronized is true only when every activity stream is caught up and fresh.
 export type ActivityResourceStatus = { phase: string; boundary: string; catchupThrough: string | null; lastSuccessAt: string | null; failureCode: string | null; jobState: string; nextAttemptAt: string | null };
 export type ChildResourceStatus = { complete: boolean; pendingChildren: number; lastSuccessAt: string | null; failureCode: string | null; nextAttemptAt: string | null };
 export type ActivityStatus = { synchronized: boolean; message: string; issues: ActivityResourceStatus | null; pullRequests: ActivityResourceStatus | null; releases: ActivityResourceStatus | null; reviews: ChildResourceStatus | null; comments: ChildResourceStatus | null; issueEvents: { traversal: ActivityResourceStatus | null; historicalGap: boolean } | null; futureResources: string[] };
+
 // fullName is "owner/name".
-type SelectedRepository = { id: string; fullName: string; description: string; syncState: SyncState; metadataStatus: MetadataStatus | null };
-type IssueConnection = { nodes: Issue[]; hasNextPage: boolean; withheld: number; retryAt: string | null };
-type RepositoryDetail =
+export type SelectedRepository = { id: string; fullName: string; description: string; syncState: SyncState; metadataStatus: MetadataStatus | null };
+export type IssueConnection = { nodes: Issue[]; hasNextPage: boolean; withheld: number; retryAt: string | null };
+export type RepositoryDetail =
   | { state: "available"; activity: ActivityStatus | null; issues: IssueConnection }
+  | { state: "access-denied" }
   | { state: "access-unverified"; retryAt: string | null };
 // withheld counts selected repositories hidden because access could not be verified; retryAt is set when GitHub rate limited the check.
-type RepositoryConnection = { nodes: SelectedRepository[]; endCursor: string | null; hasNextPage: boolean; withheld: number; retryAt: string | null };
+export type RepositoryConnection = { nodes: SelectedRepository[]; endCursor: string | null; hasNextPage: boolean; withheld: number; retryAt: string | null };
 // One row of a REST repository list. `selected` means connected on the owned list and followed on the starred list.
 export type ListedRepo = { id: string; fullName: string; description: string; private: boolean; selected: boolean; syncState: SyncState };
 export type OwnedPage = { repositories: ListedRepo[]; nextPage: number; refreshFailed: boolean; withheld: number; retryAt: string | null; installUrl: string };
 export type StarredPage = { repositories: ListedRepo[]; nextPage: number; refreshedAt: string | null; refreshFailed: boolean; withheld: number; retryAt: string | null; installUrl: string };
 export type ViewerSession = { mode: "demo" | "real"; user: { login: string; demo: boolean } | null; csrfToken: string | null };
 let csrfToken: string | null = null;
-// fetchViewerSession fetches the session and, as a side effect, stores its CSRF token in this module for every later
-// mutating call (logout, setSelected, setFollowed, GraphQL). The workspace loads it before any of them.
 async function fetchViewerSession(): Promise<ViewerSession> {
   const response = await fetch("/auth/me", { cache: "no-store" });
   if (!response.ok) throw new Error("Unable to load session");
@@ -39,13 +39,7 @@ export const sessionQuery = { queryKey: ["session"], queryFn: fetchViewerSession
 export async function logout() {
   const response = await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
   if (!response.ok) throw new Error("Could not sign out. Try again.");
-  if (typeof window !== "undefined") {
-    try {
-      for (const key of Object.keys(window.localStorage)) {
-        if (key.startsWith("repoorbit:issue-draft:")) window.localStorage.removeItem(key);
-      }
-    } catch { /* ignore storage access errors */ }
-  }
+  clearAllIssueDrafts();
 }
 type GraphQLResponse<Data> = {
   data?: Data | null;
@@ -64,9 +58,6 @@ async function graphqlQuery<Data>(queryText: string, variables: Record<string, u
   if (!response.ok) throw new Error("Unable to load repositories");
   return response.json();
 }
-// The backend caps GraphQL nesting at 6 levels (a leaf one level deeper is rejected) and query complexity at 1200.
-// So the list query stays shallow, and activity and issues come from aliased queries of at most 8 repositories each:
-// repository(id) and issues(repositoryIds) are each one level shallower than selectedRepositories { nodes { activity { issueEvents { traversal } } } }.
 const activityResourceFields = "phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt";
 const childResourceFields = "complete pendingChildren lastSuccessAt failureCode nextAttemptAt";
 const activityFields = `synchronized message issues { ${activityResourceFields} } pullRequests { ${activityResourceFields} } releases { ${activityResourceFields} } reviews { ${childResourceFields} } comments { ${childResourceFields} } issueEvents { traversal { ${activityResourceFields} } historicalGap } futureResources`;
@@ -74,9 +65,6 @@ const detailChunk = 8;
 type DetailResponse = Partial<Record<`a${number}`, { activity: ActivityStatus | null } | null>>
   & Partial<Record<`r${number}`, IssueConnection | null>>;
 
-// Rechecks access and fetches activity and up to five issues per ID, in input order.
-// Accepts one to eight IDs. Access-unverified entries carry only an optional retry time.
-// Rejects an invalid batch size, cancellation, or a request or unexpected GraphQL error.
 export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal): Promise<RepositoryDetail[]> {
   if (ids.length === 0 || ids.length > detailChunk) throw new RangeError("Expected one to eight repository IDs");
   const declarations = ids.map((_, i) => `$id${i}: ID!`).join(", ");
@@ -86,19 +74,29 @@ export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal
     throw new Error("Unable to load repository details");
   }
   return ids.map((_, i) => {
-    const repository = data[`a${i}`];
-    const issues = data[`r${i}`];
-    const accessError = errors.find(error => error.path?.[0] === `a${i}` || error.path?.[0] === `r${i}`);
-    if (repository === null || accessError || issues?.withheld) {
+    const repoAlias = `a${i}` as const;
+    const issuesAlias = `r${i}` as const;
+    const hasRepoAlias = Object.hasOwn(data, repoAlias);
+    const hasIssuesAlias = Object.hasOwn(data, issuesAlias);
+    const repository = data[repoAlias];
+    const issues = data[issuesAlias];
+    const repoError = errors.find(error => error.path?.[0] === repoAlias);
+    const accessError = repoError ?? errors.find(error => error.path?.[0] === issuesAlias);
+    if (hasRepoAlias && repository === null && !repoError) {
+      return { state: "access-denied" };
+    }
+    if (accessError || issues?.withheld) {
       return { state: "access-unverified", retryAt: accessError?.extensions?.retryAt ?? issues?.retryAt ?? null };
     }
-    if (!repository || !issues) throw new Error("Unable to load repository details");
+    if (!hasRepoAlias || !hasIssuesAlias || !repository || !issues || typeof repository !== "object" || typeof issues !== "object") {
+      throw new Error("Unable to load repository details");
+    }
     return { state: "available", activity: repository.activity, issues };
   });
 }
 
-type SelectedRepositoryBatch = { repositories: SelectedRepository[]; details: RepositoryDetail[] | null };
-type SelectedRepositoryPage = Omit<RepositoryConnection, "nodes"> & { batches: SelectedRepositoryBatch[] };
+export type SelectedRepositoryBatch = { repositories: SelectedRepository[]; details: RepositoryDetail[] | null };
+export type SelectedRepositoryPage = Omit<RepositoryConnection, "nodes"> & { batches: SelectedRepositoryBatch[] };
 
 // Fetches up to 20 verified selections from GraphQL. Start with null, then pass the previous endCursor.
 // Withheld rows count toward the page size and appear only in the withheld count. An empty page can still have a next cursor.
@@ -129,7 +127,6 @@ export async function fetchSelectedRepositoryDetailsPage(metadataPage: Promise<R
   signal?.throwIfAborted();
   return { ...connection, batches };
 }
-// Loads one page of repositories on the user's personal GitHub account (selected or not) from GitHub.
 export async function ownedRepositories(page = 1): Promise<OwnedPage> {
   const response = await fetch(`/api/repositories/owned?page=${page}`, { cache: "no-store" });
   if (!response.ok) throw new Error("Unable to load your repositories");
@@ -243,7 +240,8 @@ export async function fetchWorkspacePullRequests(id: string, after: string | nul
 export type AttentionKind = "pr_awaiting_review" | "issue_no_response" | "stale_issue";
 // since: when the item was opened, or for stale_issue when it was last updated (RFC 3339).
 export type AttentionItem = { kind: AttentionKind; repositoryId: string; fullName: string; number: number; title: string; url: string; since: string };
-export type AssignedIssue = { repositoryId: string; fullName: string; number: number; title: string; url: string; updatedAt: string };
+// status is null when the repository's status labels are off.
+export type AssignedIssue = { repositoryId: string; fullName: string; number: number; title: string; url: string; updatedAt: string; status: BoardStatus | null };
 // Totals, the trend and Needs attention cover counted repositories. Assigned issues require issue coverage.
 // Withheld counts unverified repositories without naming them. Lists hold at most 25 rows.
 export type CrossRepositoryOverview = {
@@ -271,7 +269,7 @@ export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: A
       openIssues { value coverage { ${coverage} } }
       reviewBacklog { value coverage { ${coverage} } }
       needsAttention { kind repositoryId fullName number title url since }
-      assignedToMe { repositoryId fullName number title url updatedAt }
+      assignedToMe { repositoryId fullName number title url updatedAt status }
       daily { day issuesOpened pullRequestsMerged }
     }
   }`, { days }, signal);
@@ -283,7 +281,30 @@ export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: A
   return data.crossRepositoryOverview;
 }
 
-// --- Issues and audited issue writes (U6a/U6b) ----------------------------------------------------
+export type BoardStatus = "backlog" | "todo" | "in_progress" | "in_review" | "done";
+// status is null when the repository's status labels are off. multipleStatus flags an open issue carrying more than one
+// status label. updatedAt is RFC 3339.
+export type BoardIssue = { number: number; title: string; url: string; state: "open" | "closed"; updatedAt: string; authorLogin: string | null; labels: string[]; assignees: string[]; status: BoardStatus | null; multipleStatus: boolean };
+// The open issues (500 most recently updated), closed issues (50 most recently closed) and the included numbers, each once.
+// truncated is true when a cap left issues out.
+export type RepositoryBoard = { statusLabels: boolean; truncated: boolean; issues: BoardIssue[] };
+
+// Fetches the Board snapshot, adding the issues numbered in include (at most 100, for staged cards and an opened issue).
+// Null means the repo is missing, unselected, or denied. Unverified access and temporary transport failures reject
+// with their typed errors.
+export async function fetchRepositoryBoard(id: string, include: number[], signal?: AbortSignal): Promise<RepositoryBoard | null> {
+  const { data, errors } = await graphqlQuery<{ repositoryBoard: RepositoryBoard | null }>(`query RepositoryBoard($id: ID!, $include: [Int!]) {
+    repositoryBoard(id: $id, include: $include) {
+      statusLabels truncated
+      issues { number title url state updatedAt authorLogin labels assignees status multipleStatus }
+    }
+  }`, { id, include }, signal);
+  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
+  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
+  if (!data || errors?.length) throw new Error("Could not load the board");
+  return data.repositoryBoard;
+}
+
 
 export type WorkspaceIssue = {
   id: string;
@@ -316,10 +337,16 @@ export type IssueDelta = {
   remove?: string[];
 };
 
+// An issue's Board-relevant state: a staged card's snapshot, and the `current` of a 409 "changed on GitHub".
+export type BoardSnapshot = { state: "open" | "closed"; labels: string[]; assignees: string[]; status: BoardStatus; updatedAt: string };
+
 export type IssueUpdateDraft = {
   labels?: IssueDelta;
   assignees?: IssueDelta;
   state?: "open" | "closed";
+  // Board changes only: the state the change was staged over. When GitHub's Board status, assignee set or (while open)
+  // status-label set differs, the update answers 409 changed_on_github and nothing is recorded or sent.
+  expect?: { status: BoardStatus; assignees: string[]; statusLabels: string[] };
 };
 
 export type WriteOperationIssue = {
@@ -373,32 +400,103 @@ export type IssueWriteErrorKind =
   | "unprocessable"
   | "unverified"
   | "transport"
-  | "server";
+  | "server"
+  | "changed_on_github"; // a Board update's expect no longer matches GitHub; current holds the live state
+
+export type WriteDisposition = "not-recorded" | "possibly-recorded" | null;
 
 export class IssueWriteError extends Error {
   readonly status: number;
   readonly kind: IssueWriteErrorKind;
+  readonly disposition: WriteDisposition;
   readonly retryAfter: string | null;
   readonly operationId: number | null;
   readonly operation: WriteOperation | null;
+  readonly current: BoardSnapshot | null;
 
   constructor(
     message: string,
     opts: {
       status: number;
       kind: IssueWriteErrorKind;
+      disposition?: WriteDisposition;
       retryAfter?: string | null;
       operationId?: number | null;
       operation?: WriteOperation | null;
+      current?: BoardSnapshot | null;
     },
   ) {
     super(message);
     this.status = opts.status;
     this.kind = opts.kind;
+    this.disposition = opts.disposition ?? null;
     this.retryAfter = opts.retryAfter ?? null;
     this.operationId = opts.operationId ?? null;
     this.operation = opts.operation ?? null;
+    this.current = opts.current ?? null;
   }
+}
+
+const SERVER_WRITE_RETENTION_DAYS = 30;
+const CLOCK_SKEW_MARGIN_DAYS = 1;
+const WRITE_RECOVERY_WINDOW_MS = (SERVER_WRITE_RETENTION_DAYS - CLOCK_SKEW_MARGIN_DAYS) * 24 * 60 * 60 * 1000;
+const WRITE_RECOVERY_FUTURE_SKEW_MS = 5 * 60 * 1000;
+
+export function generateIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `ro-${crypto.randomUUID()}`;
+  }
+  return `ro-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+export function canReplayWithSameKey(attemptedAt: string | null | undefined, now: number = Date.now()): boolean {
+  if (!attemptedAt) return false;
+  const parsed = Date.parse(attemptedAt);
+  if (!Number.isFinite(parsed)) return false;
+  const age = now - parsed;
+  return age >= -WRITE_RECOVERY_FUTURE_SKEW_MS && age <= WRITE_RECOVERY_WINDOW_MS;
+}
+
+export type WriteFailureClassification =
+  | { outcome: "duplicate_create"; operationId: number; message: string }
+  | { outcome: "changed_on_github"; current: BoardSnapshot; message: string }
+  | { outcome: "recheck_unresolved"; operation: WriteOperation | null; message: string }
+  | { outcome: "possibly_recorded"; message: string }
+  | { outcome: "not_recorded"; message: string };
+
+export function mayHaveBeenRecorded(error: unknown, opts: { isReplay?: boolean } = {}): boolean {
+  if (!(error instanceof IssueWriteError)) return true;
+  if (error.kind === "duplicate_create" || error.kind === "recheck_unresolved") return false;
+  if (opts.isReplay) return true;
+  if (error.kind === "transport" || error.kind === "server") return true;
+  if (error.disposition === "possibly-recorded") return true;
+  if (error.disposition === "not-recorded") return false;
+  if (error.status === 503) return true;
+  return false;
+}
+
+export function classifyWriteFailure(error: unknown, opts: { isReplay?: boolean } = {}): WriteFailureClassification {
+  const message = error instanceof Error ? error.message : "Could not submit to GitHub.";
+  if (error instanceof IssueWriteError) {
+    if (error.kind === "duplicate_create" && error.operationId) {
+      return { outcome: "duplicate_create", operationId: error.operationId, message };
+    }
+    if (error.kind === "changed_on_github" && error.current) {
+      return { outcome: "changed_on_github", current: error.current, message };
+    }
+    if (error.kind === "recheck_unresolved") {
+      return { outcome: "recheck_unresolved", operation: error.operation, message };
+    }
+  }
+  return mayHaveBeenRecorded(error, opts)
+    ? { outcome: "possibly_recorded", message }
+    : { outcome: "not_recorded", message };
+}
+
+function parseWriteDisposition(header: string | null): WriteDisposition {
+  const value = header?.trim().toLowerCase();
+  if (value === "not-recorded" || value === "possibly-recorded") return value;
+  return null;
 }
 
 function parseRetryAfter(header: string | null): string | null {
@@ -413,6 +511,7 @@ function parseRetryAfter(header: string | null): string | null {
 
 async function toIssueWriteError(response: Response): Promise<IssueWriteError> {
   const retryAfter = parseRetryAfter(response.headers.get("Retry-After"));
+  const disposition = parseWriteDisposition(response.headers.get("RepoOrbit-Write-Disposition"));
   const text = (await response.text().catch(() => "")).trim();
   let parsed: Record<string, unknown> | null = null;
   if (text.startsWith("{")) {
@@ -421,14 +520,18 @@ async function toIssueWriteError(response: Response): Promise<IssueWriteError> {
     } catch { /* plain text error */ }
   }
   if (response.status === 409) {
+    if (parsed && parsed.current && typeof parsed.current === "object") {
+      return new IssueWriteError("This issue changed on GitHub after the change was staged.", { status: 409, kind: "changed_on_github", disposition, current: parsed.current as BoardSnapshot });
+    }
     if (parsed && typeof parsed.operationId === "number") {
       const msg = typeof parsed.error === "string" && parsed.error ? parsed.error : "An earlier create of this issue is still unresolved; recheck it instead of resubmitting.";
-      return new IssueWriteError(msg, { status: 409, kind: "duplicate_create", operationId: parsed.operationId });
+      return new IssueWriteError(msg, { status: 409, kind: "duplicate_create", disposition, operationId: parsed.operationId });
     }
     if (parsed && typeof parsed.id === "number" && typeof parsed.state === "string") {
       return new IssueWriteError("The issue on GitHub could not be confirmed as matching this operation yet.", {
         status: 409,
         kind: "recheck_unresolved",
+        disposition,
         operation: parsed as unknown as WriteOperation,
       });
     }
@@ -444,10 +547,9 @@ async function toIssueWriteError(response: Response): Promise<IssueWriteError> {
     504: ["transport", "The request timed out before a reliable answer arrived. Your draft is preserved; check Write history before retrying."],
   };
   const [kind, defaultMessage] = fallback[response.status] ?? ["server", "Could not complete the issue request."];
-  return new IssueWriteError(text || defaultMessage, { status: response.status, kind, retryAfter });
+  return new IssueWriteError(text || defaultMessage, { status: response.status, kind, disposition, retryAfter });
 }
 
-// Fetches imported issues for one repository, including number, labels, assignees, author and URL.
 export async function fetchWorkspaceIssues(id: string, after: string | null, signal: AbortSignal) {
   const { data, errors } = await graphqlQuery<{
     issues: { nodes: WorkspaceIssue[]; withheld: number; retryAt: string | null; hasNextPage: boolean; endCursor: string | null };

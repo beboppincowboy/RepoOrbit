@@ -176,7 +176,6 @@ test('creates a new issue through Edit -> Review -> Submit -> Confirmed and show
   await dialog.getByLabel('Description').fill('Add shortcuts for workspace tabs.');
   await dialog.getByLabel('Labels (optional)').fill('enhancement');
   await dialog.getByRole('button', { name: 'Add label' }).click();
-  // Suggestions are the users GitHub accepts as assignees, not every recent contributor.
   const suggestions = dialog.locator(`#${await dialog.getByLabel('Assignees (optional)').getAttribute('list')} option`);
   await expect(suggestions).toHaveCount(2);
   await expect(suggestions.nth(1)).toHaveAttribute('value', 'alex');
@@ -348,7 +347,6 @@ test('unknown create never resends, rejects mismatched recheck, and links verifi
   );
   expect(createCalls).toBe(1);
 
-  // Mismatched issue number cannot resolve the operation and does not resend the create.
   await dialog.getByLabel(/Found the created issue on GitHub/).fill('99');
   await dialog.getByRole('button', { name: 'Recheck' }).click();
   await expect(dialog.getByRole('alert')).toContainText('Issue #99 could not be matched to this draft');
@@ -356,7 +354,6 @@ test('unknown create never resends, rejects mismatched recheck, and links verifi
   expect(createCalls).toBe(1);
   expect(recheckCalls).toEqual([99]);
 
-  // Reloading preserves the unknown operation and lets the user resolve it with the real issue number.
   await page.reload();
   const reloadedDialog = page.getByRole('dialog', { name: 'New issue' });
   await expect(reloadedDialog.getByText('Outcome unknown.')).toBeVisible();
@@ -417,7 +414,6 @@ test('failed submit preserves draft across reload and retries with a new idempot
   await dialog.getByRole('button', { name: 'Submit to GitHub' }).click();
   await expect(dialog.getByRole('alert')).toContainText('cannot be assigned in this repository: stranger');
 
-  // Reloading restores the failed state and full draft without losing entered text.
   await page.reload();
   const reloaded = page.getByRole('dialog', { name: 'New issue' });
   await expect(reloaded.getByRole('alert')).toContainText('cannot be assigned in this repository: stranger');
@@ -445,7 +441,6 @@ test('disables disallowed actions with the GitHub permission reason', async ({ p
 
   await page.goto('/workspace/1?tab=issues');
 
-  // New issue: Read user can create plain issue, but labels/assignees are disabled with Push reason.
   await page.getByRole('region', { name: 'Repository issues' }).getByRole('button', { name: '+ New issue' }).click();
   let dialog = page.getByRole('dialog', { name: 'New issue' });
   await expect(dialog.getByLabel('Title')).toBeEnabled();
@@ -454,7 +449,6 @@ test('disables disallowed actions with the GitHub permission reason', async ({ p
   await expect(dialog).toContainText('requires Push access on GitHub');
   await dialog.getByRole('button', { name: 'Close issue editor' }).click();
 
-  // Edit another user's issue (#12, authored by alex): all controls disabled with Triage reason.
   await page.getByRole('button', { name: 'Edit issue #12' }).click();
   dialog = page.getByRole('dialog', { name: 'Edit issue #12' });
   await expect(dialog).toContainText('requires Triage or higher permission on GitHub');
@@ -463,14 +457,12 @@ test('disables disallowed actions with the GitHub permission reason', async ({ p
   await expect(dialog.getByRole('button', { name: 'Review' })).toBeDisabled();
   await dialog.getByRole('button', { name: 'Close issue editor' }).click();
 
-  // Edit viewer's own issue (#15, authored by ada): state is enabled, labels/assignees stay disabled.
   await page.getByRole('button', { name: 'Edit issue #15' }).click();
   dialog = page.getByRole('dialog', { name: 'Edit issue #15' });
   await expect(dialog).toContainText('With Read access you can close or reopen issues you authored');
   await expect(dialog.getByLabel('Open / closed state')).toBeEnabled();
   await expect(dialog.getByLabel('Labels (add or remove)')).toBeDisabled();
 
-  // After a reload the editor knows only the number from the URL; it loads the issue so the author keeps close/reopen.
   await page.reload();
   dialog = page.getByRole('dialog', { name: 'Edit issue #15' });
   await expect(dialog).toContainText('With Read access you can close or reopen issues you authored');
@@ -560,7 +552,6 @@ test('write history supports inline recheck of unknown operations and follow-up 
   const history = page.getByRole('region', { name: 'Write history' });
   await expect(history).toContainText('Unapplied: add assignee octocat');
 
-  // Inline recheck in Write history rejects mismatch and resolves on match.
   await history.getByLabel('Issue number for operation #901').fill('12');
   await history.getByRole('button', { name: 'Recheck' }).click();
   await expect(history.getByRole('alert')).toContainText('Issue #12 did not match this draft');
@@ -569,7 +560,6 @@ test('write history supports inline recheck of unknown operations and follow-up 
   await history.getByRole('button', { name: 'Recheck' }).click();
   await expect(history.getByRole('link', { name: /#55/ })).toHaveAttribute('href', 'https://github.com/ada/repo-1/issues/55');
 
-  // Clicking "Edit issue #45" opens the update editor for that linked issue instead of creating a duplicate.
   await history.getByRole('button', { name: 'Edit issue #45' }).click();
   await expect(page.getByRole('dialog', { name: 'Edit issue #45' })).toBeVisible();
 });
@@ -754,4 +744,241 @@ test('write history shows the GitHub App cleanup without offering a recheck', as
   await expect(history.getByRole('listitem').first()).toContainText('-label: status:review');
   await expect(history.getByRole('listitem').nth(1)).toContainText('the app retries the removal on its own');
   await expect(history.getByRole('button', { name: 'Recheck' })).toHaveCount(0);
+});
+
+test('write disposition header controls 503 recovery independently of English prose', async ({ page }) => {
+  const keys: string[] = [];
+  let attempt = 0;
+  await setupWorkspace(page);
+  await page.route('**/api/repositories/1/issues', async route => {
+    attempt++;
+    keys.push(route.request().headers()['idempotency-key'] ?? '');
+    if (attempt === 1) {
+      return route.fulfill({
+        status: 503,
+        headers: { 'RepoOrbit-Write-Disposition': 'not-recorded' },
+        contentType: 'text/plain',
+        body: 'temporary precheck failure (same Idempotency-Key text ignored)',
+      });
+    }
+    if (attempt === 2) {
+      return route.fulfill({
+        status: 503,
+        headers: { 'RepoOrbit-Write-Disposition': 'possibly-recorded' },
+        contentType: 'text/plain',
+        body: 'upstream fence moved',
+      });
+    }
+    return route.fulfill({
+      status: 200,
+      json: {
+        id: 810, repositoryId: 1, kind: 'create', state: 'succeeded', issueNumber: 88,
+        draft: { title: 'Disposition test' },
+        outcome: { issue: { number: 88, url: 'https://github.com/ada/repo-1/issues/88', title: 'Disposition test', state: 'open', labels: [], assignees: [] } },
+        actor: 'ada', createdAt: '2026-11-24T12:00:00Z', updatedAt: '2026-11-24T12:00:01Z',
+      },
+    });
+  });
+
+  await page.goto('/workspace/1?editor=new');
+  const dialog = page.getByRole('dialog', { name: 'New issue' });
+  await dialog.getByLabel('Title').fill('Disposition test');
+  await dialog.getByRole('button', { name: 'Review' }).click();
+  await dialog.getByRole('button', { name: 'Submit to GitHub' }).click();
+
+  await expect(dialog.getByRole('alert')).toContainText('Write did not fully succeed.');
+  await dialog.getByRole('button', { name: 'Back to edit' }).click();
+  await dialog.getByRole('button', { name: 'Review' }).click();
+  await dialog.getByRole('button', { name: 'Submit to GitHub' }).click();
+
+  await expect(dialog.getByText('Outcome unknown.')).toBeVisible();
+  const recover = dialog.getByRole('button', { name: 'Check recorded status with same key' });
+  await expect(recover).toBeVisible();
+  await recover.click();
+  await expect(dialog.getByText('Confirmed on GitHub.')).toBeVisible();
+
+  expect(keys).toHaveLength(3);
+  expect(keys[0]).not.toBe(keys[1]);
+  expect(keys[1]).toBe(keys[2]);
+});
+
+test('archived repository still allows same-key recovery of an earlier uncertain write while disabling fresh writes', async ({ page }) => {
+  const keys: string[] = [];
+  const bodies: Record<string, unknown>[] = [];
+  let archived = false;
+  await setupWorkspace(page);
+  await page.route('**/graphql', async route => {
+    const query = String(route.request().postDataJSON().query);
+    if (query.startsWith('query RepositoryOverview')) {
+      return route.fulfill({ json: { data: { repositoryOverview: overview({ activity: { ...fullActivity, archived } }) } } });
+    }
+    return route.fallback();
+  });
+  await page.route('**/api/repositories/1/issues', async route => {
+    keys.push(route.request().headers()['idempotency-key'] ?? '');
+    bodies.push(route.request().postDataJSON() as Record<string, unknown>);
+    if (keys.length === 1) {
+      return route.fulfill({ status: 503, contentType: 'text/plain', body: 'Proxy temporarily unavailable' });
+    }
+    return route.fulfill({
+      status: 200,
+      json: {
+        id: 811, repositoryId: 1, kind: 'create', state: 'succeeded', issueNumber: 89,
+        draft: bodies[0],
+        outcome: { issue: { number: 89, url: 'https://github.com/ada/repo-1/issues/89', title: 'Archived recovery', state: 'open', labels: [], assignees: [] } },
+        actor: 'ada', createdAt: '2026-11-24T12:00:00Z', updatedAt: '2026-11-24T12:00:01Z',
+      },
+    });
+  });
+
+  await page.goto('/workspace/1?editor=new');
+  const dialog = page.getByRole('dialog', { name: 'New issue' });
+  await dialog.getByLabel('Title').fill('Archived recovery');
+  await dialog.getByRole('button', { name: 'Review' }).click();
+  await dialog.getByRole('button', { name: 'Submit to GitHub' }).click();
+  await expect(dialog.getByText('Outcome unknown.')).toBeVisible();
+
+  archived = true;
+  await page.reload();
+  await expect(dialog).toContainText('archived on GitHub');
+  const recover = dialog.getByRole('button', { name: 'Check recorded status with same key' });
+  await expect(recover).toBeVisible();
+  await recover.click();
+  await expect(dialog.getByText('Confirmed on GitHub.')).toBeVisible();
+  expect(keys).toEqual([keys[0], keys[0]]);
+  expect(bodies).toEqual([bodies[0], bodies[0]]);
+
+  await dialog.getByRole('button', { name: 'Done' }).click();
+  await page.getByRole('button', { name: '+ New issue' }).click();
+  await expect(dialog.getByLabel('Title')).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: 'Review' })).toBeDisabled();
+});
+
+test('expired and undated legacy uncertain drafts suppress same-key POSTs and preserve the draft for manual reconciliation', async ({ page }) => {
+  let posts = 0;
+  await setupWorkspace(page);
+  await page.route('**/api/repositories/1/issues', route => {
+    posts++;
+    return route.fulfill({ status: 500, body: 'should not be called' });
+  });
+
+  await page.goto('/workspace/1');
+  await page.evaluate(() => {
+    const expiredAt = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+    localStorage.setItem('repoorbit:issue-draft:real:ada:1:create', JSON.stringify({
+      version: 1,
+      title: 'Old uncertain draft',
+      body: 'Keep this body',
+      labels: [],
+      assignees: [],
+      idempotencyKey: 'ro-expired-key',
+      attemptedAt: expiredAt,
+      keepKeyOnNextSubmit: true,
+      lastError: 'Lost response',
+      lastOperation: null,
+      duplicateOperationId: null,
+      step: 'unknown',
+    }));
+  });
+  await page.goto('/workspace/1?editor=new');
+  let dialog = page.getByRole('dialog', { name: 'New issue' });
+  await expect(dialog.getByText('Outcome unknown.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Check recorded status with same key' })).toHaveCount(0);
+  await expect(dialog).toContainText(/manual|Write history/i);
+  expect(posts).toBe(0);
+
+  await page.evaluate(() => {
+    localStorage.setItem('repoorbit:issue-draft:real:ada:1:create', JSON.stringify({
+      version: 1,
+      title: 'Legacy undated draft',
+      body: 'Legacy body preserved',
+      labels: [],
+      assignees: [],
+      idempotencyKey: 'ro-legacy-key',
+      keepKeyOnNextSubmit: true,
+      lastError: 'Lost response',
+      lastOperation: null,
+      duplicateOperationId: null,
+      step: 'unknown',
+    }));
+  });
+  await page.reload();
+  dialog = page.getByRole('dialog', { name: 'New issue' });
+  await expect(dialog.getByText('Outcome unknown.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Check recorded status with same key' })).toHaveCount(0);
+  const storedTitle = await page.evaluate(() => JSON.parse(localStorage.getItem('repoorbit:issue-draft:real:ada:1:create') ?? '{}').title);
+  expect(storedTitle).toBe('Legacy undated draft');
+  expect(posts).toBe(0);
+});
+
+test('storage failure before a new editor send keeps the draft editable and issues zero requests', async ({ page }) => {
+  let posts = 0;
+  await setupWorkspace(page);
+  await page.route('**/api/repositories/1/issues', route => {
+    posts++;
+    return route.fulfill({ status: 201, json: {} });
+  });
+
+  await page.goto('/workspace/1?editor=new');
+  const dialog = page.getByRole('dialog', { name: 'New issue' });
+  await dialog.getByLabel('Title').fill('Do not send without storage');
+  await dialog.getByRole('button', { name: 'Review' }).click();
+
+  await page.evaluate(() => {
+    Storage.prototype.setItem = () => {
+      throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+    };
+  });
+  await dialog.getByRole('button', { name: 'Submit to GitHub' }).click();
+
+  await expect(dialog.getByRole('alert')).toContainText(/browser storage/i);
+  await expect(dialog.getByLabel('Title')).toHaveValue('Do not send without storage');
+  expect(posts).toBe(0);
+});
+
+test('status source enable retry reuses key on uncertain 503 and rotates key on not-recorded 503', async ({ page }) => {
+  const off = {
+    enabled: false,
+    canChange: true,
+    labels: [
+      { name: 'status:todo', exists: true },
+      { name: 'status:in-progress', exists: false },
+      { name: 'status:review', exists: false },
+    ],
+  };
+  const keys: string[] = [];
+  await setupWorkspace(page, { statusLabels: off });
+  await page.route('**/api/repositories/1/status-labels', async route => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: keys.length >= 3 ? { enabled: true, canChange: true } : off });
+    keys.push(route.request().headers()['idempotency-key'] ?? '');
+    if (keys.length === 1) {
+      return route.fulfill({ status: 503, headers: { 'RepoOrbit-Write-Disposition': 'not-recorded' }, contentType: 'text/plain', body: 'access unverified' });
+    }
+    if (keys.length === 2) {
+      return route.fulfill({ status: 503, headers: { 'RepoOrbit-Write-Disposition': 'possibly-recorded' }, contentType: 'text/plain', body: 'fence moved' });
+    }
+    return route.fulfill({
+      status: 200,
+      json: {
+        id: 602, repositoryId: 1, kind: 'status_labels', state: 'succeeded', issueNumber: null,
+        draft: { labels: ['status:todo', 'status:in-progress', 'status:review'] },
+        outcome: { created: ['status:in-progress', 'status:review'] },
+        actor: 'ada', createdAt: '2026-11-24T12:00:00Z', updatedAt: '2026-11-24T12:00:01Z',
+      },
+    });
+  });
+
+  await page.goto('/workspace/1?tab=issues');
+  const setup = page.getByRole('region', { name: 'Status labels' });
+  await setup.getByRole('button', { name: 'Turn on…' }).click();
+  await setup.getByRole('button', { name: 'Submit' }).click();
+  await expect(setup.getByRole('alert')).toContainText('access unverified');
+  await setup.getByRole('button', { name: 'Submit' }).click();
+  await expect(setup.getByRole('alert')).toContainText('fence moved');
+  await setup.getByRole('button', { name: 'Retry submit' }).click();
+  await expect(setup.getByRole('status')).toContainText('Confirmed: status labels are on');
+
+  expect(keys).toHaveLength(3);
+  expect(keys[0]).not.toBe(keys[1]);
+  expect(keys[1]).toBe(keys[2]);
 });

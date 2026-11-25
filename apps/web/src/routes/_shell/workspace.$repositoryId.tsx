@@ -1,23 +1,35 @@
-import { repositorySnapshotKey, repositorySnapshotPrefix } from "@/lib/repository-snapshots";
+import { repositorySnapshotKey } from "@/lib/repository-snapshots";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
-import { clearRepositoryIssueDrafts, hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/components/issue-editor";
+import { hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/components/issue-editor";
+import { IssueBoard } from "@/components/issue-board";
 import { IssueIcon, PullRequestIcon } from "@/components/needs-attention";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { WriteHistory, writeOperationsQueryKey } from "@/components/write-history";
 import { StatusSourceSetup } from "@/components/status-source-setup";
-import { selectedRepositoriesKey, flattenSelectedRepositoryRows, useSelectedRepositories } from "@/lib/selected-repositories";
+import {
+  crossRepositoryOverviewKey,
+  currentAccessSeq,
+  recordAccessDenied,
+  recordOverviewSnapshot,
+  recordOverviewUnavailable,
+  selectRepositoryVisibility,
+  selectedRepositoriesKey,
+  useRepositoryVisibility,
+  useSelectedRepositories,
+  useSelectedRepositoryMetadata,
+  viewerKeyOf,
+} from "@/lib/selected-repositories";
 import {
   RepositoryAccessUnverifiedError,
   GraphQLUnavailableError,
   fetchIssueCapabilities,
   fetchWorkspaceIssue,
   fetchAssignableUsers,
-  fetchSelectedRepositoryDetailsPage,
   fetchRepositoryOverview,
   fetchWorkspaceIssues,
   fetchWorkspacePullRequests,
@@ -30,7 +42,7 @@ import {
   type WriteOperationIssue,
 } from "@/lib/api";
 
-const tabs = { overview: "Overview", issues: "Issues", pulls: "Pull Requests", contributors: "Contributors", activity: "Activity" } as const;
+const tabs = { overview: "Overview", issues: "Issues", board: "Board", pulls: "Pull Requests", contributors: "Contributors", activity: "Activity" } as const;
 type Tab = keyof typeof tabs;
 const windows = [7, 30, 90] as const;
 type EditorSearch = "new" | number | undefined;
@@ -46,12 +58,14 @@ function parseEditorSearch(raw: unknown): EditorSearch {
 }
 
 export const Route = createFileRoute("/_shell/workspace/$repositoryId")({
-  validateSearch: (search: Record<string, unknown>): { days: MetricWindow; tab: Tab; editor?: "new" | number } => {
+  validateSearch: (search: Record<string, unknown>): { days: MetricWindow; tab: Tab; editor?: "new" | number; issue?: number } => {
     const editor = parseEditorSearch(search.editor);
+    const issue = parseEditorSearch(search.issue);
     return {
       days: search.days === 7 || search.days === 90 ? search.days : 30,
       tab: typeof search.tab === "string" && Object.hasOwn(tabs, search.tab) ? search.tab as Tab : "overview",
       ...(editor !== undefined ? { editor } : {}),
+      ...(typeof issue === "number" ? { issue } : {}),
     };
   },
   component: RepositoryWorkspace,
@@ -61,7 +75,6 @@ type Overview = NonNullable<Awaited<ReturnType<typeof fetchRepositoryOverview>>>
 type Coverage = Overview["openIssues"]["coverage"];
 type Entry = Overview["timeline"][number];
 
-// Prototype D2 classes, as Tailwind strings.
 const card = "rounded-xl border border-border bg-card min-w-0 min-h-0";
 const muted = "text-muted-foreground";
 const lrow = "flex items-center gap-3 border-b border-border px-3 py-2.5 last:border-b-0";
@@ -87,7 +100,6 @@ function ago(iso: string) {
   const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
   return minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.round(minutes / 60)}h ago` : `${Math.round(minutes / 1440)}d ago`;
 }
-// Prototype style: 45m, 4.1h, 11h, 2.3d.
 function duration(seconds: number | null) {
   if (seconds === null) return null;
   const hours = seconds / 3600;
@@ -95,10 +107,8 @@ function duration(seconds: number | null) {
   if (hours < 48) return hours < 10 ? `${hours.toFixed(1)}h` : `${Math.round(hours)}h`;
   return `${(hours / 24).toFixed(1)}d`;
 }
-// Links come from the API; only GitHub URLs are rendered as links.
 const githubHref = (url: string, fallback: string) => url.startsWith("https://github.com/") ? url : fallback;
 
-// KPI sub-line for an uncovered metric: [text, tone]. Partial reasons are amber like the prototype.
 const coverageReasons: Record<string, [string, string]> = {
   not_synchronized: ["Awaiting data", muted],
   window_before_boundary: ["Window predates imported history", "text-warning"],
@@ -113,24 +123,24 @@ function RepositoryWorkspace() {
   const navigate = useNavigate({ from: "/workspace/$repositoryId" });
   const { session } = Route.useRouteContext();
   const queryClient = useQueryClient();
-  const viewerKey = `${session.mode}:${session.user?.login ?? ""}`;
+  const viewerKey = viewerKeyOf(session);
   const [selectedEditIssue, setSelectedEditIssue] = useState<EditableIssue | null>(null);
   const [draftRevision, setDraftRevision] = useState(0);
   const overviewKey = ["repositoryOverview", session.mode, session.user?.login, repositoryId, search.days] as const;
-  const snapshotPrefix = repositorySnapshotPrefix(session, repositoryId);
   const snapshotKey = repositorySnapshotKey(session, repositoryId, search.days);
   const query = useQuery({
     queryKey: overviewKey,
     queryFn: async ({ signal }) => {
+      const startedAtSeq = currentAccessSeq();
       try {
         const data = await fetchRepositoryOverview(repositoryId, search.days, signal);
         signal.throwIfAborted();
-        if (data) queryClient.setQueryData(snapshotKey, data);
-        else queryClient.removeQueries({ queryKey: snapshotPrefix });
+        if (data) recordOverviewSnapshot(queryClient, session, repositoryId, search.days, data, startedAtSeq);
+        else recordAccessDenied(queryClient, session, repositoryId);
         return data;
       } catch (error) {
-        if (!signal.aborted && !(error instanceof GraphQLUnavailableError) && !(error instanceof RepositoryAccessUnverifiedError && error.retryAt)) {
-          queryClient.removeQueries({ queryKey: snapshotPrefix });
+        if (!signal.aborted) {
+          recordOverviewUnavailable(queryClient, session, repositoryId, error, startedAtSeq);
         }
         throw error;
       }
@@ -139,7 +149,6 @@ function RepositoryWorkspace() {
     gcTime: 0,
     refetchOnWindowFocus: ({ state }) => !(state.error instanceof RepositoryAccessUnverifiedError && state.error.retryAt),
     retry: (count, error) => !(error instanceof RepositoryAccessUnverifiedError || error instanceof GraphQLUnavailableError) && count < 3,
-    // Follow running or not-yet-started sync work; stop once it settles (reconciliation leaves settled streams "queued").
     refetchInterval: ({ state }) => {
       if (state.error instanceof RepositoryAccessUnverifiedError && state.error.retryAt) return false;
       if (!state.data) return false;
@@ -162,33 +171,15 @@ function RepositoryWorkspace() {
   const snapshot = snapshotReason ? queryClient.getQueryState<Overview>(snapshotKey) : undefined;
   const overview = query.isError ? snapshot?.data : query.data;
   const demo = session.mode === "demo";
-  // Metadata refresh state and the access check's retry time come from the selection list the shell already loads.
   const selection = useSelectedRepositories(session);
-  const row = flattenSelectedRepositoryRows(selection).find(r => r.repo.id === repositoryId);
+  const metadata = useSelectedRepositoryMetadata(session);
+  const repoVisibility = useRepositoryVisibility(session, repositoryId);
+  const rowVisibility = selectRepositoryVisibility(metadata, selection, repoVisibility, repositoryId);
+  const row = rowVisibility.row;
   const accessLost = query.isSuccess && overview === null;
   const accessRejected = query.error instanceof RepositoryAccessUnverifiedError || accessLost;
-  useEffect(() => {
-    if (!accessRejected || query.isFetching || row?.detail?.state !== "available") return;
-    queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof fetchSelectedRepositoryDetailsPage>>>>(
-      selectedRepositoriesKey(session),
-      previous => previous && {
-        ...previous,
-        pages: previous.pages.map(page => ({
-          ...page,
-          batches: page.batches.map(batch => {
-            if (!batch.details || !batch.repositories.some(repo => repo.id === repositoryId)) return batch;
-            return {
-              ...batch,
-              details: batch.details.map((detail, i) => batch.repositories[i].id === repositoryId && detail.state === "available"
-                ? { state: "access-unverified", retryAt: null } : detail),
-            };
-          }),
-        })),
-      },
-    );
-  }, [accessRejected, query.isFetching, queryClient, repositoryId, row?.detail?.state, session]);
   const accessRetryAt = query.error instanceof RepositoryAccessUnverifiedError ? query.error.retryAt : null;
-  const retryAt = accessRetryAt ?? (row?.detail?.state === "access-unverified" ? row.detail.retryAt : null);
+  const retryAt = accessRetryAt ?? (rowVisibility.availability === "unverified" ? rowVisibility.retryAt : null);
   const retryTime = retryAt ? Date.parse(retryAt) : NaN;
   const rateLimited = Number.isFinite(retryTime);
   const refetchOverview = query.refetch;
@@ -201,21 +192,14 @@ function RepositoryWorkspace() {
     }, Math.max(1000, delay + 1000));
     return () => window.clearTimeout(timer);
   }, [accessRejected, queryClient, refetchOverview, retryTime, session]);
-  useEffect(() => {
-    if (accessLost && !query.isFetching) {
-      clearRepositoryIssueDrafts(viewerKey, repositoryId);
-    }
-  }, [accessLost, query.isFetching, viewerKey, repositoryId]);
   const editorOpen = search.editor !== undefined;
   const capabilitiesQuery = useQuery({
     queryKey: ["issueCapabilities", viewerKey, repositoryId],
     queryFn: ({ signal }) => fetchIssueCapabilities(repositoryId, signal),
-    enabled: !demo && !snapshot && Boolean(overview) && (editorOpen || search.tab === "issues"),
+    enabled: !demo && !snapshot && Boolean(overview) && (editorOpen || search.tab === "issues" || search.tab === "board"),
     gcTime: 0,
     retry: false,
   });
-  // An editor restored from the URL (after a reload) knows only the issue number: load the imported issue so author-only
-  // actions such as close/reopen are offered again.
   const restoredNumber = typeof search.editor === "number" && selectedEditIssue?.number !== search.editor ? search.editor : null;
   const restoredIssueQuery = useQuery({
     queryKey: ["workspaceIssue", viewerKey, repositoryId, restoredNumber],
@@ -227,8 +211,7 @@ function RepositoryWorkspace() {
   const assigneesQuery = useQuery({
     queryKey: ["assignableUsers", viewerKey, repositoryId],
     queryFn: ({ signal }) => fetchAssignableUsers(repositoryId, signal),
-    enabled: !demo && !snapshot && Boolean(overview) && editorOpen,
-    // Each fetch is a live GitHub call on the viewer's token; the assignable list rarely changes.
+    enabled: !demo && !snapshot && Boolean(overview) && (editorOpen || search.tab === "board"),
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
     retry: false,
@@ -260,7 +243,7 @@ function RepositoryWorkspace() {
     if (op.state === "succeeded" || op.issueNumber) {
       void queryClient.invalidateQueries({ queryKey: ["workspaceIssues", repositoryId, viewerKey] });
       void queryClient.invalidateQueries({ queryKey: ["repositoryOverview", session.mode, session.user?.login, repositoryId] });
-      void queryClient.invalidateQueries({ queryKey: ["crossRepositoryOverview", session.mode, session.user?.login] });
+      void queryClient.invalidateQueries({ queryKey: crossRepositoryOverviewKey(session) });
     }
   }
 
@@ -283,11 +266,11 @@ function RepositoryWorkspace() {
   } : null;
   const display = sync ? syncDisplay(sync) : null;
 
-  const unavailable = !snapshot && (accessRejected || row?.detail?.state === "access-unverified");
+  const unavailable = !snapshot && (accessRejected || rowVisibility.availability === "unverified" || rowVisibility.availability === "denied");
   if (unavailable || !overview || !sync) return <div className="flex h-full min-h-0 flex-col gap-3">
     <section className={`${card} flex flex-none flex-wrap items-center gap-3 p-4`}>
       <Ico>{icons.repo}</Ico>
-      <h1 className="text-[19px] leading-[1.2]">{unavailable ? "Repository" : row?.repo.fullName || "Repository"}</h1>
+      <h1 className="text-[19px] leading-[1.2]">{unavailable ? "Repository" : (rowVisibility.canRevealName ? row?.repo.fullName : null) || "Repository"}</h1>
       {unavailable && <SyncStatus compact syncState="awaiting-sync" withheld={1} retryAt={retryAt} />}
     </section>
     <section aria-label="Repository overview" className={`${card} p-4`}>
@@ -304,7 +287,6 @@ function RepositoryWorkspace() {
 
   const [owner, name] = overview.fullName.split("/");
   const github = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-  // Suggest only users GitHub accepts as assignees; demo mode, which cannot write, suggests its sample contributors.
   const assigneeSuggestions = demo ? overview.contributors.filter(c => !c.isBot).map(c => c.login) : assigneesQuery.data ?? [];
   const editingIssue: EditableIssue | undefined = typeof search.editor === "number"
     ? (selectedEditIssue?.number === search.editor ? selectedEditIssue : restoredIssueQuery.data ?? { number: search.editor })
@@ -360,6 +342,19 @@ function RepositoryWorkspace() {
         onResolved={handleWriteRecorded}
       />
     )}
+    {search.tab === "board" && (snapshot ? <p className={`${card} p-4`}>The Board needs a live connection. Saved issue counts are available on Overview.</p> : (
+      <IssueBoard
+        key={repositoryId}
+        session={session}
+        repositoryId={repositoryId}
+        github={github}
+        capabilities={capabilitiesQuery.data ?? null}
+        capabilitiesError={capabilitiesQuery.isError ? capabilitiesQuery.error.message : null}
+        assignable={assigneeSuggestions}
+        openIssue={search.issue}
+        onOpenIssue={issue => void navigate({ search: prev => ({ ...prev, issue }), replace: true })}
+      />
+    ))}
     {search.tab === "pulls" && (snapshot ? <p className={`${card} p-4`}>The pull request list needs a live connection. Saved PR counts are available on Overview.</p> : <PullRequests key={repositoryId} id={repositoryId} viewer={viewerKey} github={github} />)}
     {search.tab === "contributors" && <Contributors overview={overview} days={search.days} />}
     {search.tab === "activity" && <section className={`${card} flex-1 overflow-auto`}><Timeline overview={overview} github={github} /></section>}
@@ -387,7 +382,6 @@ function RepositoryWorkspace() {
   </div>;
 }
 
-// The header pill opens the full sync status (same copy as SyncStatus: metadata and activity lines) and Refresh activity.
 function SyncDetails({ sync, repositoryId, onRefresh }: { sync: SyncInput; repositoryId: string; onRefresh: () => void }) {
   const [open, setOpen] = useState(false);
   const metadata = sync.metadataStatus ? describeMetadata(sync.metadataStatus) : [];
@@ -412,7 +406,6 @@ const streamNames: [string, (a: Overview["activity"]) => ActivityResourceStatus 
 ];
 const list = (items: string[]) => items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
 
-// One state banner under the header, as in the prototype: rate limited, syncing/awaiting, stopped, or partial coverage.
 function Banner({ overview, display, sync }: { overview: Overview; display: string; sync: SyncInput }) {
   const a = overview.activity;
   const note = (text: ReactNode, warn = true) => <div role="status" className={`flex flex-none items-start gap-2.5 rounded-[10px] border px-3 py-2.5 text-[13px] ${warn ? "border-warning bg-warning-soft" : "border-border bg-card"}`}>
@@ -509,7 +502,6 @@ const entryLabel = (e: Entry) => e.kind === "pull_request_merged" ? `PR #${e.num
 const entryHref = (e: Entry, github: string) => githubHref(e.url, e.number === null ? `${github}/releases` : `${github}/${e.kind === "pull_request_merged" ? "pull" : "issues"}/${e.number}`);
 const actor = (e: Entry) => e.actor ? `${e.actor.login}${e.actor.isBot ? " · bot" : ""}` : "ghost";
 
-// Full timeline with GitHub links. A hatched "History gap" row sits where issue-event coverage starts.
 function Timeline({ overview: o, github }: { overview: Overview; github: string }) {
   const gapAt = o.eventsCoveredFrom === null ? o.timeline.length
     : Date.parse(o.eventsCoveredFrom) > Date.parse(o.windowStart) ? o.timeline.findIndex(e => Date.parse(e.occurredAt) < Date.parse(o.eventsCoveredFrom!)) : null;
@@ -528,7 +520,6 @@ function Timeline({ overview: o, github }: { overview: Overview; github: string 
   return <ul aria-label="Activity" className="m-0 list-none p-0">{rows}</ul>;
 }
 
-// Participation, alphabetical, stacked PRs / reviews / comments. Bots are left out of the bars and listed apart.
 function Contributors({ overview: o, days }: { overview: Overview; days: MetricWindow }) {
   const people = o.contributors.filter(p => !p.isBot).sort((x, y) => x.login.localeCompare(y.login));
   const bots = o.contributors.filter(p => p.isBot);
