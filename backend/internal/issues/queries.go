@@ -132,33 +132,35 @@ func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request, settleSt
 		http.Error(w, "not found", http.StatusNotFound)
 		return 0, db.GetWriteOperationRow{}, repositories.Decision{}, accessfence.Snapshot{}, false
 	}
-	load := func() (db.GetWriteOperationRow, bool) {
-		row, err := s.Queries.GetWriteOperation(r.Context(), db.GetWriteOperationParams{ID: opID, UserID: userID})
+	scope, err := s.Queries.GetWriteOperationScope(r.Context(), db.GetWriteOperationScopeParams{ID: opID, UserID: userID})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.Error(w, "not found", http.StatusNotFound)
-			return row, false
-		}
-		if err != nil {
+		} else {
 			s.internal(w, err)
-			return row, false
 		}
-		return row, true
+		return 0, db.GetWriteOperationRow{}, repositories.Decision{}, accessfence.Snapshot{}, false
 	}
-	row, ok := load() // only to learn the repository; read again once access is known
+	d, snap, ok := s.checkedAccess(w, r, userID, scope.RepositoryID)
 	if !ok {
-		return 0, row, repositories.Decision{}, accessfence.Snapshot{}, false
+		return 0, db.GetWriteOperationRow{}, d, snap, false
 	}
-	d, snap, ok := s.checkedAccess(w, r, userID, row.RepositoryID)
-	if !ok {
-		return 0, row, d, snap, false
-	}
-	if settleStale && row.State == "pending" {
+	if settleStale && scope.State == "pending" {
 		if err := s.Queries.FailStalePendingOperations(r.Context(), userID); err != nil {
 			s.internal(w, err)
-			return 0, row, d, snap, false
+			return 0, db.GetWriteOperationRow{}, d, snap, false
 		}
 	}
-	if row, ok = load(); !ok || !s.fenceHolds(w, r.Context(), snap) {
+	row, err := s.Queries.GetWriteOperation(r.Context(), db.GetWriteOperationParams{ID: opID, UserID: userID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "not found", http.StatusNotFound)
+		} else {
+			s.internal(w, err)
+		}
+		return 0, row, d, snap, false
+	}
+	if !s.fenceHolds(w, r.Context(), snap) {
 		return 0, row, d, snap, false
 	}
 	return userID, row, d, snap, true
