@@ -103,34 +103,6 @@ func parseNodeIDs(nodes []*model.Repository) ([]int64, []parsedRepoNode) {
 	return ids, parsed
 }
 
-const (
-	listMetadataStatusesBatchSQL = `-- name: ListMetadataStatuses :many
-SELECT s.repository_id, s.follow_suspended_at, j.state AS job_state, j.run_at AS job_run_at, rs.last_success_at, rs.last_error_code
-FROM selections s
-LEFT JOIN jobs j ON j.kind = 'repo_metadata_refresh' AND j.key = 'repo:' || s.repository_id::text
-LEFT JOIN repository_sync rs ON rs.repository_id = s.repository_id
-WHERE s.user_id = $1 AND s.deselected_at IS NULL AND s.repository_id = ANY($2::bigint[])`
-
-	listActivityStatusesBatchSQL = `-- name: ListActivityStatuses
-SELECT a.repository_id, a.resource, a.boundary, a.phase, a.watermark, a.last_success_at, a.last_error_code,
-       j.state, CASE WHEN j.state = 'queued' THEN j.run_at END
-FROM activity_resources a
-LEFT JOIN jobs j ON j.kind = 'activity_' || a.resource AND j.key = 'repo:' || a.repository_id::text
-WHERE a.repository_id = ANY($1::bigint[])
-  AND a.resource IN ('issues', 'pull_requests', 'releases', 'issue_events', 'comments')`
-
-	listReviewStatusesBatchSQL = `SELECT c.repository_id, count(*) FILTER (WHERE NOT c.complete),
-       CASE WHEN count(*) > 0 AND count(c.last_success_at) = count(*) THEN min(c.last_success_at) END,
-       (array_agg(c.last_error_code ORDER BY c.parent_id) FILTER (WHERE c.last_error_code IS NOT NULL))[1],
-       min(j.run_at) FILTER (WHERE j.state = 'queued')
-FROM activity_children c
-LEFT JOIN jobs j ON j.kind = 'activity_reviews' AND j.key = 'repo:' || c.repository_id::text || ':parent:' || c.parent_id::text
-WHERE c.repository_id = ANY($1::bigint[]) AND c.resource = 'reviews'
-GROUP BY c.repository_id`
-
-	listArchivedRepositoriesBatchSQL = `SELECT id, archived FROM repositories WHERE id = ANY($1::bigint[])`
-)
-
 func (r *Resolver) loadSelectedStatuses(ctx context.Context, userID int64, nodes []*model.Repository, want statusFields) error {
 	if len(nodes) == 0 || (!want.metadata && !want.activity) {
 		return nil
@@ -167,12 +139,12 @@ func (r *Resolver) loadSelectedStatuses(ctx context.Context, userID int64, nodes
 
 	var batch pgx.Batch
 	if want.metadata {
-		batch.Queue(listMetadataStatusesBatchSQL, userID, ids)
+		batch.Queue(db.ListMetadataStatusesSQL, userID, ids)
 	}
 	if wantActivity {
-		batch.Queue(listActivityStatusesBatchSQL, activeIDs)
-		batch.Queue(listReviewStatusesBatchSQL, activeIDs)
-		batch.Queue(listArchivedRepositoriesBatchSQL, activeIDs)
+		batch.Queue(db.ListActivityStatusesSQL, activeIDs)
+		batch.Queue(db.ListReviewStatusesSQL, activeIDs)
+		batch.Queue(db.ListRepositoryArchivedSQL, activeIDs)
 	}
 
 	br := r.RepoAccess.Pool.SendBatch(ctx, &batch)

@@ -340,6 +340,9 @@ UPDATE write_operations SET state = 'unknown', sent_at = now(), updated_at = now
 WHERE id = $1 AND state = 'pending' AND created_at >= now() - interval '1 minute'
 `
 
+// The 1-minute freshness window here must equal the stale_pending threshold in the Get/List queries above and the
+// created_at cutoff in FailStalePendingCreate, FailStalePendingOperationByID and FailAllStalePendingOperations below:
+// a row this refuses to send is exactly a row those report stale and settle as failed.
 func (q *Queries) MarkWriteOperationSent(ctx context.Context, id int64) (int64, error) {
 	result, err := q.db.Exec(ctx, markWriteOperationSent, id)
 	if err != nil {
