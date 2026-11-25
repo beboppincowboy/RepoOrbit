@@ -72,21 +72,15 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
   }, [login, mode, queryClient, retryTime]);
   const saved = new Map<string, { fullName: string; days: MetricWindow }>();
   if (!demo && (limited || metadata.error instanceof GraphQLUnavailableError)) {
-    const navigableIds = new Set<string>();
-    const deniedIds = new Set<string>();
-    for (const row of rows) {
-      if (row.availability === "denied") deniedIds.add(row.repo.id);
-      else navigableIds.add(row.repo.id);
-    }
+    const rowIds = new Set(rows.map(row => row.repo.id));
     for (const [key, snapshot] of queryClient.getQueriesData<{ fullName: string }>({ queryKey: repositorySnapshotsKey(session) })) {
       const [, , , id, days] = key;
       if (
         snapshot
         && typeof id === "string"
         && (days === 7 || days === 30 || days === 90)
-        && !deniedIds.has(id)
+        && !rowIds.has(id)
         && visibility.get(id)?.status !== "denied"
-        && !navigableIds.has(id)
       ) {
         saved.set(id, { fullName: snapshot.fullName, days });
       }

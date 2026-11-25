@@ -28,7 +28,7 @@ export function viewerKeyOf(session: ViewerSession): string {
 export type RepositoryAccessOutcome =
   | { status: "verified"; seq: number }
   | { status: "unverified"; retryAt: string | null; seq: number }
-  | { status: "denied"; seq: number };
+  | { status: "denied"; seq: number; draftsCleared?: boolean };
 
 export type ViewerVisibility = ReadonlyMap<string, RepositoryAccessOutcome>;
 
@@ -268,18 +268,6 @@ function outcomeVisibility(overlay: RepositoryAccessOutcome | undefined): {
   return { row: undefined, availability: "loading", retryAt: null, canRevealName: false };
 }
 
-export function selectRowVisibility(
-  rows: readonly VisibleSelectedRow[],
-  visibility: ViewerVisibility,
-  repositoryId: string,
-): { row: VisibleSelectedRow | undefined; availability: RowAvailability; retryAt: string | null; canRevealName: boolean } {
-  const row = rows.find(item => item.repo.id === repositoryId);
-  if (row) {
-    return { row, availability: row.availability, retryAt: row.retryAt, canRevealName: row.canRevealName };
-  }
-  return outcomeVisibility(visibility.get(repositoryId));
-}
-
 export function selectRepositoryVisibility(
   metadata: ReturnType<typeof useSelectedRepositoryMetadata>,
   selection: ReturnType<typeof useSelectedRepositories>,
@@ -381,7 +369,7 @@ type OutcomeTransition =
   | { status: "verified" };
 
 function applyOutcomeEntry(
-  queryClient: QueryClient,
+  queryClient: QueryClient | undefined,
   session: ViewerSession,
   viewerKey: string,
   existing: RepositoryAccessOutcome | undefined,
@@ -390,16 +378,22 @@ function applyOutcomeEntry(
   startedAtSeq?: number,
 ): { outcome?: RepositoryAccessOutcome; rejected: boolean; accepted: boolean } {
   if (transition.status === "denied") {
-    queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
+    if (existing?.status === "denied" && existing.draftsCleared) {
+      return { rejected: false, accepted: true };
+    }
+    queryClient?.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
     clearRepositoryIssueDrafts(viewerKey, repositoryId);
-    return { outcome: { status: "denied", seq: nextAccessSeq() }, rejected: true, accepted: true };
+    return { outcome: { status: "denied", seq: nextAccessSeq(), draftsCleared: true }, rejected: true, accepted: true };
   }
   if (transition.status === "unverified") {
     if (startedAtSeq !== undefined && newerDenial(existing, startedAtSeq)) {
       return { rejected: false, accepted: false };
     }
     if (!transition.preserveSnapshot) {
-      queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
+      queryClient?.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
+    }
+    if (existing?.status === "unverified" && existing.retryAt === transition.retryAt) {
+      return { rejected: false, accepted: true };
     }
     return { outcome: { status: "unverified", retryAt: transition.retryAt, seq: nextAccessSeq() }, rejected: true, accepted: true };
   }
@@ -443,11 +437,30 @@ function applyDetailOutcomes(
   if (rejected) refetchAggregateAfterRejection(queryClient, session);
 }
 
-export function recordAccessDenied(queryClient: QueryClient, session: ViewerSession, repositoryId: string): void {
+function recordSingleOutcome(
+  queryClient: QueryClient | undefined,
+  session: ViewerSession,
+  repositoryId: string,
+  transition: OutcomeTransition,
+  startedAtSeq?: number,
+): boolean {
   const viewerKey = viewerKeyOf(session);
-  const result = applyOutcomeEntry(queryClient, session, viewerKey, getViewerVisibility(viewerKey).get(repositoryId), repositoryId, { status: "denied" });
+  const result = applyOutcomeEntry(
+    queryClient,
+    session,
+    viewerKey,
+    getViewerVisibility(viewerKey).get(repositoryId),
+    repositoryId,
+    transition,
+    startedAtSeq,
+  );
   if (result.outcome) setViewerOutcome(viewerKey, repositoryId, result.outcome);
-  if (result.rejected) refetchAggregateAfterRejection(queryClient, session);
+  if (result.rejected && queryClient) refetchAggregateAfterRejection(queryClient, session);
+  return result.accepted;
+}
+
+export function recordAccessDenied(queryClient: QueryClient, session: ViewerSession, repositoryId: string): void {
+  recordSingleOutcome(queryClient, session, repositoryId, { status: "denied" });
 }
 
 export function recordAccessUnverified(
@@ -457,31 +470,17 @@ export function recordAccessUnverified(
   retryAt: string | null,
   opts: { preserveSnapshot?: boolean; startedAtSeq?: number } = {},
 ): void {
-  const viewerKey = viewerKeyOf(session);
-  const result = applyOutcomeEntry(
+  recordSingleOutcome(
     queryClient,
     session,
-    viewerKey,
-    getViewerVisibility(viewerKey).get(repositoryId),
     repositoryId,
     { status: "unverified", retryAt, preserveSnapshot: Boolean(opts.preserveSnapshot) },
     opts.startedAtSeq,
   );
-  if (result.outcome) setViewerOutcome(viewerKey, repositoryId, result.outcome);
-  if (result.rejected) refetchAggregateAfterRejection(queryClient, session);
 }
 
 export function recordAccessVerified(session: ViewerSession, repositoryId: string, startedAtSeq?: number): boolean {
-  const viewerKey = viewerKeyOf(session);
-  const existing = getViewerVisibility(viewerKey).get(repositoryId);
-  if (startedAtSeq !== undefined && newerRejection(existing, startedAtSeq)) {
-    return false;
-  }
-  if (existing?.status === "verified") {
-    return true;
-  }
-  setViewerOutcome(viewerKey, repositoryId, { status: "verified", seq: nextAccessSeq() });
-  return true;
+  return recordSingleOutcome(undefined, session, repositoryId, { status: "verified" }, startedAtSeq);
 }
 
 export function recordOverviewSnapshot<T>(
@@ -513,8 +512,12 @@ export function recordOverviewUnavailable(
   queryClient.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
 }
 
+export function recordRepositoriesRemoved(queryClient: QueryClient, session: ViewerSession, repositoryIds: Iterable<string>): void {
+  recordOutOfSelection(queryClient, session, repositoryIds);
+}
+
 export function recordRepositoryRemoved(queryClient: QueryClient, session: ViewerSession, repositoryId: string): void {
-  recordOutOfSelection(queryClient, session, [repositoryId]);
+  recordRepositoriesRemoved(queryClient, session, [repositoryId]);
 }
 
 function recordOutOfSelection(queryClient: QueryClient, session: ViewerSession, repositoryIds: Iterable<string>) {
@@ -549,10 +552,10 @@ function recordSelectionPage(queryClient: QueryClient, session: ViewerSession, p
   for (const [key] of queryClient.getQueriesData({ queryKey: repositorySnapshotsKey(session) })) {
     if (typeof key[3] === "string" && !pass.ids.has(key[3])) absent.add(key[3]);
   }
-  for (const repositoryId of getViewerVisibility(viewerKey).keys()) {
-    if (!pass.ids.has(repositoryId)) absent.add(repositoryId);
+  for (const [repositoryId, outcome] of getViewerVisibility(viewerKey)) {
+    if (outcome.status !== "denied" && !pass.ids.has(repositoryId)) absent.add(repositoryId);
   }
-  recordOutOfSelection(queryClient, session, absent);
+  if (absent.size > 0) recordOutOfSelection(queryClient, session, absent);
 }
 
 export async function retryDetailBatch(

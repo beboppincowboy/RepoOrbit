@@ -1,3 +1,5 @@
+import { clearAllIssueDrafts } from "@/lib/drafts";
+
 export type Issue = { id: string; repositoryId: string; title: string; state: string };
 const ACCESS_UNVERIFIED_MESSAGE = "Access could not be verified";
 // Wire values of the backend's repositories.SyncState; "demo" appears only in Demo mode.
@@ -37,13 +39,7 @@ export const sessionQuery = { queryKey: ["session"], queryFn: fetchViewerSession
 export async function logout() {
   const response = await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
   if (!response.ok) throw new Error("Could not sign out. Try again.");
-  if (typeof window !== "undefined") {
-    try {
-      for (const key of Object.keys(window.localStorage)) {
-        if (key.startsWith("repoorbit:issue-draft:")) window.localStorage.removeItem(key);
-      }
-    } catch { /* ignore storage access errors */ }
-  }
+  clearAllIssueDrafts();
 }
 type GraphQLResponse<Data> = {
   data?: Data | null;

@@ -317,47 +317,50 @@ export function IssueEditor(props: IssueEditorProps) {
     return { nextAdd, nextRemove, error: null };
   }
 
-  function handleAddChips(
-    input: string,
-    clearInput: () => void,
-    createList: string[],
-    setCreateList: (next: string[]) => void,
-    addList: string[],
-    setAddList: (next: string[]) => void,
-    removeList: string[],
-    setRemoveList: (next: string[]) => void,
-    validate: (token: string) => string | null,
-    itemPlural: string,
-  ) {
-    if (!input.trim()) return;
-    if (isCreate) {
-      const res = addTokens(input, createList, [], validate, itemPlural);
-      if (res.error) { setValidationError(res.error); return; }
-      setCreateList(res.nextAdd);
-    } else {
-      const res = addTokens(input, addList, removeList, validate, itemPlural);
-      if (res.error) { setValidationError(res.error); return; }
-      setAddList(res.nextAdd);
-      setRemoveList(res.nextRemove);
-    }
-    clearInput();
+  function handleAddChips(kind: "label" | "assignee") {
+    const config = kind === "label"
+      ? {
+          input: labelInput,
+          clearInput: () => setLabelInput(""),
+          list: isCreate ? createLabels : addLabels,
+          setList: isCreate ? setCreateLabels : setAddLabels,
+          removeList: isCreate ? [] : removeLabels,
+          setRemoveList: isCreate ? null : setRemoveLabels,
+          validate: validateLabel,
+          itemPlural: "labels",
+        }
+      : {
+          input: assigneeInput,
+          clearInput: () => setAssigneeInput(""),
+          list: isCreate ? createAssignees : addAssignees,
+          setList: isCreate ? setCreateAssignees : setAddAssignees,
+          removeList: isCreate ? [] : removeAssignees,
+          setRemoveList: isCreate ? null : setRemoveAssignees,
+          validate: validateLogin,
+          itemPlural: "assignees",
+        };
+    if (!config.input.trim()) return;
+    const res = addTokens(config.input, config.list, config.removeList, config.validate, config.itemPlural);
+    if (res.error) { setValidationError(res.error); return; }
+    config.setList(res.nextAdd);
+    config.setRemoveList?.(res.nextRemove);
+    config.clearInput();
     setValidationError(null);
   }
 
   function handleAddLabel() {
-    handleAddChips(labelInput, () => setLabelInput(""), createLabels, setCreateLabels, addLabels, setAddLabels, removeLabels, setRemoveLabels, validateLabel, "labels");
+    handleAddChips("label");
   }
 
   function handleAddAssignee() {
-    handleAddChips(assigneeInput, () => setAssigneeInput(""), createAssignees, setCreateAssignees, addAssignees, setAddAssignees, removeAssignees, setRemoveAssignees, validateLogin, "assignees");
+    handleAddChips("assignee");
   }
 
   function onChipInputKeyDown(kind: "label" | "assignee") {
     return (event: KeyboardEvent<HTMLInputElement>) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        if (kind === "label") handleAddLabel();
-        else handleAddAssignee();
+        handleAddChips(kind);
       }
     };
   }

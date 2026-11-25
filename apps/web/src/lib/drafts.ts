@@ -29,6 +29,10 @@ export function clearRepositoryIssueDrafts(viewerKey: string, repositoryId: stri
   for (const key of storageKeys(repositoryDraftPrefix(viewerKey, repositoryId))) removeStorage(key);
 }
 
+export function clearAllIssueDrafts(): void {
+  for (const key of storageKeys(DRAFT_PREFIX)) removeStorage(key);
+}
+
 // The parsed object stored under key, or null when it is missing, not JSON or not an object.
 export function readStorage<T>(key: string): T | null {
   if (typeof window === "undefined") return null;
