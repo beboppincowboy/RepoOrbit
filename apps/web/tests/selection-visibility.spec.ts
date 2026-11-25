@@ -628,3 +628,49 @@ test('an open workspace stops showing a verified repository once a complete sele
     releaseOverview();
   }
 });
+
+test('a denial recorded while the first Overview aggregate is still loading starts a fresh aggregate read', async ({ page }) => {
+  await mockSession(page, signedIn);
+  let crossCalls = 0;
+  let markStarted!: () => void;
+  const firstStarted = new Promise<void>(resolve => { markStarted = resolve; });
+  let releaseFirst!: () => void;
+  const firstAggregate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const aggregate = (openIssues: number) => ({
+    days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
+    repositoriesCounted: 1, repositoriesSyncing: 0, withheld: 0, retryAt: null,
+    openIssues: { value: openIssues, coverage: covered }, reviewBacklog: { value: 1, coverage: covered },
+    needsAttention: [], assignedToMe: [], daily: [],
+  });
+
+  await page.route('**/graphql', async route => {
+    const { query } = route.request().postDataJSON();
+    if (String(query).startsWith('query SelectedRepositories')) {
+      return route.fulfill({
+        json: { data: { selectedRepositories: { nodes: [selectedRepo('1'), selectedRepo('2')], endCursor: '2', hasNextPage: false, withheld: 0, retryAt: null } } },
+      });
+    }
+    if (String(query).startsWith('query RepositoryDetails')) {
+      await firstStarted;
+      return route.fulfill({ json: { data: { a0: null, r0: issuePage('1'), a1: { activity: fullActivity }, r1: issuePage('2') } } });
+    }
+    if (String(query).startsWith('query CrossRepositoryOverview')) {
+      const call = ++crossCalls;
+      if (call === 1) {
+        markStarted();
+        await firstAggregate;
+      }
+      return route.fulfill({ json: { data: { crossRepositoryOverview: aggregate(call === 1 ? 41 : 37) } } }).catch(() => {});
+    }
+    return route.fallback();
+  });
+
+  try {
+    await page.goto('/');
+    await expect(sidebar(page).locator('a[href*="/workspace/2"]')).toHaveAttribute('title', 'repo-2 · Synced');
+    await expect(sidebar(page).locator('a[href*="/workspace/1"]')).toHaveCount(0);
+    await expect(page.getByRole('region', { name: 'Totals' })).toContainText('37');
+  } finally {
+    releaseFirst();
+  }
+});
