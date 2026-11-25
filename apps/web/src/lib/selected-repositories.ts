@@ -379,6 +379,9 @@ function applyOutcomeEntry(
 ): { outcome?: RepositoryAccessOutcome; rejected: boolean; accepted: boolean } {
   if (transition.status === "denied") {
     if (existing?.status === "denied" && existing.draftsCleared) {
+      // seq feeds only staleness checks, never rendering: advance it so reads started before this denial still
+      // lose, without a new Map or a re-render.
+      existing.seq = nextAccessSeq();
       return { rejected: false, accepted: true };
     }
     queryClient?.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
@@ -393,6 +396,7 @@ function applyOutcomeEntry(
       queryClient?.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
     }
     if (existing?.status === "unverified" && existing.retryAt === transition.retryAt) {
+      existing.seq = nextAccessSeq();
       return { rejected: false, accepted: true };
     }
     return { outcome: { status: "unverified", retryAt: transition.retryAt, seq: nextAccessSeq() }, rejected: true, accepted: true };
