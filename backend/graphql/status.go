@@ -2,18 +2,16 @@ package graph
 
 import (
 	"context"
-	"errors"
 	"strconv"
 	"time"
 
 	"github.com/99designs/gqlgen/graphql"
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
+	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
 )
 
-// activityStatus is the honest activity answer: synchronized is claimed only by attachEvidenceStatus, when every stream is caught up, whatever
-// the metadata refresh did. Demo rows are seeded samples, not GitHub data.
 func activityStatus(demo, selected bool) *model.ActivityStatus {
 	if demo {
 		return &model.ActivityStatus{Synchronized: false, Message: "Demo sample data; not synchronized from GitHub.", FutureResources: []string{"pull requests", "reviews", "comments", "releases", "issue events"}}
@@ -88,167 +86,241 @@ func overviewActivitySelected(ctx context.Context) bool {
 	return false
 }
 
-func parseNodeIDs(nodes []*model.Repository) []int64 {
+type parsedRepoNode struct {
+	id   int64
+	node *model.Repository
+}
+
+func parseNodeIDs(nodes []*model.Repository) ([]int64, []parsedRepoNode) {
 	ids := make([]int64, 0, len(nodes))
+	parsed := make([]parsedRepoNode, 0, len(nodes))
 	for _, n := range nodes {
 		if id, err := strconv.ParseInt(n.ID, 10, 64); err == nil {
 			ids = append(ids, id)
+			parsed = append(parsed, parsedRepoNode{id: id, node: n})
 		}
 	}
-	return ids
+	return ids, parsed
 }
 
 func (r *Resolver) loadSelectedStatuses(ctx context.Context, userID int64, nodes []*model.Repository, want statusFields) error {
-	if len(nodes) == 0 {
+	if len(nodes) == 0 || (!want.metadata && !want.activity) {
 		return nil
 	}
-	if want.metadata {
-		if err := r.loadMetadataStatus(ctx, userID, nodes); err != nil {
-			return err
-		}
+	ids, parsed := parseNodeIDs(nodes)
+	if len(ids) == 0 {
+		return nil
 	}
-	if want.activity {
-		if err := r.loadActivityStatus(ctx, nodes); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
-func (r *Resolver) loadMetadataStatus(ctx context.Context, userID int64, nodes []*model.Repository) error {
-	if len(nodes) == 0 {
-		return nil
-	}
-	ids := parseNodeIDs(nodes)
-	statuses, err := ingestion.LoadMetadataStatuses(ctx, r.Queries, userID, ids)
-	if err != nil {
-		return err
-	}
-	for _, n := range nodes {
-		id, _ := strconv.ParseInt(n.ID, 10, 64)
-		if s, ok := statuses[id]; ok {
-			n.MetadataStatus = metadataStatus(s)
+	var active []parsedRepoNode
+	var activeIDs []int64
+	if want.activity {
+		active = parsed
+		activeIDs = ids
+		for _, p := range parsed {
+			if p.node.Activity == nil {
+				active = make([]parsedRepoNode, 0, len(parsed))
+				activeIDs = make([]int64, 0, len(parsed))
+				for _, q := range parsed {
+					if q.node.Activity != nil {
+						active = append(active, q)
+						activeIDs = append(activeIDs, q.id)
+					}
+				}
+				break
+			}
 		}
 	}
-	return nil
+
+	wantActivity := want.activity && len(active) > 0
+	if !want.metadata && !wantActivity {
+		return nil
+	}
+
+	var batch pgx.Batch
+	if want.metadata {
+		batch.Queue(db.ListMetadataStatusesSQL, userID, ids)
+	}
+	if wantActivity {
+		batch.Queue(db.ListActivityStatusesSQL, activeIDs)
+		batch.Queue(db.ListReviewStatusesSQL, activeIDs)
+		batch.Queue(db.ListRepositoryArchivedSQL, activeIDs)
+	}
+
+	br := r.RepoAccess.Pool.SendBatch(ctx, &batch)
+	defer br.Close()
+
+	if want.metadata {
+		statuses, err := scanMetadataStatuses(br, len(ids))
+		if err != nil {
+			return err
+		}
+		for _, p := range parsed {
+			if s, ok := statuses[p.id]; ok {
+				p.node.MetadataStatus = metadataStatus(s)
+			}
+		}
+	}
+
+	if wantActivity {
+		if err := readActivityStatusBatch(br, active); err != nil {
+			return err
+		}
+	}
+
+	return br.Close()
 }
 
 func (r *Resolver) loadActivityStatus(ctx context.Context, nodes []*model.Repository) error {
-	if len(nodes) == 0 {
-		return nil
-	}
-	ids := parseNodeIDs(nodes)
-	activity, err := r.Queries.ListActivityStatuses(ctx, ids)
-	if err != nil {
-		return err
-	}
-	byID := make(map[int64]*model.ActivityResourceStatus, len(activity))
-	for _, row := range activity {
-		state := "not-scheduled"
-		if row.JobState.Valid {
-			state = row.JobState.String
-		}
-		s := &model.ActivityResourceStatus{Phase: row.Phase, Boundary: row.Boundary.Time.UTC().Format(time.RFC3339), JobState: state}
-		if row.Watermark.Valid {
-			s.CatchupThrough = rfc3339(&row.Watermark.Time)
-		}
-		if row.LastSuccessAt.Valid {
-			s.LastSuccessAt = rfc3339(&row.LastSuccessAt.Time)
-		}
-		if row.LastErrorCode.Valid {
-			code := "unknown"
-			switch row.LastErrorCode.String {
-			case "no_credential", "rate_limited", "access_unverified", "access_changed", "upstream_error":
-				code = row.LastErrorCode.String
-			}
-			s.FailureCode = &code
-		}
-		if state == "queued" && row.JobRunAt.Valid {
-			s.NextAttemptAt = rfc3339(&row.JobRunAt.Time)
-		}
-		byID[row.RepositoryID] = s
-	}
-	for _, n := range nodes {
-		id, _ := strconv.ParseInt(n.ID, 10, 64)
-		if n.Activity != nil {
-			n.Activity.Issues = byID[id]
-			if r.RepoAccess != nil {
-				if err := r.attachEvidenceStatus(ctx, id, n.Activity); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	return nil
+	return r.loadSelectedStatuses(ctx, 0, nodes, statusFields{activity: true})
 }
 
-// attachEvidenceStatus derives child completeness only after every relevant parent traversal has caught up.
-func (r *Resolver) attachEvidenceStatus(ctx context.Context, id int64, a *model.ActivityStatus) error {
-	resourceStatus := func(resource, kind string) (*model.ActivityResourceStatus, error) {
-		var boundary time.Time
-		var phase, state string
-		var watermark, success, next *time.Time
-		var code *string
-		err := r.RepoAccess.Pool.QueryRow(ctx, `SELECT a.boundary,a.phase,a.watermark,a.last_success_at,a.last_error_code,COALESCE(j.state,'not-scheduled'),CASE WHEN j.state='queued' THEN j.run_at END FROM activity_resources a LEFT JOIN jobs j ON j.kind=$3 AND j.key='repo:'||a.repository_id::text WHERE a.repository_id=$1 AND a.resource=$2`, id, resource, kind).Scan(&boundary, &phase, &watermark, &success, &code, &state, &next)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		if err != nil {
+func scanMetadataStatuses(br pgx.BatchResults, capHint int) (map[int64]ingestion.MetadataStatus, error) {
+	rows, err := br.Query()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]ingestion.MetadataStatus, capHint)
+	for rows.Next() {
+		var row db.ListMetadataStatusesRow
+		if err := rows.Scan(
+			&row.RepositoryID,
+			&row.FollowSuspendedAt,
+			&row.JobState,
+			&row.JobRunAt,
+			&row.LastSuccessAt,
+			&row.LastErrorCode,
+		); err != nil {
 			return nil, err
 		}
-		if resource == "pull_requests" && code != nil && *code == ingestion.CodePullRequestsDisabled {
-			return &model.ActivityResourceStatus{Phase: "disabled", Boundary: stamp(boundary), JobState: state}, nil
-		}
-		return &model.ActivityResourceStatus{Phase: phase, Boundary: stamp(boundary), CatchupThrough: rfc3339(watermark), LastSuccessAt: rfc3339(success), FailureCode: safeActivityCode(code), JobState: state, NextAttemptAt: rfc3339(next)}, nil
+		out[row.RepositoryID] = ingestion.StatusFromRow(row)
 	}
-	var err error
-	if a.PullRequests, err = resourceStatus("pull_requests", "activity_pull_requests"); err != nil {
-		return err
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-	if a.Releases, err = resourceStatus("releases", "activity_releases"); err != nil {
-		return err
+	return out, nil
+}
+
+func readActivityStatusBatch(br pgx.BatchResults, nodes []parsedRepoNode) error {
+	type resourceKey struct {
+		repoID   int64
+		resource string
 	}
-	traversal, err := resourceStatus("issue_events", "activity_issue_events")
+	resources := make(map[resourceKey]*model.ActivityResourceStatus, len(nodes)*5)
+	resRows, err := br.Query()
 	if err != nil {
 		return err
 	}
-	if traversal != nil {
-		// GitHub retains issue events for a limited window and never emits an "opened" event, so history
-		// before the retained window is a permanent gap that traversal cannot close.
-		a.IssueEvents = &model.IssueEventStatus{Traversal: traversal, HistoricalGap: true}
+	for resRows.Next() {
+		var repoID int64
+		var resource, phase string
+		var boundary time.Time
+		var watermark, success, next *time.Time
+		var code, jobState *string
+		if err := resRows.Scan(&repoID, &resource, &boundary, &phase, &watermark, &success, &code, &jobState, &next); err != nil {
+			resRows.Close()
+			return err
+		}
+		state := ingestion.StatusNotScheduled
+		if jobState != nil {
+			state = *jobState
+		}
+		if resource == "pull_requests" && code != nil && *code == ingestion.CodePullRequestsDisabled {
+			resources[resourceKey{repoID: repoID, resource: resource}] = &model.ActivityResourceStatus{Phase: "disabled", Boundary: stamp(boundary), JobState: state}
+			continue
+		}
+		resources[resourceKey{repoID: repoID, resource: resource}] = &model.ActivityResourceStatus{
+			Phase:          phase,
+			Boundary:       stamp(boundary),
+			CatchupThrough: rfc3339(watermark),
+			LastSuccessAt:  rfc3339(success),
+			FailureCode:    safeActivityCode(code),
+			JobState:       state,
+			NextAttemptAt:  rfc3339(next),
+		}
 	}
+	resRows.Close()
+	if err := resRows.Err(); err != nil {
+		return err
+	}
+
+	type reviewSummary struct {
+		pending int
+		success *time.Time
+		code    *string
+		next    *time.Time
+	}
+	reviews := make(map[int64]reviewSummary, len(nodes))
+	revRows, err := br.Query()
+	if err != nil {
+		return err
+	}
+	for revRows.Next() {
+		var repoID int64
+		var s reviewSummary
+		if err := revRows.Scan(&repoID, &s.pending, &s.success, &s.code, &s.next); err != nil {
+			revRows.Close()
+			return err
+		}
+		reviews[repoID] = s
+	}
+	revRows.Close()
+	if err := revRows.Err(); err != nil {
+		return err
+	}
+
+	archived := make(map[int64]bool, len(nodes))
+	archRows, err := br.Query()
+	if err != nil {
+		return err
+	}
+	for archRows.Next() {
+		var repoID int64
+		var isArchived bool
+		if err := archRows.Scan(&repoID, &isArchived); err != nil {
+			archRows.Close()
+			return err
+		}
+		archived[repoID] = isArchived
+	}
+	archRows.Close()
+	if err := archRows.Err(); err != nil {
+		return err
+	}
+
 	parentComplete := func(s *model.ActivityResourceStatus) bool {
 		return s != nil && s.Phase == "current" && s.CatchupThrough != nil
 	}
-	var pending int
-	var childSuccess, childNext *time.Time
-	var childCode *string
-	err = r.RepoAccess.Pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE NOT c.complete), CASE WHEN count(*) > 0 AND count(c.last_success_at) = count(*) THEN min(c.last_success_at) END, (array_agg(c.last_error_code ORDER BY c.parent_id) FILTER (WHERE c.last_error_code IS NOT NULL))[1], min(j.run_at) FILTER (WHERE j.state='queued') FROM activity_children c LEFT JOIN jobs j ON j.kind='activity_reviews' AND j.key='repo:'||c.repository_id::text||':parent:'||c.parent_id::text WHERE c.repository_id=$1 AND c.resource='reviews'`, id).Scan(&pending, &childSuccess, &childCode, &childNext)
-	if err != nil {
-		return err
-	}
-	complete := (parentComplete(a.PullRequests) || (a.PullRequests != nil && a.PullRequests.Phase == "disabled")) && pending == 0
-	a.Reviews = &model.ChildResourceStatus{Complete: complete, PendingChildren: pending, LastSuccessAt: rfc3339(childSuccess), FailureCode: safeActivityCode(childCode), NextAttemptAt: rfc3339(childNext)}
-	// Comments are one repository-wide stream; the child shape is kept so clients need no change.
-	comments, err := resourceStatus("comments", "activity_comments")
-	if err != nil {
-		return err
-	}
-	if comments != nil {
-		a.Comments = &model.ChildResourceStatus{Complete: parentComplete(comments) && comments.JobState != "dead" && comments.JobState != "paused", LastSuccessAt: comments.LastSuccessAt, FailureCode: comments.FailureCode, NextAttemptAt: comments.NextAttemptAt}
-	}
-	if err = r.RepoAccess.Pool.QueryRow(ctx, `SELECT archived FROM repositories WHERE id=$1`, id).Scan(&a.Archived); err != nil {
-		return err
-	}
-	if synchronized(a, time.Now()) {
-		a.Synchronized, a.Message = true, "All activity streams are synchronized."
+	now := time.Now()
+	for _, p := range nodes {
+		a := p.node.Activity
+		a.Issues = resources[resourceKey{repoID: p.id, resource: "issues"}]
+		a.PullRequests = resources[resourceKey{repoID: p.id, resource: "pull_requests"}]
+		a.Releases = resources[resourceKey{repoID: p.id, resource: "releases"}]
+		if traversal := resources[resourceKey{repoID: p.id, resource: "issue_events"}]; traversal != nil {
+			// GitHub retains issue events for a limited window and never emits an "opened" event, so history
+			// before the retained window is a permanent gap that traversal cannot close.
+			a.IssueEvents = &model.IssueEventStatus{Traversal: traversal, HistoricalGap: true}
+		}
+		rev := reviews[p.id]
+		complete := (parentComplete(a.PullRequests) || (a.PullRequests != nil && a.PullRequests.Phase == "disabled")) && rev.pending == 0
+		a.Reviews = &model.ChildResourceStatus{Complete: complete, PendingChildren: rev.pending, LastSuccessAt: rfc3339(rev.success), FailureCode: safeActivityCode(rev.code), NextAttemptAt: rfc3339(rev.next)}
+		if comments := resources[resourceKey{repoID: p.id, resource: "comments"}]; comments != nil {
+			a.Comments = &model.ChildResourceStatus{Complete: parentComplete(comments) && comments.JobState != "dead" && comments.JobState != "paused", LastSuccessAt: comments.LastSuccessAt, FailureCode: comments.FailureCode, NextAttemptAt: comments.NextAttemptAt}
+		}
+		isArchived, ok := archived[p.id]
+		if !ok {
+			return pgx.ErrNoRows
+		}
+		a.Archived = isArchived
+		if synchronized(a, now) {
+			a.Synchronized, a.Message = true, "All activity streams are synchronized."
+		}
 	}
 	return nil
 }
 
-// synchronized is true only when every stream is caught up, fresh, failure-free and every child history is complete.
-// The permanent issue-event gap is reported separately and does not block it. Any stale, failed, paused or dead
-// stream keeps the repository from claiming synchronization.
 func synchronized(a *model.ActivityStatus, now time.Time) bool {
 	fresh := func(s *model.ActivityResourceStatus) bool {
 		if s == nil || s.Phase != "current" || s.CatchupThrough == nil || s.LastSuccessAt == nil || s.FailureCode != nil || s.JobState == "dead" || s.JobState == "paused" {

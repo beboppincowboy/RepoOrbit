@@ -1,17 +1,19 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { generateIdempotencyKey } from "@/components/issue-editor";
+import { STATUS_NAMES } from "@/components/task-drawer";
 import { statusLabelsQueryKey, writeOperationsQueryKey } from "@/components/write-history";
-import { canReplayWithSameKey, disableStatusLabels, enableStatusLabels, fetchStatusLabels, mayHaveBeenRecorded, type WriteOperation } from "@/lib/api";
+import { STATUS_LABELS } from "@/lib/board";
+import { canReplayWithSameKey, disableStatusLabels, enableStatusLabels, fetchStatusLabels, generateIdempotencyKey, mayHaveBeenRecorded, type BoardStatus, type WriteOperation } from "@/lib/api";
 
-// The three labels and the Board state each stands for (ADR 0003). Backlog is an open issue without one; Done is closed.
-const columns: Record<string, string> = { "status:todo": "Todo", "status:in-progress": "In Progress", "status:review": "In Review" };
+const columns: Record<string, string> = Object.fromEntries(
+  (Object.entries(STATUS_LABELS) as [BoardStatus, string | undefined][])
+    .filter((entry): entry is [BoardStatus, string] => Boolean(entry[1]))
+    .map(([status, label]) => [label, STATUS_NAMES[status]]),
+);
 
 type Step = "idle" | "review" | "submitting" | "confirm-off";
 
-// Lets an Admin or Maintain user turn a repository's status labels on (through Review → Submit → Confirmed, creating
-// the missing labels) or off. Everyone else sees the current setting and why they cannot change it.
 export function StatusSourceSetup({ repositoryId, viewerKey, demo, frozen }: { repositoryId: string; viewerKey: string; demo: boolean; frozen: boolean }) {
   const queryClient = useQueryClient();
   const queryKey = statusLabelsQueryKey(viewerKey, repositoryId);
@@ -64,6 +66,85 @@ export function StatusSourceSetup({ repositoryId, viewerKey, demo, frozen }: { r
   }
 
   const state = query.data;
+
+  function renderStatusBody() {
+    if (demo) {
+      return <p className="m-0 text-xs text-muted-foreground">Demo mode — GitHub writes are disabled, so status labels cannot be turned on.</p>;
+    }
+    if (frozen) {
+      return <p className="m-0 text-xs text-muted-foreground">Changing status labels needs a live connection to GitHub.</p>;
+    }
+    if (query.isPending) {
+      return <p role="status" className="m-0 text-xs text-muted-foreground">Checking status labels…</p>;
+    }
+    if (query.isError) {
+      return (
+        <p role="alert" className="m-0 text-xs">
+          {query.error.message} <Button variant="outline" size="sm" onClick={() => void query.refetch()}>Retry</Button>
+        </p>
+      );
+    }
+    const status = query.data;
+    if (!status.canChange) {
+      return (
+        <p className="m-0 text-xs text-muted-foreground">
+          {status.enabled ? "Issues are placed in columns by their status label." : "Without status labels the Board shows every issue under “No status source”."}
+          {" "}Only Admin or Maintain users can change this.
+        </p>
+      );
+    }
+    if (status.enabled) {
+      if (step === "confirm-off" || step === "submitting") {
+        return (
+          <div className="flex flex-col gap-2 rounded-lg border border-border p-2.5 text-xs">
+            <span>Turn status labels off for everyone? The labels stay on GitHub, and the Board shows &ldquo;No status source&rdquo;.</span>
+            <div className="flex gap-2">
+              <Button variant="destructive" size="sm" onClick={() => void turnOff()} disabled={step === "submitting"}>
+                {step === "submitting" ? "Turning off…" : "Turn off"}
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => { setStep("idle"); setError(null); }} disabled={step === "submitting"}>Cancel</Button>
+            </div>
+          </div>
+        );
+      }
+      return (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <span className="text-muted-foreground">Closed issues lose their status label through the GitHub App.</span>
+          <Button variant="outline" size="sm" onClick={() => { setStep("confirm-off"); setResult(null); }}>Turn off</Button>
+        </div>
+      );
+    }
+    if (step === "idle") {
+      return (
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+          <span className="text-muted-foreground">Off: the Board shows every issue under &ldquo;No status source&rdquo;.</span>
+          <Button size="sm" onClick={() => { setStep("review"); setResult(null); }}>Turn on…</Button>
+        </div>
+      );
+    }
+    return (
+      <div className="flex flex-col gap-2 rounded-lg border border-border p-2.5 text-xs">
+        <span className="font-medium">Review</span>
+        <ul aria-label="Status labels to set up" className="m-0 flex list-none flex-col gap-1 p-0">
+          {(status.labels ?? []).map(l => (
+            <li key={l.name} className="flex flex-wrap items-center gap-2">
+              <code className="font-mono">{l.name}</code>
+              <span className="text-muted-foreground">→ {columns[l.name] ?? l.name}</span>
+              <span className={l.exists ? "text-muted-foreground" : "text-foreground"}>{l.exists ? "exists, reused" : "will be created"}</span>
+            </li>
+          ))}
+        </ul>
+        <span className="text-muted-foreground">This is a setting every viewer of the repository shares. Your GitHub account creates the missing labels.</span>
+        <div className="flex gap-2">
+          <Button size="sm" onClick={() => void turnOn()} disabled={step === "submitting"}>
+            {step === "submitting" ? "Submitting…" : retryKey ? "Retry submit" : "Submit"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => { setStep("idle"); setError(null); setRetryKey(null); setRetryAttemptedAt(null); }} disabled={step === "submitting"}>Cancel</Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <section aria-label="Status labels" className="flex flex-col gap-2 rounded-xl border border-border bg-card px-4 py-3 text-[13px]">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -78,64 +159,7 @@ export function StatusSourceSetup({ repositoryId, viewerKey, demo, frozen }: { r
         )}
       </div>
 
-      {demo ? (
-        <p className="m-0 text-xs text-muted-foreground">Demo mode — GitHub writes are disabled, so status labels cannot be turned on.</p>
-      ) : frozen ? (
-        <p className="m-0 text-xs text-muted-foreground">Changing status labels needs a live connection to GitHub.</p>
-      ) : query.isPending ? (
-        <p role="status" className="m-0 text-xs text-muted-foreground">Checking status labels…</p>
-      ) : query.isError ? (
-        <p role="alert" className="m-0 text-xs">
-          {query.error.message} <Button variant="outline" size="sm" onClick={() => void query.refetch()}>Retry</Button>
-        </p>
-      ) : !state!.canChange ? (
-        <p className="m-0 text-xs text-muted-foreground">
-          {state!.enabled ? "Issues are placed in columns by their status label." : "Without status labels the Board shows every issue under “No status source”."}
-          {" "}Only Admin or Maintain users can change this.
-        </p>
-      ) : state!.enabled ? (
-        step === "confirm-off" || step === "submitting" ? (
-          <div className="flex flex-col gap-2 rounded-lg border border-border p-2.5 text-xs">
-            <span>Turn status labels off for everyone? The labels stay on GitHub, and the Board shows &ldquo;No status source&rdquo;.</span>
-            <div className="flex gap-2">
-              <Button variant="destructive" size="sm" onClick={() => void turnOff()} disabled={step === "submitting"}>
-                {step === "submitting" ? "Turning off…" : "Turn off"}
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => { setStep("idle"); setError(null); }} disabled={step === "submitting"}>Cancel</Button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-            <span className="text-muted-foreground">Closed issues lose their status label through the GitHub App.</span>
-            <Button variant="outline" size="sm" onClick={() => { setStep("confirm-off"); setResult(null); }}>Turn off</Button>
-          </div>
-        )
-      ) : step === "idle" ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-          <span className="text-muted-foreground">Off: the Board shows every issue under &ldquo;No status source&rdquo;.</span>
-          <Button size="sm" onClick={() => { setStep("review"); setResult(null); }}>Turn on…</Button>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2 rounded-lg border border-border p-2.5 text-xs">
-          <span className="font-medium">Review</span>
-          <ul aria-label="Status labels to set up" className="m-0 flex list-none flex-col gap-1 p-0">
-            {(state!.labels ?? []).map(l => (
-              <li key={l.name} className="flex flex-wrap items-center gap-2">
-                <code className="font-mono">{l.name}</code>
-                <span className="text-muted-foreground">→ {columns[l.name] ?? l.name}</span>
-                <span className={l.exists ? "text-muted-foreground" : "text-foreground"}>{l.exists ? "exists, reused" : "will be created"}</span>
-              </li>
-            ))}
-          </ul>
-          <span className="text-muted-foreground">This is a setting every viewer of the repository shares. Your GitHub account creates the missing labels.</span>
-          <div className="flex gap-2">
-            <Button size="sm" onClick={() => void turnOn()} disabled={step === "submitting"}>
-              {step === "submitting" ? "Submitting…" : retryKey ? "Retry submit" : "Submit"}
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => { setStep("idle"); setError(null); setRetryKey(null); setRetryAttemptedAt(null); }} disabled={step === "submitting"}>Cancel</Button>
-          </div>
-        </div>
-      )}
+      {renderStatusBody()}
 
       {result && !(state?.enabled && result.state !== "succeeded") && (
         <div role="status" className={`text-xs ${result.state === "succeeded" ? "text-success-foreground" : result.state === "unknown" ? "text-warning" : "text-destructive"}`}>

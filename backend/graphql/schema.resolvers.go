@@ -72,8 +72,6 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 	if err != nil {
 		return nil, fmt.Errorf("database unavailable")
 	}
-	// The cursor and next-page flag come from the stored rows, before access filtering, so a page whose rows are
-	// all denied or unverified still advances.
 	result.HasNextPage = len(rows) > n
 	rows = rows[:min(len(rows), n)]
 	ids := make([]int64, len(rows))
@@ -93,7 +91,7 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 			result.Withheld++
 			result.RetryAt = laterRetry(result.RetryAt, d.RetryAt)
 		}
-		if d.Allowed { // current GitHub metadata, not the stored copy
+		if d.Allowed {
 			result.Nodes = append(result.Nodes, &model.Repository{ID: cursorID, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: true, SyncState: string(repositories.SyncStateFor(true)), Activity: activityStatus(false, true)})
 		}
 	}
@@ -140,7 +138,7 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 		return nil, unverifiedError(d.RetryAt)
 	}
 	if !d.Allowed {
-		return nil, nil // indistinguishable from a repository that does not exist
+		return nil, nil
 	}
 	selected, err := r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: userID, RepositoryIds: []int64{repoID}})
 	if err != nil {

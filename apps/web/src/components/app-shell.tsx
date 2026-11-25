@@ -8,7 +8,6 @@ import {
   resetViewerSelection,
   retryDetailBatch,
   selectFailedDetailBatches,
-  selectRowVisibility,
   selectVisibleRows,
   selectWithheldSummary,
   useSelectedRepositories,
@@ -19,7 +18,6 @@ import {
 } from "@/lib/selected-repositories";
 import { LoadingCircle, SyncDot, syncDisplay, syncLabels } from "@/components/sync-status";
 
-// RepoOrbit mark: a planet with an orbit ring (prototype D2 logo).
 export function LogoMark() {
   return <i className="grid size-[26px] place-items-center rounded-[7px] bg-primary">
     <svg width="16" height="16" viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="4" fill="#fff" /><ellipse cx="13" cy="13" rx="10" ry="4.5" fill="none" stroke="#fff" strokeWidth="2" transform="rotate(-25 13 13)" /></svg>
@@ -34,15 +32,12 @@ const navbtn = "flex w-full items-center gap-2.5 whitespace-nowrap rounded-lg px
 const navlabel = "px-2 pt-3 pb-1 font-mono text-[11px] font-medium uppercase tracking-[.06em] text-muted-foreground max-[900px]:hidden";
 const card = "rounded-xl border border-border bg-card";
 
-// A row can remain navigable while its activity access check is unavailable.
 function rowDisplay(row: VisibleSelectedRow) {
   if (row.availability === "unverified") return syncDisplay({ syncState: row.repo.syncState, withheld: 1, retryAt: row.retryAt });
   const detail = row.detail?.state === "available" ? row.detail : undefined;
   return syncDisplay({ syncState: row.repo.syncState, activity: detail?.activity ?? null, metadataStatus: row.repo.metadataStatus, retryAt: detail?.issues.retryAt ?? null });
 }
 
-// Prototype D2 shell: sidebar (Overview, Repositories, then each selected repository) | top bar (breadcrumb, repository
-// jump, avatar menu) | view. The viewport is fixed; each screen scrolls its own lists.
 export function AppShell({ session, children }: { session: ViewerSession; children: ReactNode }) {
   const demo = session.mode === "demo";
   const pathname = useRouterState({ select: state => state.location.pathname });
@@ -77,15 +72,15 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
   }, [login, mode, queryClient, retryTime]);
   const saved = new Map<string, { fullName: string; days: MetricWindow }>();
   if (!demo && (limited || metadata.error instanceof GraphQLUnavailableError)) {
-    const navigableIds = new Set(navigableRows.map(row => row.repo.id));
+    const rowIds = new Set(rows.map(row => row.repo.id));
     for (const [key, snapshot] of queryClient.getQueriesData<{ fullName: string }>({ queryKey: repositorySnapshotsKey(session) })) {
       const [, , , id, days] = key;
       if (
         snapshot
         && typeof id === "string"
         && (days === 7 || days === 30 || days === 90)
-        && selectRowVisibility(rows, visibility, id).availability !== "denied"
-        && !navigableIds.has(id)
+        && !rowIds.has(id)
+        && visibility.get(id)?.status !== "denied"
       ) {
         saved.set(id, { fullName: snapshot.fullName, days });
       }
@@ -145,7 +140,6 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
   </div>;
 }
 
-// Avatar with the signed-in identity and Sign out (real mode only).
 function AccountMenu({ session }: { session: ViewerSession }) {
   const queryClient = useQueryClient();
   const demo = session.mode === "demo";

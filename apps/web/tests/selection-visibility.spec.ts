@@ -606,13 +606,16 @@ test('an open workspace stops showing a verified repository once a complete sele
       return route.fulfill({ json: { data: Object.fromEntries(ids.flatMap((id, i) => [[`a${i}`, { activity: quietActivity }], [`r${i}`, issuePage(id)]])) } });
     }
     if (String(query).startsWith('query RepositoryOverview')) {
-      if (dropped) await heldOverview; // an overview read that has not answered yet
+      if (dropped) await heldOverview;
       return route.fulfill({ json: { data: { repositoryOverview: repoOverview(variables.id) } } }).catch(() => {});
     }
     return route.fallback();
   });
 
   try {
+    await page.addInitScript(() => {
+      localStorage.setItem('repoorbit:issue-draft:real:ada:2:create', JSON.stringify({ title: 'Keep deselected draft' }));
+    });
     await page.goto('/workspace/2');
     await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
     dropped = true;
@@ -622,8 +625,10 @@ test('an open workspace stops showing a verified repository once a complete sele
     });
     await expect(sidebar(page).locator('a[href*="/workspace/2"]')).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('repoorbit:issue-draft:real:ada:2:create'))).not.toBeNull();
     releaseOverview();
     await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('repoorbit:issue-draft:real:ada:2:create'))).not.toBeNull();
   } finally {
     releaseOverview();
   }

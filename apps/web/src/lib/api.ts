@@ -1,12 +1,12 @@
+import { clearAllIssueDrafts } from "@/lib/drafts";
+
 export type Issue = { id: string; repositoryId: string; title: string; state: string };
-// User-facing label for an unverified repository access check.
 const ACCESS_UNVERIFIED_MESSAGE = "Access could not be verified";
 // Wire values of the backend's repositories.SyncState; "demo" appears only in Demo mode.
 export type SyncState = "demo" | "awaiting-sync" | "not-synchronized";
 // Shared metadata refresh status (null when not selected, and in Demo mode). Times are RFC 3339; failureCode is a safe machine code.
 // "paused" means waiting for a usable GitHub credential; "dead" needs an operator requeue.
 export type MetadataStatus = { state: "not-scheduled" | "queued" | "running" | "paused" | "dead"; lastSuccessAt: string | null; nextAttemptAt: string | null; paused: boolean; failureCode: string | null; followSuspended: boolean };
-// Activity coverage is separate from metadata: synchronized is true only when every activity stream is caught up and fresh.
 export type ActivityResourceStatus = { phase: string; boundary: string; catchupThrough: string | null; lastSuccessAt: string | null; failureCode: string | null; jobState: string; nextAttemptAt: string | null };
 export type ChildResourceStatus = { complete: boolean; pendingChildren: number; lastSuccessAt: string | null; failureCode: string | null; nextAttemptAt: string | null };
 export type ActivityStatus = { synchronized: boolean; message: string; issues: ActivityResourceStatus | null; pullRequests: ActivityResourceStatus | null; releases: ActivityResourceStatus | null; reviews: ChildResourceStatus | null; comments: ChildResourceStatus | null; issueEvents: { traversal: ActivityResourceStatus | null; historicalGap: boolean } | null; futureResources: string[] };
@@ -26,8 +26,6 @@ export type OwnedPage = { repositories: ListedRepo[]; nextPage: number; refreshF
 export type StarredPage = { repositories: ListedRepo[]; nextPage: number; refreshedAt: string | null; refreshFailed: boolean; withheld: number; retryAt: string | null; installUrl: string };
 export type ViewerSession = { mode: "demo" | "real"; user: { login: string; demo: boolean } | null; csrfToken: string | null };
 let csrfToken: string | null = null;
-// fetchViewerSession fetches the session and, as a side effect, stores its CSRF token in this module for every later
-// mutating call (logout, setSelected, setFollowed, GraphQL). The workspace loads it before any of them.
 async function fetchViewerSession(): Promise<ViewerSession> {
   const response = await fetch("/auth/me", { cache: "no-store" });
   if (!response.ok) throw new Error("Unable to load session");
@@ -41,13 +39,7 @@ export const sessionQuery = { queryKey: ["session"], queryFn: fetchViewerSession
 export async function logout() {
   const response = await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
   if (!response.ok) throw new Error("Could not sign out. Try again.");
-  if (typeof window !== "undefined") {
-    try {
-      for (const key of Object.keys(window.localStorage)) {
-        if (key.startsWith("repoorbit:issue-draft:")) window.localStorage.removeItem(key);
-      }
-    } catch { /* ignore storage access errors */ }
-  }
+  clearAllIssueDrafts();
 }
 type GraphQLResponse<Data> = {
   data?: Data | null;
@@ -66,9 +58,6 @@ async function graphqlQuery<Data>(queryText: string, variables: Record<string, u
   if (!response.ok) throw new Error("Unable to load repositories");
   return response.json();
 }
-// The backend caps GraphQL nesting at 6 levels (a leaf one level deeper is rejected) and query complexity at 1200.
-// So the list query stays shallow, and activity and issues come from aliased queries of at most 8 repositories each:
-// repository(id) and issues(repositoryIds) are each one level shallower than selectedRepositories { nodes { activity { issueEvents { traversal } } } }.
 const activityResourceFields = "phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt";
 const childResourceFields = "complete pendingChildren lastSuccessAt failureCode nextAttemptAt";
 const activityFields = `synchronized message issues { ${activityResourceFields} } pullRequests { ${activityResourceFields} } releases { ${activityResourceFields} } reviews { ${childResourceFields} } comments { ${childResourceFields} } issueEvents { traversal { ${activityResourceFields} } historicalGap } futureResources`;
@@ -93,7 +82,6 @@ export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal
     const issues = data[issuesAlias];
     const repoError = errors.find(error => error.path?.[0] === repoAlias);
     const accessError = repoError ?? errors.find(error => error.path?.[0] === issuesAlias);
-    // An error-free null repository is the definitive denial; uncertainty on the issues alias cannot soften it.
     if (hasRepoAlias && repository === null && !repoError) {
       return { state: "access-denied" };
     }
@@ -139,7 +127,6 @@ export async function fetchSelectedRepositoryDetailsPage(metadataPage: Promise<R
   signal?.throwIfAborted();
   return { ...connection, batches };
 }
-// Loads one page of repositories on the user's personal GitHub account (selected or not) from GitHub.
 export async function ownedRepositories(page = 1): Promise<OwnedPage> {
   const response = await fetch(`/api/repositories/owned?page=${page}`, { cache: "no-store" });
   if (!response.ok) throw new Error("Unable to load your repositories");
@@ -294,7 +281,6 @@ export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: A
   return data.crossRepositoryOverview;
 }
 
-// The five Board states (R15): an open issue's furthest-along status label, none for backlog; done for any closed issue.
 export type BoardStatus = "backlog" | "todo" | "in_progress" | "in_review" | "done";
 // status is null when the repository's status labels are off. multipleStatus flags an open issue carrying more than one
 // status label. updatedAt is RFC 3339.
@@ -319,7 +305,6 @@ export async function fetchRepositoryBoard(id: string, include: number[], signal
   return data.repositoryBoard;
 }
 
-// --- Issues and audited issue writes (U6a/U6b) ----------------------------------------------------
 
 export type WorkspaceIssue = {
   id: string;
@@ -457,6 +442,13 @@ const CLOCK_SKEW_MARGIN_DAYS = 1;
 const WRITE_RECOVERY_WINDOW_MS = (SERVER_WRITE_RETENTION_DAYS - CLOCK_SKEW_MARGIN_DAYS) * 24 * 60 * 60 * 1000;
 const WRITE_RECOVERY_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
+export function generateIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `ro-${crypto.randomUUID()}`;
+  }
+  return `ro-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 export function canReplayWithSameKey(attemptedAt: string | null | undefined, now: number = Date.now()): boolean {
   if (!attemptedAt) return false;
   const parsed = Date.parse(attemptedAt);
@@ -558,7 +550,6 @@ async function toIssueWriteError(response: Response): Promise<IssueWriteError> {
   return new IssueWriteError(text || defaultMessage, { status: response.status, kind, disposition, retryAfter });
 }
 
-// Fetches imported issues for one repository, including number, labels, assignees, author and URL.
 export async function fetchWorkspaceIssues(id: string, after: string | null, signal: AbortSignal) {
   const { data, errors } = await graphqlQuery<{
     issues: { nodes: WorkspaceIssue[]; withheld: number; retryAt: string | null; hasNextPage: boolean; endCursor: string | null };

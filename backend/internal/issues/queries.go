@@ -1,6 +1,7 @@
 package issues
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -23,7 +24,7 @@ var (
 func (s *Service) view(row db.GetWriteOperationRow) opView {
 	state := row.State
 	rawOutcome := row.Outcome
-	if row.StalePending.Bool { // decided by the database clock that MarkWriteOperationSent checks
+	if row.StalePending.Bool {
 		state = "failed"
 		if len(row.Draft) == 0 {
 			rawOutcome = abandonedPendingRedactedOutcome
@@ -42,7 +43,7 @@ func (s *Service) view(row db.GetWriteOperationRow) opView {
 		if json.Unmarshal(row.Draft, &d) == nil && d.Title != "" {
 			q += ` in:title "` + strings.ReplaceAll(d.Title, `"`, "") + `"`
 		}
-		v.SearchURL = s.GitHubURL + "/" + row.RepositoryName + "/issues?q=" + url.QueryEscape(q)
+		v.SearchURL = strings.TrimRight(s.GitHubURL, "/") + "/" + row.RepositoryName + "/issues?q=" + url.QueryEscape(q)
 	}
 	return v
 }
@@ -61,8 +62,6 @@ func (s *Service) capabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"canCreateIssue": canCreate(d.Repo), "canCreateIssueWithMetadata": canCreateWithMetadata(d.Repo), "canManageIssues": canManage(d.Repo)})
 }
 
-// assignees lists the users GitHub would accept as assignees ({"assignees": [login]}), read with the viewer's own
-// token, so editor suggestions pass the submit-time eligibility check. A viewer who cannot assign gets an empty list.
 func (s *Service) assignees(w http.ResponseWriter, r *http.Request) {
 	userID, ok := auth.SignedInUserID(r.Context())
 	repoID, idOK := pathID(r, "id")
@@ -127,48 +126,53 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"operations": out})
 }
 
-func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request) (int64, db.GetWriteOperationRow, repositories.Decision, accessfence.Snapshot, bool) {
+func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request, settleStale bool) (int64, db.GetWriteOperationRow, repositories.Decision, accessfence.Snapshot, bool) {
 	userID, ok := auth.SignedInUserID(r.Context())
 	opID, idOK := pathID(r, "id")
 	if !ok || !idOK {
 		http.Error(w, "not found", http.StatusNotFound)
 		return 0, db.GetWriteOperationRow{}, repositories.Decision{}, accessfence.Snapshot{}, false
 	}
-	load := func() (db.GetWriteOperationRow, bool) {
-		row, err := s.Queries.GetWriteOperation(r.Context(), db.GetWriteOperationParams{ID: opID, UserID: userID})
+	scope, err := s.Queries.GetWriteOperationScope(r.Context(), db.GetWriteOperationScopeParams{ID: opID, UserID: userID})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			http.Error(w, "not found", http.StatusNotFound)
-			return row, false
-		}
-		if err != nil {
+		} else {
 			s.internal(w, err)
-			return row, false
 		}
-		return row, true
+		return 0, db.GetWriteOperationRow{}, repositories.Decision{}, accessfence.Snapshot{}, false
 	}
-	row, ok := load() // only to learn the repository; read again once access is known
+	d, snap, ok := s.checkedAccess(w, r, userID, scope.RepositoryID)
 	if !ok {
-		return 0, row, repositories.Decision{}, accessfence.Snapshot{}, false
+		return 0, db.GetWriteOperationRow{}, d, snap, false
 	}
-	d, snap, ok := s.checkedAccess(w, r, userID, row.RepositoryID)
-	if !ok {
+	if settleStale && scope.StalePending.Bool {
+		if err := s.Queries.FailStalePendingOperationByID(r.Context(), opID); err != nil {
+			s.internal(w, err)
+			return 0, db.GetWriteOperationRow{}, d, snap, false
+		}
+	}
+	row, err := s.Queries.GetWriteOperation(r.Context(), db.GetWriteOperationParams{ID: opID, UserID: userID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "not found", http.StatusNotFound)
+		} else {
+			s.internal(w, err)
+		}
 		return 0, row, d, snap, false
 	}
-	if row, ok = load(); !ok || !s.fenceHolds(w, r.Context(), snap) {
+	if !s.fenceHolds(w, r.Context(), snap) {
 		return 0, row, d, snap, false
 	}
 	return userID, row, d, snap, true
 }
 
 func (s *Service) get(w http.ResponseWriter, r *http.Request) {
-	if _, row, _, _, ok := s.loadOperation(w, r); ok {
+	if _, row, _, _, ok := s.loadOperation(w, r, false); ok {
 		writeJSON(w, http.StatusOK, s.view(row))
 	}
 }
 
-// statusLabelState answers GET /api/repositories/{id}/status-labels: {enabled, canChange, labels?}. labels
-// ([{name, exists}], read from GitHub with the viewer's token) is included only for a viewer who could turn status
-// labels on and they are off, so the review step can say which labels will be created and which reused.
 func (s *Service) statusLabelState(w http.ResponseWriter, r *http.Request) {
 	userID, ok := auth.SignedInUserID(r.Context())
 	repoID, idOK := pathID(r, "id")
@@ -199,14 +203,16 @@ func (s *Service) statusLabelState(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		// One at a time: a GitHub 401 must reach upstream unmasked by a canceled sibling check, so it revokes the token.
-		for _, l := range statusLabels {
-			exists, err := s.GitHub.LabelExists(r.Context(), token, d.Repo.FullName, l.name)
-			if err != nil {
-				s.upstream(w, r.Context(), userID, err)
-				return
-			}
-			out.Labels = append(out.Labels, label{l.name, exists})
+		exists, err := mapConcurrent(r.Context(), statusLabels, func(ctx context.Context, l statusLabel) (bool, error) {
+			return s.GitHub.LabelExists(ctx, token, d.Repo.FullName, l.name)
+		})
+		if err != nil {
+			s.upstream(w, r.Context(), userID, err)
+			return
+		}
+		out.Labels = make([]label, len(statusLabels))
+		for i, l := range statusLabels {
+			out.Labels[i] = label{l.name, exists[i]}
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

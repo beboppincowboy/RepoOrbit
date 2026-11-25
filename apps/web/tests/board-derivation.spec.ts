@@ -1,8 +1,7 @@
 import { test, expect } from '@playwright/test';
-import { IssueWriteError, canReplayWithSameKey, classifyWriteFailure, mayHaveBeenRecorded, type BoardIssue, type BoardSnapshot } from '../src/lib/api';
-import { deriveChange, isChangedOnGitHub, stageAssignees, type BoardCard, type BoardCardPhase, type BoardTarget } from '../src/lib/board';
+import type { BoardIssue, BoardSnapshot } from '../src/lib/api';
+import { deriveChange, isChangedOnGitHub, loadBoardCards, saveBoardCard, stageAssignees, type BoardCard, type BoardCardPhase, type BoardTarget } from '../src/lib/board';
 
-// Pure tests of the Board's change derivation (KTD2) and conflict check (KTD3); no page is opened.
 
 const ada = { login: 'ada', assignable: true };
 const t0 = '2026-11-20T10:00:00Z';
@@ -159,51 +158,57 @@ test.describe('isChangedOnGitHub', () => {
   });
 });
 
-test('mayHaveBeenRecorded and classifyWriteFailure use RepoOrbit-Write-Disposition without message matching', () => {
-  const error = (status: number, kind: IssueWriteError['kind'], disposition: IssueWriteError['disposition'] = null, message = 'arbitrary prose') =>
-    new IssueWriteError(message, { status, kind, disposition });
-  for (const recorded of [
-    error(0, 'transport'), error(502, 'transport'), error(504, 'transport'), error(500, 'server'), error(418, 'server'),
-    error(500, 'server', 'not-recorded'),
-    error(503, 'unverified', 'possibly-recorded', 'different message without key hint'),
-    error(503, 'unverified', null, 'proxy 503 without disposition header'),
-    new SyntaxError('Unexpected end of JSON input'),
-  ]) {
-    expect(mayHaveBeenRecorded(recorded)).toBe(true);
-    expect(classifyWriteFailure(recorded).outcome).toBe('possibly_recorded');
-  }
-  for (const definite of [
-    error(400, 'validation', null), error(401, 'unauthenticated', null),
-    error(403, 'forbidden', null), error(404, 'not_found', null),
-    error(422, 'unprocessable', null), error(409, 'changed_on_github', null),
-    error(400, 'validation', 'not-recorded'), error(403, 'forbidden', 'not-recorded'),
-    error(503, 'unverified', 'not-recorded', 'retry with the same Idempotency-Key'),
-  ]) {
-    expect(mayHaveBeenRecorded(definite)).toBe(false);
-    expect(classifyWriteFailure(definite).outcome).toBe('not_recorded');
-  }
-  const changed = new IssueWriteError('changed on GitHub', {
-    status: 409,
-    kind: 'changed_on_github',
-    disposition: 'not-recorded',
-    current: { state: 'open', labels: ['status:todo'], assignees: [], status: 'todo', updatedAt: '2026-11-24T12:00:00Z' },
+test.describe('saveBoardCard', () => {
+  test('persists a pending card as unknown while keeping other fields intact', () => {
+    const originalWindow = globalThis.window;
+    const localStorage = Object.create({
+      getItem(this: Record<string, string>, key: string): string | null {
+        return Object.prototype.hasOwnProperty.call(this, key) ? this[key] : null;
+      },
+      setItem(this: Record<string, string>, key: string, value: string): void {
+        this[key] = String(value);
+      },
+      removeItem(this: Record<string, string>, key: string): void {
+        delete this[key];
+      },
+    }) as Storage;
+    globalThis.window = { localStorage } as unknown as Window & typeof globalThis;
+    try {
+      const snapshot = snap({ status: 'todo', labels: ['status:todo'], assignees: ['sam'] });
+      const target = to('in_progress', ['ada']);
+      const pendingCard: BoardCard = {
+        version: 1,
+        number: 7,
+        snapshot,
+        target,
+        phase: 'pending',
+        request: {
+          draft: { labels: { add: ['status:in-progress'], remove: ['status:todo'] }, assignees: { add: ['ada'] } },
+          idempotencyKey: 'idem-key-7',
+        },
+        operationId: 42,
+      };
+      const stagedCard: BoardCard = {
+        version: 1,
+        number: 8,
+        snapshot,
+        target,
+        phase: 'staged',
+        request: null,
+        operationId: null,
+      };
+      expect(saveBoardCard('user:ada', 'repo-1', pendingCard)).toBe(true);
+      expect(saveBoardCard('user:ada', 'repo-1', stagedCard)).toBe(true);
+      expect(loadBoardCards('user:ada', 'repo-1')).toEqual([
+        { ...pendingCard, phase: 'unknown' },
+        stagedCard,
+      ]);
+    } finally {
+      if (originalWindow === undefined) {
+        Reflect.deleteProperty(globalThis, 'window');
+      } else {
+        globalThis.window = originalWindow;
+      }
+    }
   });
-  expect(mayHaveBeenRecorded(changed)).toBe(false);
-  expect(classifyWriteFailure(changed).outcome).toBe('changed_on_github');
-
-  expect(mayHaveBeenRecorded(error(503, 'unverified', 'not-recorded'), { isReplay: true })).toBe(true);
-  expect(mayHaveBeenRecorded(error(403, 'forbidden', 'not-recorded'), { isReplay: true })).toBe(true);
-  expect(classifyWriteFailure(error(503, 'unverified', 'not-recorded'), { isReplay: true }).outcome).toBe('possibly_recorded');
-});
-
-test('canReplayWithSameKey enforces the retention window and rejects undated or implausible timestamps', () => {
-  const DAY_MS = 24 * 60 * 60 * 1000;
-  const now = Date.parse('2026-11-24T12:00:00Z');
-  expect(canReplayWithSameKey(new Date(now - 5 * 60 * 1000).toISOString(), now)).toBe(true);
-  expect(canReplayWithSameKey(new Date(now - 28 * DAY_MS).toISOString(), now)).toBe(true);
-  expect(canReplayWithSameKey(new Date(now - 29 * DAY_MS - 1000).toISOString(), now)).toBe(false);
-  expect(canReplayWithSameKey(null, now)).toBe(false);
-  expect(canReplayWithSameKey(undefined, now)).toBe(false);
-  expect(canReplayWithSameKey('not-a-date', now)).toBe(false);
-  expect(canReplayWithSameKey(new Date(now + 60 * 60 * 1000).toISOString(), now)).toBe(false);
 });

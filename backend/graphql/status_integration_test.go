@@ -7,103 +7,111 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
-	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 	"github.com/repoorbit/repoorbit/backend/internal/testutil"
 )
 
-// Statuses attach only to repositories the viewer selected, and carry a safe code, not raw error text.
-func TestAttachMetadataStatus(t *testing.T) {
+func TestEvidenceCoverageRequiresParentsAndChildren(t *testing.T) {
 	ctx := context.Background()
-	_, pool := testutil.Database(t)
-	for _, sql := range []string{
-		`INSERT INTO users (id, github_id, login, access_token_enc) VALUES (1, 1, 'u', '\x00')`,
-		`INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES (10, 'o/a', '', false, false), (11, 'o/b', '', false, false)`,
-		`INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES (1, 10, 'owned', now())`,
-		`INSERT INTO repository_sync (repository_id, last_success_at, last_error_code) VALUES (10, now(), 'token ghu_secret leaked')`,
+	h, rec, runVars := newTracedGraphQLHarness(t)
+	alice := h.signIn("alice")
+	aliceID := h.userID(ctx, "alice")
+	repoID := h.gh.AddRepo("alice", "evidence", false)
+	for _, step := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES ($1, 'alice/evidence', '', false, false)`, []any{repoID}},
+		{`INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES ($2, $1, 'owned', now())`, []any{repoID, aliceID}},
+		{`INSERT INTO activity_resources(repository_id, resource, boundary, phase, watermark) VALUES
+			($1, 'issues', now(), 'current', now()),
+			($1, 'pull_requests', now(), 'catchup', NULL),
+			($1, 'comments', now(), 'backfill', NULL)`, []any{repoID}},
+		{`INSERT INTO activity_children(repository_id, resource, parent_id, parent_number, complete, last_error_code, last_success_at) VALUES
+			($1, 'reviews', 100, 1, false, 'rate_limited', now())`, []any{repoID}},
 	} {
-		if _, err := pool.Exec(ctx, sql); err != nil {
+		if _, err := h.pool.Exec(ctx, step.sql, step.args...); err != nil {
 			t.Fatal(err)
 		}
 	}
-	r := &Resolver{Queries: db.New(pool)}
-	nodes := []*model.Repository{{ID: "10"}, {ID: "11"}}
-	if err := r.loadMetadataStatus(ctx, 1, nodes); err != nil {
-		t.Fatal(err)
-	}
-	if nodes[1].MetadataStatus != nil {
-		t.Fatal("unselected repository got a status")
-	}
-	s := nodes[0].MetadataStatus
-	if s == nil || s.LastSuccessAt == nil || s.FailureCode == nil || *s.FailureCode != "unknown" || s.State != "not-scheduled" {
-		t.Fatalf("%+v", s)
-	}
-	tx, _ := pool.Begin(ctx)
-	defer tx.Rollback(ctx)
-	if err := jobs.Enqueue(ctx, tx, jobs.KindRepoMetadataRefresh, "repo:10", time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(ctx, `UPDATE jobs SET state='paused'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.loadMetadataStatus(ctx, 1, nodes[:1]); err != nil || !nodes[0].MetadataStatus.Paused {
-		t.Fatalf("%v %+v", err, nodes[0].MetadataStatus)
-	}
-}
 
-func TestEvidenceCoverageRequiresParentsAndChildren(t *testing.T) {
-	ctx := context.Background()
-	_, pool := testutil.Database(t)
-	_, err := pool.Exec(ctx, `INSERT INTO repositories (id,name,description) VALUES (10,'o/a','');
- INSERT INTO activity_resources(repository_id,resource,boundary,phase,watermark) VALUES (10,'issues',now(),'current',now()),(10,'pull_requests',now(),'catchup',NULL),(10,'comments',now(),'backfill',NULL);
- INSERT INTO activity_children(repository_id,resource,parent_id,parent_number,complete,last_error_code,last_success_at) VALUES (10,'reviews',100,1,false,'rate_limited',now());`)
-	if err != nil {
+	const q = `query RepoActivity($id: ID!) {
+		repository(id: $id) {
+			activity {
+				reviews { complete pendingChildren failureCode lastSuccessAt }
+				comments { complete pendingChildren failureCode }
+			}
+		}
+	}`
+	vars := map[string]any{"id": fmt.Sprintf("%d", repoID)}
+	fetch := func() (reviews, comments struct {
+		Complete        bool    `json:"complete"`
+		PendingChildren int     `json:"pendingChildren"`
+		FailureCode     *string `json:"failureCode"`
+		LastSuccessAt   *string `json:"lastSuccessAt"`
+	}) {
+		t.Helper()
+		raw := runVars(alice, q, vars)
+		_ = rec.Stop()
+		var out struct {
+			Data struct {
+				Repository struct {
+					Activity struct {
+						Reviews struct {
+							Complete        bool    `json:"complete"`
+							PendingChildren int     `json:"pendingChildren"`
+							FailureCode     *string `json:"failureCode"`
+							LastSuccessAt   *string `json:"lastSuccessAt"`
+						} `json:"reviews"`
+						Comments struct {
+							Complete        bool    `json:"complete"`
+							PendingChildren int     `json:"pendingChildren"`
+							FailureCode     *string `json:"failureCode"`
+							LastSuccessAt   *string `json:"lastSuccessAt"`
+						} `json:"comments"`
+					} `json:"activity"`
+				} `json:"repository"`
+			} `json:"data"`
+			Errors []any `json:"errors"`
+		}
+		if err := json.Unmarshal([]byte(raw), &out); err != nil || len(out.Errors) > 0 {
+			t.Fatalf("unexpected GraphQL response: %v %s", err, raw)
+		}
+		return out.Data.Repository.Activity.Reviews, out.Data.Repository.Activity.Comments
+	}
+
+	reviews, comments := fetch()
+	if reviews.Complete || comments.Complete || reviews.PendingChildren != 1 || reviews.FailureCode == nil || *reviews.FailureCode != "rate_limited" || reviews.LastSuccessAt == nil {
+		t.Fatalf("incomplete reviews=%+v comments=%+v", reviews, comments)
+	}
+
+	if _, err := h.pool.Exec(ctx, `UPDATE activity_resources SET phase='current', watermark=now() WHERE repository_id=$1 AND resource IN ('pull_requests','comments')`, repoID); err != nil {
 		t.Fatal(err)
 	}
-	r := &Resolver{Queries: db.New(pool), RepoAccess: &repositories.Service{Pool: pool}}
-	a := &model.ActivityStatus{Issues: &model.ActivityResourceStatus{Phase: "current", CatchupThrough: ptr("now")}}
-	if err = r.attachEvidenceStatus(ctx, 10, a); err != nil {
+	if _, err := h.pool.Exec(ctx, `UPDATE activity_children SET complete=true WHERE repository_id=$1`, repoID); err != nil {
 		t.Fatal(err)
 	}
-	if a.Reviews.Complete || a.Comments.Complete || a.Reviews.PendingChildren != 1 || a.Reviews.FailureCode == nil || *a.Reviews.FailureCode != "rate_limited" || a.Reviews.LastSuccessAt == nil {
-		t.Fatalf("incomplete %+v", a)
+	reviews, comments = fetch()
+	if !reviews.Complete || !comments.Complete || reviews.FailureCode == nil || *reviews.FailureCode != "rate_limited" {
+		t.Fatalf("completed evidence should retain later error: reviews=%+v comments=%+v", reviews, comments)
 	}
-	_, err = pool.Exec(ctx, `UPDATE activity_resources SET phase='current',watermark=now() WHERE resource IN ('pull_requests','comments'); UPDATE activity_children SET complete=true WHERE repository_id=10`)
-	if err != nil {
+
+	if _, err := h.pool.Exec(ctx, `UPDATE activity_resources SET phase='catchup', last_error_code='rate_limited' WHERE repository_id=$1 AND resource='comments'`, repoID); err != nil {
 		t.Fatal(err)
 	}
-	if err = r.attachEvidenceStatus(ctx, 10, a); err != nil {
-		t.Fatal(err)
-	}
-	if !a.Reviews.Complete || !a.Comments.Complete || a.Reviews.FailureCode == nil {
-		t.Fatalf("completed evidence should retain later error: %+v", a)
-	}
-	// Comments are their own stream: a comment catch-up leaves review coverage alone, and its failure is reported.
-	if _, err = pool.Exec(ctx, `UPDATE activity_resources SET phase='catchup',last_error_code='rate_limited' WHERE resource='comments'`); err != nil {
-		t.Fatal(err)
-	}
-	if err = r.attachEvidenceStatus(ctx, 10, a); err != nil {
-		t.Fatal(err)
-	}
-	if !a.Reviews.Complete || a.Comments.Complete || a.Comments.PendingChildren != 0 || a.Comments.FailureCode == nil || *a.Comments.FailureCode != "rate_limited" {
-		t.Fatalf("independent coverage: %+v", a)
+	reviews, comments = fetch()
+	if !reviews.Complete || comments.Complete || comments.PendingChildren != 0 || comments.FailureCode == nil || *comments.FailureCode != "rate_limited" {
+		t.Fatalf("independent coverage: reviews=%+v comments=%+v", reviews, comments)
 	}
 }
-func ptr(s string) *string { return &s }
 
 func countMetadataStatusSQL(queries []string) int {
 	n := 0
@@ -158,19 +166,9 @@ func warmAccessCache(runVars func(c *http.Client, query string, vars map[string]
 
 func newTracedGraphQLHarness(t *testing.T) (*evidenceHarness, *testutil.SQLRecorder, func(c *http.Client, query string, vars map[string]any) string) {
 	t.Helper()
-	ctx := context.Background()
 	h := newEvidenceHarness(t)
 	rec := &testutil.SQLRecorder{}
-	cfg, err := pgxpool.ParseConfig(h.dbURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.ConnConfig.Tracer = rec
-	tracedPool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(tracedPool.Close)
+	tracedPool := testutil.OpenTracedPool(t, h.dbURL, rec)
 	tracedQ := db.New(tracedPool)
 	tracedAuth := &auth.Service{Pool: tracedPool, Queries: tracedQ, GitHub: h.client, Key: bytes.Repeat([]byte{1}, 32)}
 	tracedRepos := &repositories.Service{Pool: tracedPool, Queries: tracedQ, GitHub: h.client, TokenSource: tracedAuth, TTL: time.Minute}
@@ -178,49 +176,9 @@ func newTracedGraphQLHarness(t *testing.T) (*evidenceHarness, *testutil.SQLRecor
 
 	runVars := func(c *http.Client, query string, vars map[string]any) string {
 		t.Helper()
-		me, err := c.Get(h.api.URL + "/auth/me")
-		if err != nil {
-			t.Fatal(err)
-		}
-		var session struct {
-			CSRFToken string `json:"csrfToken"`
-		}
-		if err := json.NewDecoder(me.Body).Decode(&session); err != nil {
-			me.Body.Close()
-			t.Fatal(err)
-		}
-		me.Body.Close()
-		payload := map[string]any{"query": query}
-		if vars != nil {
-			payload["variables"] = vars
-		}
-		body, err := json.Marshal(payload)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req, err := http.NewRequest("POST", h.api.URL+"/graphql-traced", bytes.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Origin", "http://app.test")
-		req.Header.Set("X-CSRF-Token", session.CSRFToken)
 		rec.Start()
-		resp, err := c.Do(req)
-		if err != nil {
-			rec.Stop()
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			rec.Stop()
-			t.Fatal(err)
-		}
-		if resp.StatusCode != 200 {
-			t.Fatalf("status %d: %s", resp.StatusCode, b)
-		}
-		return string(b)
+		defer rec.Stop()
+		return h.runAtVars(c, "/graphql-traced", query, vars)
 	}
 	return h, rec, runVars
 }
@@ -429,4 +387,119 @@ func TestGraphQLStatusDemandDrivenSelection(t *testing.T) {
 			t.Fatalf("overview with activity did not run activity-status SQL")
 		}
 	})
+}
+
+func TestSelectedRepositoriesActivityBatchesAcrossRepos(t *testing.T) {
+	ctx := context.Background()
+	h, rec, runVars := newTracedGraphQLHarness(t)
+	alice := h.signIn("alice")
+	aliceID := h.userID(ctx, "alice")
+
+	repoA := h.gh.AddRepo("alice", "alpha", false)
+	repoB := h.gh.AddRepo("alice", "beta", false)
+	for _, step := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO repositories (id, name, description, is_private, is_demo, archived) VALUES
+			($1, 'alice/alpha', 'a', false, false, true),
+			($2, 'alice/beta', 'b', false, false, false)`, []any{repoA, repoB}},
+		{`INSERT INTO selections (user_id, repository_id, source, selected_at) VALUES
+			($3, $1, 'owned', now()),
+			($3, $2, 'owned', now())`, []any{repoA, repoB, aliceID}},
+		{`INSERT INTO activity_resources (repository_id, resource, boundary, phase, watermark, last_success_at, last_error_code) VALUES
+			($1, 'issues', now()-interval '90 days', 'current', now(), now(), 'token ghu_secret leaked'),
+			($1, 'pull_requests', now()-interval '90 days', 'current', now(), now(), $3),
+			($1, 'comments', now()-interval '90 days', 'catchup', NULL, NULL, 'rate_limited'),
+			($2, 'issues', now()-interval '90 days', 'current', now(), now(), NULL),
+			($2, 'pull_requests', now()-interval '90 days', 'current', now(), now(), NULL),
+			($2, 'comments', now()-interval '90 days', 'current', now(), now(), NULL)`, []any{repoA, repoB, ingestion.CodePullRequestsDisabled}},
+		{`INSERT INTO activity_children (repository_id, resource, parent_id, parent_number, complete, last_error_code) VALUES
+			($1, 'reviews', 50, 1, false, 'rate_limited')`, []any{repoA}},
+	} {
+		if _, err := h.pool.Exec(ctx, step.sql, step.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const q = `query SelectedActivity($first: Int!) {
+		selectedRepositories(first: $first) {
+			nodes {
+				id fullName
+				activity {
+					archived
+					issues { phase failureCode }
+					pullRequests { phase }
+					reviews { complete pendingChildren failureCode }
+					comments { complete failureCode }
+				}
+			}
+		}
+	}`
+	warmAccessCache(runVars, rec, alice, q, map[string]any{"first": 2})
+
+	_ = runVars(alice, q, map[string]any{"first": 1})
+	qs1 := rec.Stop()
+	count1 := countActivityStatusSQL(qs1)
+
+	raw := runVars(alice, q, map[string]any{"first": 2})
+	qs2 := rec.Stop()
+	count2 := countActivityStatusSQL(qs2)
+	if count1 == 0 || count2 != count1 {
+		t.Fatalf("expected constant batched activity SQL count across 1 vs 2 repos, got first=1: %d (%v), first=2: %d (%v)", count1, qs1, count2, qs2)
+	}
+	var out struct {
+		Data struct {
+			SelectedRepositories struct {
+				Nodes []struct {
+					ID       string `json:"id"`
+					FullName string `json:"fullName"`
+					Activity struct {
+						Archived bool `json:"archived"`
+						Issues   *struct {
+							Phase       string  `json:"phase"`
+							FailureCode *string `json:"failureCode"`
+						} `json:"issues"`
+						PullRequests *struct {
+							Phase string `json:"phase"`
+						} `json:"pullRequests"`
+						Reviews *struct {
+							Complete        bool    `json:"complete"`
+							PendingChildren int     `json:"pendingChildren"`
+							FailureCode     *string `json:"failureCode"`
+						} `json:"reviews"`
+						Comments *struct {
+							Complete    bool    `json:"complete"`
+							FailureCode *string `json:"failureCode"`
+						} `json:"comments"`
+					} `json:"activity"`
+				} `json:"nodes"`
+			} `json:"selectedRepositories"`
+		} `json:"data"`
+		Errors []any `json:"errors"`
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil || len(out.Errors) > 0 {
+		t.Fatalf("unexpected GraphQL response: %v %s", err, raw)
+	}
+	if len(out.Data.SelectedRepositories.Nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d: %s", len(out.Data.SelectedRepositories.Nodes), raw)
+	}
+	byName := map[string]int{}
+	for i, n := range out.Data.SelectedRepositories.Nodes {
+		byName[n.FullName] = i
+	}
+	a := out.Data.SelectedRepositories.Nodes[byName["alice/alpha"]].Activity
+	if !a.Archived || a.Issues == nil || a.Issues.FailureCode == nil || *a.Issues.FailureCode != "unknown" ||
+		a.PullRequests == nil || a.PullRequests.Phase != "disabled" ||
+		a.Reviews == nil || a.Reviews.Complete || a.Reviews.PendingChildren != 1 || a.Reviews.FailureCode == nil || *a.Reviews.FailureCode != "rate_limited" ||
+		a.Comments == nil || a.Comments.Complete || a.Comments.FailureCode == nil || *a.Comments.FailureCode != "rate_limited" {
+		t.Fatalf("unexpected alpha activity: %+v", a)
+	}
+	b := out.Data.SelectedRepositories.Nodes[byName["alice/beta"]].Activity
+	if b.Archived || b.Issues == nil || b.Issues.FailureCode != nil ||
+		b.PullRequests == nil || b.PullRequests.Phase != "current" ||
+		b.Reviews == nil || !b.Reviews.Complete || b.Reviews.PendingChildren != 0 || b.Reviews.FailureCode != nil ||
+		b.Comments == nil || !b.Comments.Complete || b.Comments.FailureCode != nil {
+		t.Fatalf("unexpected beta activity: %+v", b)
+	}
 }

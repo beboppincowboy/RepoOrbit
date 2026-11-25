@@ -16,21 +16,16 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
-// statusLabels are a repository's status source (ADR 0003), in Board order, with the color each is created with.
-// status_label_rank in SQL matches the same three names.
-var statusLabels = []struct{ name, color string }{
+type statusLabel struct{ name, color string }
+
+var statusLabels = []statusLabel{
 	{"status:todo", "c5def5"},
 	{"status:in-progress", "fbca04"},
 	{"status:review", "0e8a16"},
 }
 
-// boardStates are the five Board states (R15), named as the issue_board_states view names them: boardStates[i] is an
-// open issue's state when its furthest-along status label is statusLabels[i-1] (0: none), and the last is a closed
-// issue's.
 var boardStates = []string{"backlog", "todo", "in_progress", "in_review", "done"}
 
-// statusRank is a label's position in statusLabels plus one, or 0 for any other label. It matches case-insensitively,
-// as status_label_rank in SQL does.
 func statusRank(label string) int {
 	for i, l := range statusLabels {
 		if strings.ToLower(label) == l.name {
@@ -40,8 +35,6 @@ func statusRank(label string) int {
 	return 0
 }
 
-// boardStatus derives an issue's Board state from its GitHub state and labels exactly as the issue_board_states view
-// does: "done" when closed whatever its labels, else the furthest-along status label's state, else "backlog".
 func boardStatus(state string, labels []string) string {
 	if state == "closed" {
 		return boardStates[len(boardStates)-1]
@@ -53,17 +46,12 @@ func boardStatus(state string, labels []string) string {
 	return boardStates[top]
 }
 
-// statusLabelsDraft is what turning status labels on asks for: the three labels, created where missing.
 type statusLabelsDraft struct {
 	Labels []string `json:"labels"`
 }
 
-// recheckGrace is how long after its send a status_labels operation with a missing label stays unknown on recheck.
-// ponytail: a fixed bound on how long the sending request may still be creating labels; it times out well before.
 const recheckGrace = 2 * time.Minute
 
-// canChangeStatusLabels: status labels are a setting every viewer of the repository shares, so only Admin or Maintain
-// users may turn them on or off, and only where issues can be written.
 func canChangeStatusLabels(r githubapp.Repo) bool {
 	return writable(r) && (r.Permissions.Admin || r.Permissions.Maintain)
 }
@@ -131,7 +119,7 @@ func (s *Service) ensureStatusLabels(ctx context.Context, userID int64, token, f
 		err := s.GitHub.CreateLabel(ctx, token, fullName, l.name, l.color)
 		var api *githubapp.APIError
 		if errors.As(err, &api) && api.Status == http.StatusUnprocessableEntity {
-			err = nil // it already exists (or the name is refused); the read below decides
+			err = nil
 		} else if err == nil {
 			out.Created = append(out.Created, l.name)
 		}
@@ -150,29 +138,24 @@ func (s *Service) ensureStatusLabels(ctx context.Context, userID int64, token, f
 	return state, out
 }
 
-// readStatusLabels reads the three labels back into out.Unapplied ("create label X" for each missing one): succeeded
-// when all exist, failed when any is missing, unknown when the read itself failed.
 func (s *Service) readStatusLabels(ctx context.Context, token, fullName string, out outcome) (string, outcome) {
 	out.Unapplied = nil
-	for _, l := range statusLabels {
-		exists, err := s.GitHub.LabelExists(ctx, token, fullName, l.name)
-		if err != nil {
-			_, msg := classify(err)
-			out.Error = strings.TrimSpace(out.Error + " Reading the labels back failed: " + msg)
-			return "unknown", out
-		}
-		if !exists {
+	exists, err := mapConcurrent(ctx, statusLabels, func(ctx context.Context, l statusLabel) (bool, error) {
+		return s.GitHub.LabelExists(ctx, token, fullName, l.name)
+	})
+	if err != nil {
+		_, msg := classify(err)
+		out.Error = strings.TrimSpace(out.Error + " Reading the labels back failed: " + msg)
+		return "unknown", out
+	}
+	for i, l := range statusLabels {
+		if !exists[i] {
 			out.Unapplied = append(out.Unapplied, "create label "+l.name)
 		}
 	}
 	return resolved(out), out
 }
 
-// finishStatusLabels records the outcome of an unknown status_labels operation and, when it succeeded, turns status
-// labels on in the same transaction, unless the setting changed after the operation was recorded (a later Turn off
-// stands). If access changed since snap (the snapshot the actor's Admin or Maintain check
-// was made under) the setting is not changed and the operation stays unknown, so a recheck under current access
-// finishes it.
 func (s *Service) finishStatusLabels(ctx context.Context, opID, repoID int64, snap accessfence.Snapshot, state string, out outcome) error {
 	return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
 		q := s.Queries.WithTx(tx)
@@ -198,11 +181,6 @@ func (s *Service) finishStatusLabels(ctx context.Context, opID, repoID int64, sn
 	})
 }
 
-// recheckStatusLabels resolves an unknown status_labels operation by reading the labels again: succeeded (and status
-// labels turned on) when all three exist, failed when any is missing. Turning labels on again is always safe, so a
-// missing label need not stay unknown, except within recheckGrace of the send, when the original request may still be
-// creating labels: then it stays unknown (409). The actor must still be Admin or Maintain, since success changes a
-// setting every viewer shares.
 func (s *Service) recheckStatusLabels(w http.ResponseWriter, r *http.Request, userID int64, row db.GetWriteOperationRow, d repositories.Decision, snap accessfence.Snapshot) {
 	ctx := r.Context()
 	if !canChangeStatusLabels(d.Repo) {

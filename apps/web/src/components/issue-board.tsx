@@ -9,7 +9,6 @@ import { BOARD_STATUSES, deriveChange, loadBoardCards, removeBoardCard, saveBoar
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type IssueCapabilities, type ViewerSession } from "@/lib/api";
 import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/lib/selected-repositories";
 
-// The workspace route's class strings.
 const panel = "rounded-xl border border-border bg-card min-w-0 min-h-0";
 const muted = "text-muted-foreground";
 const mini = "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-[7px] text-[11px]";
@@ -20,7 +19,6 @@ const phaseNames: Record<BoardCardPhase, string> = { staged: "Staged", changed: 
 const features = tableFeatures({});
 const column = createColumnHelper<typeof features, BoardIssue>();
 const noRows: BoardIssue[] = [];
-// The Board read's caps (KTD7): the most recently updated open issues and the most recently closed ones.
 const OPEN_CAP = 500;
 const CLOSED_CAP = 50;
 const locked = (card?: BoardCard) => card?.phase === "pending" || card?.phase === "unknown";
@@ -31,9 +29,7 @@ type IssueBoardProps = {
   github: string;
   capabilities: IssueCapabilities | null;
   capabilitiesError: string | null;
-  // Logins GitHub accepts as assignees; the saver self-assigns on a move to In Progress only when listed.
   assignable: string[];
-  // The issue whose drawer is open (the route's issue= search parameter).
   openIssue: number | undefined;
   onOpenIssue: (issueNumber: number | undefined) => void;
 };
@@ -49,7 +45,6 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   const [assignee, setAssignee] = useState("");
   const [label, setLabel] = useState("");
   const [text, setText] = useState("");
-  // Another tab staged or discarded a card.
   useEffect(() => {
     const reload = () => setCards(loadBoardCards(viewerKey, repositoryId));
     window.addEventListener("storage", reload);
@@ -58,7 +53,6 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
 
   const query = useQuery({
     queryKey: ["repositoryBoard", viewerKey, repositoryId],
-    // Staged cards and an opened issue may fall outside the caps, so the read includes them (the API takes at most 100).
     queryFn: async ({ signal }) => {
       const startedAtSeq = currentAccessSeq();
       try {
@@ -88,7 +82,6 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   const accessBlocked = repoVisibility?.status === "denied" || repoVisibility?.status === "unverified";
   const board = query.isError || query.isPending || accessBlocked ? null : (query.data ?? null);
   const rows = board?.issues ?? noRows;
-  // StatusSourceSetup shares this query; once it turns labels on or off, read the Board again.
   const labelsSetting = useQuery({ queryKey: statusLabelsQueryKey(viewerKey, repositoryId), queryFn: ({ signal }) => fetchStatusLabels(repositoryId, signal), enabled: false, gcTime: 0 }).data?.enabled;
   const boardLabels = board?.statusLabels;
   const refetchBoard = query.refetch;
@@ -104,18 +97,21 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
 
   const cardOf = (issueNumber: number) => cards.find(card => card.number === issueNumber);
   const targetOf = (row: BoardIssue): BoardTarget => cardOf(row.number)?.target ?? { status: row.status!, assigneesAdd: [], assigneesRemove: [] };
-  // A staged card shows where it is going; a failed one stays where GitHub has it.
   const columnOf = (row: BoardIssue) => {
     const card = cardOf(row.number);
     return !card || card.phase === "failed" ? row.status : card.target.status;
   };
   const saver = { login: viewerLogin ?? "", assignable: assignable.some(login => login.toLowerCase() === viewerLogin?.toLowerCase()) };
-  const blocked = demo ? "Demo mode — remote GitHub writes are disabled, so Board changes cannot be staged."
-    : board && !board.statusLabels ? "No status source: turn status labels on to stage Board changes."
-    : capabilitiesError ?? (!capabilities ? "Checking your current GitHub permissions…"
-      : capabilities.canManageIssues ? null : "Moving cards, changing assignees, and closing or reopening issues requires Triage or higher permission on GitHub.");
+  function getBlockedReason(): string | null {
+    if (demo) return "Demo mode — remote GitHub writes are disabled, so Board changes cannot be staged.";
+    if (board && !board.statusLabels) return "No status source: turn status labels on to stage Board changes.";
+    if (capabilitiesError !== null) return capabilitiesError;
+    if (!capabilities) return "Checking your current GitHub permissions…";
+    if (!capabilities.canManageIssues) return "Moving cards, changing assignees, and closing or reopening issues requires Triage or higher permission on GitHub.";
+    return null;
+  }
+  const blocked = getBlockedReason();
 
-  // Stages target on row's card, or drops the card when target changes nothing. The snapshot is taken at first staging.
   function stage(row: BoardIssue, target: BoardTarget) {
     const card = cardOf(row.number);
     if (blocked || !row.status || locked(card)) return;
@@ -222,6 +218,33 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   const openRow = openIssue === undefined ? undefined : rows.find(row => row.number === openIssue);
   const openCard = openIssue === undefined ? undefined : cardOf(openIssue);
 
+  function renderContent(): ReactNode {
+    if (query.isPending) {
+      return <p role="status" className={`${panel} p-4`}>Loading the Board…</p>;
+    }
+    if (query.isError) {
+      return <p role="alert" className={`${panel} p-4`}>{query.error.message} <Button variant="outline" size="sm" onClick={() => void query.refetch()}>Retry</Button></p>;
+    }
+    if (!board) {
+      return <p role="alert" className={`${panel} p-4`}>The Board is unavailable for this repository.</p>;
+    }
+    if (board.statusLabels) {
+      return view === "board" ? boardView : listView;
+    }
+    return (
+      <div className="flex min-h-0 flex-1 gap-3 max-[900px]:flex-col">
+        {listView}
+        <div className="flex min-h-0 flex-[1_1_320px] flex-col gap-3">
+          <section className={`${panel} px-4 py-3`}>
+            <h2 className="m-0 text-sm">No status source</h2>
+            <p className={`m-0 text-xs ${muted}`}>This repository has no status labels, so its issues are listed without columns and cannot be moved.</p>
+          </section>
+          <StatusSourceSetup repositoryId={repositoryId} viewerKey={viewerKey} demo={demo} frozen={false} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <section aria-label="Board controls" className={`${panel} flex flex-none flex-wrap items-center gap-2 px-4 py-3`}>
@@ -251,22 +274,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
           The Board shows only {[openCapped && `the ${OPEN_CAP} most recently updated open issues`, closedCapped && `the ${CLOSED_CAP} most recently closed issues`].filter(Boolean).join(" and ") || "part of this repository's issues"}.
         </p>
       )}
-      {query.isPending ? <p role="status" className={`${panel} p-4`}>Loading the Board…</p>
-        : query.isError ? <p role="alert" className={`${panel} p-4`}>{query.error.message} <Button variant="outline" size="sm" onClick={() => void query.refetch()}>Retry</Button></p>
-        : !board ? <p role="alert" className={`${panel} p-4`}>The Board is unavailable for this repository.</p>
-        : board.statusLabels ? (view === "board" ? boardView : listView)
-        : (
-          <div className="flex min-h-0 flex-1 gap-3 max-[900px]:flex-col">
-            {listView}
-            <div className="flex min-h-0 flex-[1_1_320px] flex-col gap-3">
-              <section className={`${panel} px-4 py-3`}>
-                <h2 className="m-0 text-sm">No status source</h2>
-                <p className={`m-0 text-xs ${muted}`}>This repository has no status labels, so its issues are listed without columns and cannot be moved.</p>
-              </section>
-              <StatusSourceSetup repositoryId={repositoryId} viewerKey={viewerKey} demo={demo} frozen={false} />
-            </div>
-          </div>
-        )}
+      {renderContent()}
       {openIssue !== undefined && board && (
         <TaskDrawer
           key={openIssue}
