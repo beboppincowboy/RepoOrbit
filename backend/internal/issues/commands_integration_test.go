@@ -1616,6 +1616,36 @@ func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT state FROM write_operations WHERE id = $1`, intactID).Scan(&settledState); err != nil || settledState != "failed" {
 		t.Fatalf("stale pending row after recheck: state=%q err=%v, want failed", settledState, err)
 	}
+
+	bob := e.signIn("bob")
+	var bobStaleID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, draft, state, outcome, created_at)
+		VALUES ($1, $2, 'bob-stale', 'update', '\x00', '{"state":"closed"}', 'pending', '{}', now() - interval '65 seconds') RETURNING id`, bob.id, repo).Scan(&bobStaleID); err != nil {
+		t.Fatal(err)
+	}
+	if resp, op := alice.send(opPath(intactID)+"/recheck", "", "{}"); resp.StatusCode != http.StatusOK || op.State != "failed" {
+		t.Fatalf("second recheck status=%d state=%q, want 200 failed", resp.StatusCode, op.State)
+	}
+	rawState := func(id int64) string {
+		t.Helper()
+		var s string
+		if err := pool.QueryRow(ctx, `SELECT state FROM write_operations WHERE id = $1`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if got := rawState(wipedID); got != "pending" {
+		t.Fatalf("recheck of one operation settled a sibling stale row of the same user: state=%q, want pending", got)
+	}
+	if got := rawState(bobStaleID); got != "pending" {
+		t.Fatalf("recheck settled another user's stale row: state=%q, want pending", got)
+	}
+	if err := db.New(pool).FailAllStalePendingOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rawState(wipedID) != "failed" || rawState(bobStaleID) != "failed" {
+		t.Fatalf("scheduler sweep left stale rows pending: wiped=%q bob=%q", rawState(wipedID), rawState(bobStaleID))
+	}
 }
 
 func TestWriteDispositionHeadersAndArchiveRecovery(t *testing.T) {
