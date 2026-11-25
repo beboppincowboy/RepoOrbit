@@ -259,6 +259,116 @@ func TestIssueSyncWithFakeGitHubAndNoInstallation(t *testing.T) {
 	}
 }
 
+// Issue jobs with nothing to fetch finish (nil) rather than continuing or pausing like shared evidence jobs.
+func TestIssueSyncFinishesWithoutFetching(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	uid := e.signIn("alice")
+	fetches := 0
+	f := &issueFixture{onFetch: func() { fetches++ }}
+	e.deps.GitHub = f
+	e.deps.Access = f
+	request := func(repoID int64) {
+		t.Helper()
+		tx, err := e.pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		if err := ingestion.RequestActivity(ctx, tx, repoID, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.store(uid, 70, false)
+	request(70)
+	if _, err := e.pool.Exec(ctx, `UPDATE activity_resources SET phase='current' WHERE repository_id=70 AND resource='issues'`); err != nil {
+		t.Fatal(err)
+	}
+	e.store(uid, 71, false)
+	request(71)
+	if _, err := e.pool.Exec(ctx, `UPDATE selections SET deselected_at=now() WHERE repository_id=71`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.pool.Exec(ctx, `INSERT INTO repositories (id, name, description, is_private, is_demo) VALUES (72, 'demo/x', '', false, true)`); err != nil {
+		t.Fatal(err)
+	}
+	for name, repoID := range map[string]int64{"current": 70, "no eligible selection": 71, "demo": 72, "missing": 999} {
+		if err := e.deps.SyncIssues(ctx, jobs.Job{Kind: jobs.KindActivityIssues, Key: fmt.Sprintf("repo:%d", repoID)}, txFence{pool: e.pool}); err != nil {
+			t.Fatalf("%s: got %v, want the job to finish", name, err)
+		}
+	}
+	if fetches != 0 {
+		t.Fatalf("fetched %d pages for jobs with nothing to sync", fetches)
+	}
+}
+
+// stepClock advances one minute on every read, so any reordering of clock reads around a fetch is visible.
+type stepClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *stepClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(time.Minute)
+	return c.now
+}
+
+func (c *stepClock) peek() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+// The watermark must be read no later than the converging scan's first fetch, or an issue updated in between is skipped.
+func TestIssueWatermarkIsTakenBeforeTheScanFetches(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	e.store(e.signIn("alice"), 70, false)
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = ingestion.RequestActivity(ctx, tx, 70, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	clock := &stepClock{now: time.Now().UTC().Truncate(time.Second)}
+	e.deps.Clock = clock
+	var fetchedAt []time.Time
+	now := time.Now().UTC()
+	f := &issueFixture{pages: map[int][]githubapp.Issue{1: {{ID: 100, Number: 1, State: "open", CreatedAt: now, UpdatedAt: now}}}, onFetch: func() { fetchedAt = append(fetchedAt, clock.peek()) }}
+	e.deps.GitHub = f
+	e.deps.Access = f
+	var phase string
+	for range 10 {
+		err := e.deps.SyncIssues(ctx, jobs.Job{Key: "repo:70"}, txFence{pool: e.pool})
+		if err == nil {
+			break
+		}
+		if d, ok := err.(*jobs.Defer); !ok || d.Reason != "continue" {
+			t.Fatal(err)
+		}
+	}
+	var watermark, lastSuccess time.Time
+	if err := e.pool.QueryRow(ctx, `SELECT phase, watermark, last_success_at FROM activity_resources WHERE repository_id=70 AND resource='issues'`).Scan(&phase, &watermark, &lastSuccess); err != nil || phase != "current" {
+		t.Fatalf("phase=%s err=%v", phase, err)
+	}
+	// Each pass reads two pages; the converging pass is the last one.
+	if first := fetchedAt[len(fetchedAt)-2]; !watermark.Equal(first) {
+		t.Fatalf("watermark=%v, want the converging scan's first fetch %v (fetches %v)", watermark, first, fetchedAt)
+	}
+	if !lastSuccess.After(fetchedAt[len(fetchedAt)-1]) {
+		t.Fatalf("last_success_at=%v is not after the final fetch %v", lastSuccess, fetchedAt[len(fetchedAt)-1])
+	}
+}
+
 // Removing the eligibility lock or access snapshot check would let a fetched page advance.
 func TestIssueFetchFencedByDeselectionAndRevocation(t *testing.T) {
 	for _, scenario := range []string{"deselection", "revocation"} {

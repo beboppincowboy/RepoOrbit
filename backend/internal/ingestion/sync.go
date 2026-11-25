@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
-	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
@@ -41,14 +39,6 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 	if !ok {
 		return jobs.Permanent(errors.New("issue fetch unavailable"))
 	}
-	q := db.New(d.Pool)
-	repo, err := q.GetSyncRepository(ctx, repoID)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && repo.IsDemo) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
 	var boundary time.Time
 	var phase string
 	var cursor string
@@ -64,195 +54,78 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 	if phase == "current" {
 		return nil
 	}
-	users, err := q.ListEligibleSelectors(ctx, repoID)
+	// withEvidencePage pauses a job without eligible selectors; an issue job (demo repositories included) finishes.
+	users, err := db.New(d.Pool).ListEligibleSelectors(ctx, repoID)
 	if err != nil {
 		return err
 	}
 	if len(users) == 0 {
 		return nil
 	}
-	transient := false
-	var rateRetry time.Time
-	for _, uid := range users {
-		if until := d.throttledUntil(ctx, uid); until.After(d.Clock.Now()) {
-			rateRetry = earlierRetry(rateRetry, until)
-			continue
+	var scanTime, now time.Time
+	var items []githubapp.Issue
+	var next string
+	committed := false
+	err = d.withEvidencePage(ctx, job, fence, repoID, func(token string, repo githubapp.Repo) (any, error) {
+		scanTime = d.Clock.Now()
+		var err error
+		items, next, err = fetcher.FetchIssuesCursor(ctx, token, repo.FullName, cursor)
+		return nil, err
+	}, func(tx pgx.Tx, _ any) error {
+		committed, now = true, d.Clock.Now()
+		var storedPage int
+		var storedPhase string
+		var storedCursor string
+		var storedGeneration int64
+		var firstPass bool
+		if err := tx.QueryRow(ctx, `SELECT page, phase, generation, cursor, previous_scan IS NULL FROM activity_resources WHERE repository_id=$1 AND resource='issues' FOR UPDATE`, repoID).Scan(&storedPage, &storedPhase, &storedGeneration, &storedCursor, &firstPass); err != nil {
+			return err
 		}
-		token, err := d.Tokens.AccessToken(ctx, uid)
-		if errors.Is(err, auth.ErrUnauthenticated) {
-			continue
+		if storedPage != page || storedPhase != phase || storedGeneration != generation || storedCursor != cursor {
+			return errRace
 		}
-		if err != nil {
-			transient = true
-			continue
+		ids := make([]int64, 0, len(items))
+		for _, issue := range items {
+			if issue.PullRequest != nil {
+				continue
+			}
+			if issue.ID <= 0 || issue.CreatedAt.IsZero() || issue.UpdatedAt.IsZero() {
+				return errors.New("invalid issue page")
+			}
+			if issue.State != "open" && issue.CreatedAt.Before(boundary) && issue.UpdatedAt.Before(boundary) && (issue.ClosedAt == nil || issue.ClosedAt.Before(boundary)) {
+				continue
+			}
+			ids = append(ids, issue.ID)
+			var tombstoned bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM activity_tombstones WHERE resource='issues' AND source_id=$1)`, issue.ID).Scan(&tombstoned); err != nil {
+				return err
+			}
+			if tombstoned {
+				continue
+			}
+			if err := ProjectIssue(ctx, tx, repoID, issue); err != nil {
+				return err
+			}
 		}
-		snap, err := accessfence.Take(ctx, d.Pool, uid, repoID)
+		_, err := tx.Exec(ctx, `UPDATE activity_resources SET scan_started_at=COALESCE(scan_started_at,$3), current_scan=ARRAY(SELECT DISTINCT x FROM unnest(current_scan || $4::bigint[]) AS x ORDER BY x), last_error_code=NULL WHERE repository_id=$1 AND resource=$2`, repoID, "issues", scanTime, ids)
 		if err != nil {
 			return err
 		}
-		tighten := func() error {
-			if repo.IsPrivate {
-				return nil
-			}
-			return tightenToPrivate(ctx, fence, repoID)
-		}
-		before := d.checkActivityAccess(ctx, uid, repoID, token)
-		if before.Unverified {
-			if err := tighten(); err != nil && !errors.Is(err, errRace) {
-				return err
-			}
-			if !before.RetryAt.IsZero() {
-				d.throttle(ctx, uid, before.RetryAt)
-				rateRetry = earlierRetry(rateRetry, before.RetryAt)
-			} else {
-				transient = true
-			}
-			continue
-		}
-		if !before.Allowed {
-			continue
-		}
-		if !repo.IsPrivate && before.Repo.Private {
-			if err := tighten(); err != nil && !errors.Is(err, errRace) {
-				return err
-			}
-			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
-		}
-		scanTime := d.Clock.Now()
-		fetchToken := token
-		installation := before.InstallationID
-		if d.InstallationCredentials != nil && installation != 0 {
-			fetchToken, err = d.InstallationCredentials.AccessToken(ctx, installation)
-			if err != nil {
-				fetchErr := d.installationFetchError(installation, fetchToken, err)
-				var deferred *jobs.Defer
-				if errors.As(fetchErr, &deferred) {
-					rateRetry = earlierRetry(rateRetry, deferred.RetryAt)
-					continue
-				}
-				return fetchErr
-			}
-		}
-		items, next, err := fetcher.FetchIssuesCursor(ctx, fetchToken, before.Repo.FullName, cursor)
-		if err != nil && fetchToken != token {
-			fetchErr := d.installationFetchError(installation, fetchToken, err)
-			var deferred *jobs.Defer
-			if errors.As(fetchErr, &deferred) {
-				rateRetry = earlierRetry(rateRetry, deferred.RetryAt)
-				continue
-			}
-			return fetchErr
-		}
-		if err != nil {
-			var api *githubapp.APIError
-			if errors.As(err, &api) && api.RateLimited() {
-				d.throttle(ctx, uid, api.RetryAt)
-				rateRetry = earlierRetry(rateRetry, api.RetryAt)
-				continue
-			}
-			if errors.As(err, &api) && api.Unauthorized() {
-				_ = d.Tokens.Revoke(ctx, uid)
-				continue
-			}
-			return errors.New("issue fetch failed")
-		}
-		after := d.checkActivityAccess(ctx, uid, repoID, token)
-		if after.Unverified {
-			if err := tighten(); err != nil && !errors.Is(err, errRace) {
-				return err
-			}
-			if !after.RetryAt.IsZero() {
-				d.throttle(ctx, uid, after.RetryAt)
-				rateRetry = earlierRetry(rateRetry, after.RetryAt)
-				continue
-			}
-			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeUnverified}
-		}
-		if !after.Allowed || after.InstallationID != before.InstallationID || after.Repo.Private != before.Repo.Private || after.Repo.FullName != before.Repo.FullName {
-			if !after.Allowed || after.Repo.Private {
-				if err := tighten(); err != nil && !errors.Is(err, errRace) {
-					return err
-				}
-			}
-			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
-		}
-		now := d.Clock.Now()
-		err = fence.Commit(ctx, func(tx pgx.Tx) error {
-			if _, err := db.New(tx).LockEligibleSelection(ctx, db.LockEligibleSelectionParams{RepositoryID: repoID, UserID: uid}); err != nil {
-				if errors.Is(err, pgx.ErrNoRows) || isLockNotAvailable(err) {
-					return errRace
-				}
-				return err
-			}
-			if current, err := snap.StillCurrent(ctx, tx); err != nil {
-				return err
-			} else if !current {
-				return errRace
-			}
-			var storedPage int
-			var storedPhase string
-			var storedCursor string
-			var storedGeneration int64
-			var firstPass bool
-			if err := tx.QueryRow(ctx, `SELECT page, phase, generation, cursor, previous_scan IS NULL FROM activity_resources WHERE repository_id=$1 AND resource='issues' FOR UPDATE`, repoID).Scan(&storedPage, &storedPhase, &storedGeneration, &storedCursor, &firstPass); err != nil {
-				return err
-			}
-			if storedPage != page || storedPhase != phase || storedGeneration != generation || storedCursor != cursor {
-				return errRace
-			}
-			ids := make([]int64, 0, len(items))
-			for _, issue := range items {
-				if issue.PullRequest != nil {
-					continue
-				}
-				if issue.ID <= 0 || issue.CreatedAt.IsZero() || issue.UpdatedAt.IsZero() {
-					return errors.New("invalid issue page")
-				}
-				if issue.State != "open" && issue.CreatedAt.Before(boundary) && issue.UpdatedAt.Before(boundary) && (issue.ClosedAt == nil || issue.ClosedAt.Before(boundary)) {
-					continue
-				}
-				ids = append(ids, issue.ID)
-				var tombstoned bool
-				if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM activity_tombstones WHERE resource='issues' AND source_id=$1)`, issue.ID).Scan(&tombstoned); err != nil {
-					return err
-				}
-				if tombstoned {
-					continue
-				}
-				if err := ProjectIssue(ctx, tx, repoID, issue); err != nil {
-					return err
-				}
-			}
-			_, err := tx.Exec(ctx, `UPDATE activity_resources SET scan_started_at=COALESCE(scan_started_at,$3), current_scan=ARRAY(SELECT DISTINCT x FROM unnest(current_scan || $4::bigint[]) AS x ORDER BY x), last_error_code=NULL WHERE repository_id=$1 AND resource=$2`, repoID, "issues", scanTime, ids)
-			if err != nil {
-				return err
-			}
-			if next != "" {
-				_, err = tx.Exec(ctx, `UPDATE activity_resources SET page=page+1, cursor=$2 WHERE repository_id=$1 AND resource='issues'`, repoID, next)
-				return err
-			}
-			if phase == "backfill" {
-				_, err = tx.Exec(ctx, `UPDATE activity_resources SET phase='catchup',page=1,cursor='',scan_started_at=NULL,current_scan='{}',previous_scan=NULL WHERE repository_id=$1 AND resource='issues'`, repoID)
-				return err
-			}
-			_, err = tx.Exec(ctx, `UPDATE activity_resources SET phase=CASE WHEN previous_scan=current_scan THEN 'current' ELSE 'catchup' END, watermark=CASE WHEN previous_scan=current_scan THEN scan_started_at ELSE watermark END, last_success_at=CASE WHEN previous_scan=current_scan THEN $2 ELSE last_success_at END, previous_scan=current_scan, current_scan='{}',scan_started_at=NULL,page=1,cursor='' WHERE repository_id=$1 AND resource='issues'`, repoID, now)
-			return err
-		})
-		if errors.Is(err, errRace) {
-			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
-		}
-		if err != nil {
+		if next != "" {
+			_, err = tx.Exec(ctx, `UPDATE activity_resources SET page=page+1, cursor=$2 WHERE repository_id=$1 AND resource='issues'`, repoID, next)
 			return err
 		}
-		return &jobs.Defer{RetryAt: now, Reason: "continue"}
+		if phase == "backfill" {
+			_, err = tx.Exec(ctx, `UPDATE activity_resources SET phase='catchup',page=1,cursor='',scan_started_at=NULL,current_scan='{}',previous_scan=NULL WHERE repository_id=$1 AND resource='issues'`, repoID)
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE activity_resources SET phase=CASE WHEN previous_scan=current_scan THEN 'current' ELSE 'catchup' END, watermark=CASE WHEN previous_scan=current_scan THEN scan_started_at ELSE watermark END, last_success_at=CASE WHEN previous_scan=current_scan THEN $2 ELSE last_success_at END, previous_scan=current_scan, current_scan='{}',scan_started_at=NULL,page=1,cursor='' WHERE repository_id=$1 AND resource='issues'`, repoID, now)
+		return err
+	})
+	if err != nil || !committed {
+		return err
 	}
-	if !rateRetry.IsZero() {
-		return &jobs.Defer{RetryAt: rateRetry, Reason: CodeRateLimited}
-	}
-	if transient {
-		return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeUnverified}
-	}
-	return &jobs.Pause{Reason: CodeNoCredential}
+	return &jobs.Defer{RetryAt: now, Reason: "continue"}
 }
 
 // ProjectIssue upserts one GitHub issue (from a sync page or a create response) with its labels and assignees into the
