@@ -143,3 +143,28 @@ INSERT INTO jobs(kind,key,state,run_at) VALUES('activity_comments','repo:72:pare
 		t.Fatalf("rollback left %d comment streams (%v)", streams, err)
 	}
 }
+
+func TestDemoActionsSeedIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	dbURL, pool := testutil.Database(t)
+	for i := 0; i < 2; i++ {
+		if err := platform.SeedDemo(ctx, dbURL); err != nil {
+			t.Fatal(err)
+		}
+		var workflows, runs, jobs, deployments, launchpadDeployments, linkedFailures int
+		err := pool.QueryRow(ctx, `SELECT
+   (SELECT count(*) FROM workflows), (SELECT count(*) FROM workflow_runs), (SELECT count(*) FROM workflow_jobs),
+   (SELECT count(*) FROM deployments WHERE repository_id=1), (SELECT count(*) FROM deployments WHERE repository_id=2),
+   (SELECT count(*) FROM issue_pull_request_links l JOIN activity_issues i ON i.repository_id=l.repository_id AND i.number=l.issue_number
+    JOIN activity_pull_requests p ON p.repository_id=l.repository_id AND p.number=l.pull_request_number
+    JOIN workflow_runs r ON r.repository_id=p.repository_id AND p.number=ANY(r.pull_request_numbers)
+    JOIN workflow_jobs j ON j.repository_id=r.repository_id AND j.run_id=r.source_id
+    WHERE i.state='open' AND p.state='open' AND r.conclusion='failure' AND j.html_url <> '')`).Scan(&workflows, &runs, &jobs, &deployments, &launchpadDeployments, &linkedFailures)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if workflows != 5 || runs != 8 || jobs != 8 || deployments != 2 || launchpadDeployments != 0 || linkedFailures != 2 {
+			t.Fatalf("workflows=%d runs=%d jobs=%d deployments=%d launchpadDeployments=%d linkedFailures=%d", workflows, runs, jobs, deployments, launchpadDeployments, linkedFailures)
+		}
+	}
+}
