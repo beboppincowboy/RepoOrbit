@@ -93,7 +93,6 @@ export async function fetchRepositoryDetails(ids: string[], signal?: AbortSignal
     const issues = data[issuesAlias];
     const repoError = errors.find(error => error.path?.[0] === repoAlias);
     const accessError = repoError ?? errors.find(error => error.path?.[0] === issuesAlias);
-    // An error-free null repository is the definitive denial; uncertainty on the issues alias cannot soften it.
     if (hasRepoAlias && repository === null && !repoError) {
       return { state: "access-denied" };
     }
@@ -456,6 +455,13 @@ const SERVER_WRITE_RETENTION_DAYS = 30;
 const CLOCK_SKEW_MARGIN_DAYS = 1;
 const WRITE_RECOVERY_WINDOW_MS = (SERVER_WRITE_RETENTION_DAYS - CLOCK_SKEW_MARGIN_DAYS) * 24 * 60 * 60 * 1000;
 const WRITE_RECOVERY_FUTURE_SKEW_MS = 5 * 60 * 1000;
+
+export function generateIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `ro-${crypto.randomUUID()}`;
+  }
+  return `ro-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
 
 export function canReplayWithSameKey(attemptedAt: string | null | undefined, now: number = Date.now()): boolean {
   if (!attemptedAt) return false;

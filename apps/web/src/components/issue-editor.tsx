@@ -5,6 +5,7 @@ import {
   canReplayWithSameKey,
   classifyWriteFailure,
   fetchWriteOperation,
+  generateIdempotencyKey,
   recheckWriteOperation,
   submitIssueCreate,
   submitIssueUpdate,
@@ -80,13 +81,6 @@ export function hasSavedCreateDraft(viewerKey: string, repositoryId: string): bo
     || saved.lastOperation
     || saved.duplicateOperationId,
   );
-}
-
-export function generateIdempotencyKey(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `ro-${crypto.randomUUID()}`;
-  }
-  return `ro-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
 function safeHref(url?: string | null): string | null {
@@ -306,12 +300,18 @@ export function IssueEditor(props: IssueEditorProps) {
   const currentLabels = issue?.labels ?? [];
   const currentAssignees = issue?.assignees ?? [];
 
-  function addLabelTokens(raw: string, existingAdd: string[], existingRemove: string[]): { nextAdd: string[]; nextRemove: string[]; error: string | null } {
+  function addTokens(
+    raw: string,
+    existingAdd: string[],
+    existingRemove: string[],
+    validate: (token: string) => string | null,
+    itemPlural: string,
+  ): { nextAdd: string[]; nextRemove: string[]; error: string | null } {
     const tokens = splitTokens(raw);
     let nextAdd = [...existingAdd];
     let nextRemove = [...existingRemove];
     for (const token of tokens) {
-      const err = validateLabel(token);
+      const err = validate(token);
       if (err) return { nextAdd, nextRemove, error: err };
       if (hasIgnoreCase(nextRemove, token)) {
         nextRemove = removeIgnoreCase(nextRemove, token);
@@ -319,63 +319,46 @@ export function IssueEditor(props: IssueEditorProps) {
       }
       if (hasIgnoreCase(nextAdd, token)) continue;
       if (nextAdd.length >= MAX_ITEMS) {
-        return { nextAdd, nextRemove, error: `At most ${MAX_ITEMS} labels can be added at once.` };
+        return { nextAdd, nextRemove, error: `At most ${MAX_ITEMS} ${itemPlural} can be added at once.` };
       }
       nextAdd = [...nextAdd, token];
     }
     return { nextAdd, nextRemove, error: null };
   }
 
-  function addAssigneeTokens(raw: string, existingAdd: string[], existingRemove: string[]): { nextAdd: string[]; nextRemove: string[]; error: string | null } {
-    const tokens = splitTokens(raw);
-    let nextAdd = [...existingAdd];
-    let nextRemove = [...existingRemove];
-    for (const token of tokens) {
-      const err = validateLogin(token);
-      if (err) return { nextAdd, nextRemove, error: err };
-      if (hasIgnoreCase(nextRemove, token)) {
-        nextRemove = removeIgnoreCase(nextRemove, token);
-        continue;
-      }
-      if (hasIgnoreCase(nextAdd, token)) continue;
-      if (nextAdd.length >= MAX_ITEMS) {
-        return { nextAdd, nextRemove, error: `At most ${MAX_ITEMS} assignees can be added at once.` };
-      }
-      nextAdd = [...nextAdd, token];
+  function handleAddChips(
+    input: string,
+    clearInput: () => void,
+    createList: string[],
+    setCreateList: (next: string[]) => void,
+    addList: string[],
+    setAddList: (next: string[]) => void,
+    removeList: string[],
+    setRemoveList: (next: string[]) => void,
+    validate: (token: string) => string | null,
+    itemPlural: string,
+  ) {
+    if (!input.trim()) return;
+    if (isCreate) {
+      const res = addTokens(input, createList, [], validate, itemPlural);
+      if (res.error) { setValidationError(res.error); return; }
+      setCreateList(res.nextAdd);
+    } else {
+      const res = addTokens(input, addList, removeList, validate, itemPlural);
+      if (res.error) { setValidationError(res.error); return; }
+      setAddList(res.nextAdd);
+      setRemoveList(res.nextRemove);
     }
-    return { nextAdd, nextRemove, error: null };
+    clearInput();
+    setValidationError(null);
   }
 
   function handleAddLabel() {
-    if (!labelInput.trim()) return;
-    if (isCreate) {
-      const res = addLabelTokens(labelInput, createLabels, []);
-      if (res.error) { setValidationError(res.error); return; }
-      setCreateLabels(res.nextAdd);
-    } else {
-      const res = addLabelTokens(labelInput, addLabels, removeLabels);
-      if (res.error) { setValidationError(res.error); return; }
-      setAddLabels(res.nextAdd);
-      setRemoveLabels(res.nextRemove);
-    }
-    setLabelInput("");
-    setValidationError(null);
+    handleAddChips(labelInput, () => setLabelInput(""), createLabels, setCreateLabels, addLabels, setAddLabels, removeLabels, setRemoveLabels, validateLabel, "labels");
   }
 
   function handleAddAssignee() {
-    if (!assigneeInput.trim()) return;
-    if (isCreate) {
-      const res = addAssigneeTokens(assigneeInput, createAssignees, []);
-      if (res.error) { setValidationError(res.error); return; }
-      setCreateAssignees(res.nextAdd);
-    } else {
-      const res = addAssigneeTokens(assigneeInput, addAssignees, removeAssignees);
-      if (res.error) { setValidationError(res.error); return; }
-      setAddAssignees(res.nextAdd);
-      setRemoveAssignees(res.nextRemove);
-    }
-    setAssigneeInput("");
-    setValidationError(null);
+    handleAddChips(assigneeInput, () => setAssigneeInput(""), createAssignees, setCreateAssignees, addAssignees, setAddAssignees, removeAssignees, setRemoveAssignees, validateLogin, "assignees");
   }
 
   function onChipInputKeyDown(kind: "label" | "assignee") {
@@ -388,32 +371,32 @@ export function IssueEditor(props: IssueEditorProps) {
     };
   }
 
-  function toggleRemoveCurrentLabel(name: string) {
+  function toggleRemoval(
+    value: string,
+    removeList: string[],
+    setAddList: (updater: (prev: string[]) => string[]) => void,
+    setRemoveList: (next: string[] | ((prev: string[]) => string[])) => void,
+    itemPlural: string,
+  ) {
     setValidationError(null);
-    if (hasIgnoreCase(removeLabels, name)) {
-      setRemoveLabels(removeIgnoreCase(removeLabels, name));
+    if (hasIgnoreCase(removeList, value)) {
+      setRemoveList(removeIgnoreCase(removeList, value));
       return;
     }
-    if (removeLabels.length >= MAX_ITEMS) {
-      setValidationError(`At most ${MAX_ITEMS} labels can be removed at once.`);
+    if (removeList.length >= MAX_ITEMS) {
+      setValidationError(`At most ${MAX_ITEMS} ${itemPlural} can be removed at once.`);
       return;
     }
-    setAddLabels(prev => removeIgnoreCase(prev, name));
-    setRemoveLabels(prev => [...prev, name]);
+    setAddList(prev => removeIgnoreCase(prev, value));
+    setRemoveList(prev => [...prev, value]);
+  }
+
+  function toggleRemoveCurrentLabel(name: string) {
+    toggleRemoval(name, removeLabels, setAddLabels, setRemoveLabels, "labels");
   }
 
   function toggleRemoveCurrentAssignee(login: string) {
-    setValidationError(null);
-    if (hasIgnoreCase(removeAssignees, login)) {
-      setRemoveAssignees(removeIgnoreCase(removeAssignees, login));
-      return;
-    }
-    if (removeAssignees.length >= MAX_ITEMS) {
-      setValidationError(`At most ${MAX_ITEMS} assignees can be removed at once.`);
-      return;
-    }
-    setAddAssignees(prev => removeIgnoreCase(prev, login));
-    setRemoveAssignees(prev => [...prev, login]);
+    toggleRemoval(login, removeAssignees, setAddAssignees, setRemoveAssignees, "assignees");
   }
 
   function discardDraft() {
@@ -451,14 +434,14 @@ export function IssueEditor(props: IssueEditorProps) {
       let nextLabels = createLabels;
       let nextAssignees = createAssignees;
       if (canCreateMetadata && labelInput.trim()) {
-        const res = addLabelTokens(labelInput, nextLabels, []);
+        const res = addTokens(labelInput, nextLabels, [], validateLabel, "labels");
         if (res.error) { setValidationError(res.error); return; }
         nextLabels = res.nextAdd;
         setCreateLabels(nextLabels);
         setLabelInput("");
       }
       if (canCreateMetadata && assigneeInput.trim()) {
-        const res = addAssigneeTokens(assigneeInput, nextAssignees, []);
+        const res = addTokens(assigneeInput, nextAssignees, [], validateLogin, "assignees");
         if (res.error) { setValidationError(res.error); return; }
         nextAssignees = res.nextAdd;
         setCreateAssignees(nextAssignees);
@@ -488,7 +471,7 @@ export function IssueEditor(props: IssueEditorProps) {
     let nextAddAssignees = addAssignees;
     let nextRemoveAssignees = removeAssignees;
     if (canManage && labelInput.trim()) {
-      const res = addLabelTokens(labelInput, nextAddLabels, nextRemoveLabels);
+      const res = addTokens(labelInput, nextAddLabels, nextRemoveLabels, validateLabel, "labels");
       if (res.error) { setValidationError(res.error); return; }
       nextAddLabels = res.nextAdd;
       nextRemoveLabels = res.nextRemove;
@@ -497,7 +480,7 @@ export function IssueEditor(props: IssueEditorProps) {
       setLabelInput("");
     }
     if (canManage && assigneeInput.trim()) {
-      const res = addAssigneeTokens(assigneeInput, nextAddAssignees, nextRemoveAssignees);
+      const res = addTokens(assigneeInput, nextAddAssignees, nextRemoveAssignees, validateLogin, "assignees");
       if (res.error) { setValidationError(res.error); return; }
       nextAddAssignees = res.nextAdd;
       nextRemoveAssignees = res.nextRemove;
