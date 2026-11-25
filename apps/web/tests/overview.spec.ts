@@ -12,7 +12,7 @@ const overview = (over: object = {}) => ({
     { kind: 'issue_no_response', repositoryId: '1', fullName: 'ada/repo-1', number: 37, title: 'Crash on start', url: 'https://github.com/ada/repo-1/issues/37', since: '2026-11-01T00:00:00Z' },
     { kind: 'stale_issue', repositoryId: '2', fullName: 'ada/repo-2', number: 4, title: 'Old docs', url: 'https://github.com/ada/repo-2/issues/4', since: '2026-09-01T00:00:00Z' },
   ],
-  assignedToMe: [{ repositoryId: '2', fullName: 'ada/repo-2', number: 9, title: 'Fix the login flow', url: 'https://github.com/ada/repo-2/issues/9', updatedAt: '2026-11-15T00:00:00Z' }],
+  assignedToMe: [{ repositoryId: '2', fullName: 'ada/repo-2', number: 9, title: 'Fix the login flow', url: 'https://github.com/ada/repo-2/issues/9', updatedAt: '2026-11-15T00:00:00Z', status: null }],
   daily: Array.from({ length: 30 }, (_, i) => ({ day: new Date(Date.UTC(2026, 9, 19 + i)).toISOString(), issuesOpened: i % 4, pullRequestsMerged: i % 3 })),
   ...over,
 });
@@ -116,6 +116,18 @@ test('a second access-unverified read shows the access error', async ({ page }) 
   const calls = await open(page, '/', unverified, unverified);
   await expect(page.getByRole('alert')).toContainText('Access could not be verified');
   expect(calls).toHaveLength(2);
+});
+
+test('assigned issues are grouped by Board status and open on the Board with the drawer', async ({ page }) => {
+  const issue = (number: number, title: string, status: string | null) => ({ repositoryId: '2', fullName: 'ada/repo-2', number, title, url: `https://github.com/ada/repo-2/issues/${number}`, updatedAt: '2026-11-15T00:00:00Z', status });
+  await open(page, '/', ok({ assignedToMe: [issue(5, 'No labels here', null), issue(3, 'Review me', 'in_review'), issue(9, 'Fix the login flow', 'todo')] }));
+  const mine = page.getByRole('region', { name: 'Assigned to me' });
+  await expect(mine.getByRole('heading', { level: 3 })).toHaveText(['Todo 1', 'In Review 1', 'No status source 1']);
+  await expect(mine.getByRole('group', { name: /Todo/ }).getByRole('link')).toHaveText([/Fix the login flow/]);
+  await expect(mine.getByRole('group', { name: /No status source/ }).getByRole('link')).toHaveText([/No labels here/]);
+  await mine.getByRole('link', { name: /Review me/ }).click();
+  await expect(page).toHaveURL(/\/workspace\/2\?.*tab=board/);
+  await expect(page).toHaveURL(/issue=3/);
 });
 
 test('empty lists use the prototype wording', async ({ page }) => {
