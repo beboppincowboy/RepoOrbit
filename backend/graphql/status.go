@@ -3,11 +3,11 @@ package graph
 import (
 	"context"
 	"errors"
-
-	"github.com/jackc/pgx/v5"
 	"strconv"
 	"time"
 
+	"github.com/99designs/gqlgen/graphql"
+	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
 )
@@ -36,18 +36,108 @@ func metadataStatus(s ingestion.MetadataStatus) *model.MetadataStatus {
 	return &model.MetadataStatus{State: s.State, LastSuccessAt: rfc3339(s.LastSuccessAt), NextAttemptAt: rfc3339(s.NextAttemptAt), Paused: s.Paused, FailureCode: s.FailureCode, FollowSuspended: s.FollowSuspended}
 }
 
-// attachMetadataStatus sets MetadataStatus on every node the user has selected. Reads the database only.
-func (r *Resolver) attachMetadataStatus(ctx context.Context, userID int64, nodes []*model.Repository) error {
+type statusFields struct {
+	metadata bool
+	activity bool
+}
+
+func collectRepositoryStatusFields(fields []graphql.CollectedField, want *statusFields) {
+	for _, f := range fields {
+		switch f.Name {
+		case "metadataStatus":
+			want.metadata = true
+		case "activity":
+			want.activity = true
+		}
+	}
+}
+
+func repositoryStatusSelection(ctx context.Context) statusFields {
+	if !graphql.HasOperationContext(ctx) {
+		return statusFields{metadata: true, activity: true}
+	}
+	var want statusFields
+	collectRepositoryStatusFields(graphql.CollectFieldsCtx(ctx, []string{"Repository"}), &want)
+	return want
+}
+
+func selectedRepositoryStatusSelection(ctx context.Context) statusFields {
+	if !graphql.HasOperationContext(ctx) {
+		return statusFields{metadata: true, activity: true}
+	}
+	op := graphql.GetOperationContext(ctx)
+	var want statusFields
+	for _, f := range graphql.CollectFieldsCtx(ctx, []string{"RepositoryConnection"}) {
+		if f.Name != "nodes" {
+			continue
+		}
+		collectRepositoryStatusFields(graphql.CollectFields(op, f.Selections, []string{"Repository"}), &want)
+	}
+	return want
+}
+
+func overviewActivitySelected(ctx context.Context) bool {
+	if !graphql.HasOperationContext(ctx) {
+		return true
+	}
+	for _, f := range graphql.CollectFieldsCtx(ctx, []string{"RepositoryOverview"}) {
+		if f.Name == "activity" {
+			return true
+		}
+	}
+	return false
+}
+
+func parseNodeIDs(nodes []*model.Repository) []int64 {
 	ids := make([]int64, 0, len(nodes))
 	for _, n := range nodes {
 		if id, err := strconv.ParseInt(n.ID, 10, 64); err == nil {
 			ids = append(ids, id)
 		}
 	}
+	return ids
+}
+
+func (r *Resolver) loadSelectedStatuses(ctx context.Context, userID int64, nodes []*model.Repository, want statusFields) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	if want.metadata {
+		if err := r.loadMetadataStatus(ctx, userID, nodes); err != nil {
+			return err
+		}
+	}
+	if want.activity {
+		if err := r.loadActivityStatus(ctx, nodes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Resolver) loadMetadataStatus(ctx context.Context, userID int64, nodes []*model.Repository) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	ids := parseNodeIDs(nodes)
 	statuses, err := ingestion.LoadMetadataStatuses(ctx, r.Queries, userID, ids)
 	if err != nil {
 		return err
 	}
+	for _, n := range nodes {
+		id, _ := strconv.ParseInt(n.ID, 10, 64)
+		if s, ok := statuses[id]; ok {
+			n.MetadataStatus = metadataStatus(s)
+		}
+	}
+	return nil
+}
+
+func (r *Resolver) loadActivityStatus(ctx context.Context, nodes []*model.Repository) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	ids := parseNodeIDs(nodes)
 	activity, err := r.Queries.ListActivityStatuses(ctx, ids)
 	if err != nil {
 		return err
@@ -80,9 +170,6 @@ func (r *Resolver) attachMetadataStatus(ctx context.Context, userID int64, nodes
 	}
 	for _, n := range nodes {
 		id, _ := strconv.ParseInt(n.ID, 10, 64)
-		if s, ok := statuses[id]; ok {
-			n.MetadataStatus = metadataStatus(s)
-		}
 		if n.Activity != nil {
 			n.Activity.Issues = byID[id]
 			if r.RepoAccess != nil {

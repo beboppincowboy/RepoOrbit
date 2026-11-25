@@ -1,25 +1,35 @@
-import { repositorySnapshotKey, repositorySnapshotPrefix } from "@/lib/repository-snapshots";
+import { repositorySnapshotKey } from "@/lib/repository-snapshots";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 import { hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/components/issue-editor";
 import { IssueBoard } from "@/components/issue-board";
-import { clearRepositoryIssueDrafts } from "@/lib/drafts";
 import { IssueIcon, PullRequestIcon } from "@/components/needs-attention";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { WriteHistory, writeOperationsQueryKey } from "@/components/write-history";
 import { StatusSourceSetup } from "@/components/status-source-setup";
-import { selectedRepositoriesKey, flattenSelectedRepositoryRows, useSelectedRepositories } from "@/lib/selected-repositories";
+import {
+  crossRepositoryOverviewKey,
+  currentAccessSeq,
+  recordAccessDenied,
+  recordOverviewSnapshot,
+  recordOverviewUnavailable,
+  selectRepositoryVisibility,
+  selectedRepositoriesKey,
+  useSelectedRepositories,
+  useSelectedRepositoryMetadata,
+  useSelectionVisibility,
+  viewerKeyOf,
+} from "@/lib/selected-repositories";
 import {
   RepositoryAccessUnverifiedError,
   GraphQLUnavailableError,
   fetchIssueCapabilities,
   fetchWorkspaceIssue,
   fetchAssignableUsers,
-  fetchSelectedRepositoryDetailsPage,
   fetchRepositoryOverview,
   fetchWorkspaceIssues,
   fetchWorkspacePullRequests,
@@ -118,24 +128,24 @@ function RepositoryWorkspace() {
   const navigate = useNavigate({ from: "/workspace/$repositoryId" });
   const { session } = Route.useRouteContext();
   const queryClient = useQueryClient();
-  const viewerKey = `${session.mode}:${session.user?.login ?? ""}`;
+  const viewerKey = viewerKeyOf(session);
   const [selectedEditIssue, setSelectedEditIssue] = useState<EditableIssue | null>(null);
   const [draftRevision, setDraftRevision] = useState(0);
   const overviewKey = ["repositoryOverview", session.mode, session.user?.login, repositoryId, search.days] as const;
-  const snapshotPrefix = repositorySnapshotPrefix(session, repositoryId);
   const snapshotKey = repositorySnapshotKey(session, repositoryId, search.days);
   const query = useQuery({
     queryKey: overviewKey,
     queryFn: async ({ signal }) => {
+      const startedAtSeq = currentAccessSeq();
       try {
         const data = await fetchRepositoryOverview(repositoryId, search.days, signal);
         signal.throwIfAborted();
-        if (data) queryClient.setQueryData(snapshotKey, data);
-        else queryClient.removeQueries({ queryKey: snapshotPrefix });
+        if (data) recordOverviewSnapshot(queryClient, session, repositoryId, search.days, data, startedAtSeq);
+        else recordAccessDenied(queryClient, session, repositoryId);
         return data;
       } catch (error) {
-        if (!signal.aborted && !(error instanceof GraphQLUnavailableError) && !(error instanceof RepositoryAccessUnverifiedError && error.retryAt)) {
-          queryClient.removeQueries({ queryKey: snapshotPrefix });
+        if (!signal.aborted) {
+          recordOverviewUnavailable(queryClient, session, repositoryId, error, startedAtSeq);
         }
         throw error;
       }
@@ -167,33 +177,15 @@ function RepositoryWorkspace() {
   const snapshot = snapshotReason ? queryClient.getQueryState<Overview>(snapshotKey) : undefined;
   const overview = query.isError ? snapshot?.data : query.data;
   const demo = session.mode === "demo";
-  // Metadata refresh state and the access check's retry time come from the selection list the shell already loads.
   const selection = useSelectedRepositories(session);
-  const row = flattenSelectedRepositoryRows(selection).find(r => r.repo.id === repositoryId);
+  const metadata = useSelectedRepositoryMetadata(session);
+  const visibility = useSelectionVisibility(session);
+  const rowVisibility = selectRepositoryVisibility(metadata, selection, visibility, repositoryId);
+  const row = rowVisibility.row;
   const accessLost = query.isSuccess && overview === null;
   const accessRejected = query.error instanceof RepositoryAccessUnverifiedError || accessLost;
-  useEffect(() => {
-    if (!accessRejected || query.isFetching || row?.detail?.state !== "available") return;
-    queryClient.setQueryData<InfiniteData<Awaited<ReturnType<typeof fetchSelectedRepositoryDetailsPage>>>>(
-      selectedRepositoriesKey(session),
-      previous => previous && {
-        ...previous,
-        pages: previous.pages.map(page => ({
-          ...page,
-          batches: page.batches.map(batch => {
-            if (!batch.details || !batch.repositories.some(repo => repo.id === repositoryId)) return batch;
-            return {
-              ...batch,
-              details: batch.details.map((detail, i) => batch.repositories[i].id === repositoryId && detail.state === "available"
-                ? { state: "access-unverified", retryAt: null } : detail),
-            };
-          }),
-        })),
-      },
-    );
-  }, [accessRejected, query.isFetching, queryClient, repositoryId, row?.detail?.state, session]);
   const accessRetryAt = query.error instanceof RepositoryAccessUnverifiedError ? query.error.retryAt : null;
-  const retryAt = accessRetryAt ?? (row?.detail?.state === "access-unverified" ? row.detail.retryAt : null);
+  const retryAt = accessRetryAt ?? (rowVisibility.availability === "unverified" ? rowVisibility.retryAt : null);
   const retryTime = retryAt ? Date.parse(retryAt) : NaN;
   const rateLimited = Number.isFinite(retryTime);
   const refetchOverview = query.refetch;
@@ -206,11 +198,6 @@ function RepositoryWorkspace() {
     }, Math.max(1000, delay + 1000));
     return () => window.clearTimeout(timer);
   }, [accessRejected, queryClient, refetchOverview, retryTime, session]);
-  useEffect(() => {
-    if (accessLost && !query.isFetching) {
-      clearRepositoryIssueDrafts(viewerKey, repositoryId);
-    }
-  }, [accessLost, query.isFetching, viewerKey, repositoryId]);
   const editorOpen = search.editor !== undefined;
   const capabilitiesQuery = useQuery({
     queryKey: ["issueCapabilities", viewerKey, repositoryId],
@@ -265,7 +252,7 @@ function RepositoryWorkspace() {
     if (op.state === "succeeded" || op.issueNumber) {
       void queryClient.invalidateQueries({ queryKey: ["workspaceIssues", repositoryId, viewerKey] });
       void queryClient.invalidateQueries({ queryKey: ["repositoryOverview", session.mode, session.user?.login, repositoryId] });
-      void queryClient.invalidateQueries({ queryKey: ["crossRepositoryOverview", session.mode, session.user?.login] });
+      void queryClient.invalidateQueries({ queryKey: crossRepositoryOverviewKey(session) });
     }
   }
 
@@ -288,11 +275,11 @@ function RepositoryWorkspace() {
   } : null;
   const display = sync ? syncDisplay(sync) : null;
 
-  const unavailable = !snapshot && (accessRejected || row?.detail?.state === "access-unverified");
+  const unavailable = !snapshot && (accessRejected || rowVisibility.availability === "unverified" || rowVisibility.availability === "denied");
   if (unavailable || !overview || !sync) return <div className="flex h-full min-h-0 flex-col gap-3">
     <section className={`${card} flex flex-none flex-wrap items-center gap-3 p-4`}>
       <Ico>{icons.repo}</Ico>
-      <h1 className="text-[19px] leading-[1.2]">{unavailable ? "Repository" : row?.repo.fullName || "Repository"}</h1>
+      <h1 className="text-[19px] leading-[1.2]">{unavailable ? "Repository" : (rowVisibility.canRevealName ? row?.repo.fullName : null) || "Repository"}</h1>
       {unavailable && <SyncStatus compact syncState="awaiting-sync" withheld={1} retryAt={retryAt} />}
     </section>
     <section aria-label="Repository overview" className={`${card} p-4`}>
@@ -368,10 +355,8 @@ function RepositoryWorkspace() {
     {search.tab === "board" && (snapshot ? <p className={`${card} p-4`}>The Board needs a live connection. Saved issue counts are available on Overview.</p> : (
       <IssueBoard
         key={repositoryId}
+        session={session}
         repositoryId={repositoryId}
-        viewerKey={viewerKey}
-        viewerLogin={session.user?.login ?? null}
-        demo={demo}
         github={github}
         capabilities={capabilitiesQuery.data ?? null}
         capabilitiesError={capabilitiesQuery.isError ? capabilitiesQuery.error.message : null}

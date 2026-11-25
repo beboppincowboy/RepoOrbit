@@ -11,19 +11,24 @@ RETURNING id;
 SELECT id, request_hash FROM write_operations WHERE user_id = $1 AND idempotency_key = $2;
 
 -- name: GetWriteOperation :one
--- Scoped to the initiating user: another user's id reads as not found.
-SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name
+-- Scoped to the initiating user: another user's id reads as not found. stale_pending is the complement of
+-- MarkWriteOperationSent's freshness guard on the same database clock: a row it reports can no longer be sent.
+SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name,
+ (o.state = 'pending' AND o.created_at < now() - interval '1 minute') AS stale_pending
 FROM write_operations o JOIN users u ON u.id = o.user_id JOIN repositories r ON r.id = o.repository_id WHERE o.id = $1 AND o.user_id = $2;
 
 -- name: ListWriteOperations :many
--- The user's own operations on one repository, newest first, at most 100 (no paging).
-SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name
+-- The user's own operations on one repository, newest first, at most 100 (no paging). Same columns as GetWriteOperation.
+SELECT o.id, o.repository_id, o.kind, o.issue_number, o.content_hash, o.has_requested_metadata, o.draft, o.state, o.outcome, o.sent_at, o.created_at, o.updated_at, u.login AS actor_login, u.github_id AS actor_github_id, r.name AS repository_name,
+ (o.state = 'pending' AND o.created_at < now() - interval '1 minute') AS stale_pending
 FROM write_operations o JOIN users u ON u.id = o.user_id JOIN repositories r ON r.id = o.repository_id WHERE o.user_id = $1 AND o.repository_id = $2 ORDER BY o.id DESC LIMIT 100;
 
 -- name: MarkWriteOperationSent :execrows
--- Moves a pending operation to 'unknown' and stamps sent_at, just before its request is sent. 0 rows: it is no longer
--- pending (FailStalePendingCreate or FailStalePendingOperations failed it), and nothing may be sent; the caller answers with the row as it stands.
-UPDATE write_operations SET state = 'unknown', sent_at = now(), updated_at = now() WHERE id = $1 AND state = 'pending';
+-- Moves a fresh pending operation to 'unknown' and stamps sent_at, just before its request is sent. 0 rows: it is no
+-- longer pending or is past the 1-minute freshness window (an abandoned row that reads project as failed and commands
+-- settle), so nothing may be sent; the caller settles stale pending rows and answers with the row as it stands.
+UPDATE write_operations SET state = 'unknown', sent_at = now(), updated_at = now()
+WHERE id = $1 AND state = 'pending' AND created_at >= now() - interval '1 minute';
 
 -- name: FinishWriteOperation :execrows
 -- Only an 'unknown' operation takes an outcome; issue_number stays when the new value is NULL. An outcome recorded
@@ -43,19 +48,26 @@ SELECT id FROM write_operations WHERE user_id = $1 AND repository_id = $2 AND ki
 
 -- name: FailStalePendingCreate :execrows
 -- A create still pending a minute after it was recorded was never sent: marking it sent (MarkWriteOperationSent,
--- conditional on 'pending') precedes the request, so a process that stopped in between sent nothing. Failing it frees
--- the content for a retry; should the original process resume, its mark finds no pending row and it sends nothing.
+-- conditional on 'pending' and created_at within 1 minute) precedes the request, so a process that stopped in between
+-- sent nothing. Failing it frees the content for a retry; should the original process resume, its mark finds no fresh
+-- pending row and it sends nothing.
 -- Run by a new create that collided with that pending create; the threshold is the literal '1 minute' below. Only a
 -- non-zero count (this call failed a never-sent create) lets that new create retry its insert.
-UPDATE write_operations SET state = 'failed', outcome = '{"error":"abandoned before sending; nothing was sent to GitHub"}', updated_at = now()
+UPDATE write_operations SET state = 'failed',
+ outcome = CASE WHEN draft IS NULL THEN redacted_write_outcome('{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb)
+  ELSE '{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb END,
+ updated_at = now()
 WHERE user_id = $1 AND repository_id = $2 AND kind = 'create' AND state = 'pending' AND content_hash = $3 AND created_at < now() - interval '1 minute';
 
 -- name: FailStalePendingOperations :exec
--- FailStalePendingCreate for every operation of one user, of any kind, run before their operations are read, listed,
--- or replayed: a row still pending a minute after it was recorded was never sent (the process stopped before
--- MarkWriteOperationSent), so it is failed instead of reading as pending forever. Same threshold and same safety: a
--- resumed sender finds no pending row.
-UPDATE write_operations SET state = 'failed', outcome = '{"error":"abandoned before sending; nothing was sent to GitHub"}', updated_at = now()
+-- FailStalePendingCreate for every operation of one user, of any kind, run on command paths (replay, recheck,
+-- lost send claim): a row still pending a minute after it was recorded was never sent (the process stopped before
+-- MarkWriteOperationSent), so it is failed instead of staying pending forever. Same threshold and same safety: a
+-- resumed sender finds no fresh pending row.
+UPDATE write_operations SET state = 'failed',
+ outcome = CASE WHEN draft IS NULL THEN redacted_write_outcome('{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb)
+  ELSE '{"error":"abandoned before sending; nothing was sent to GitHub"}'::jsonb END,
+ updated_at = now()
 WHERE user_id = $1 AND state = 'pending' AND created_at < now() - interval '1 minute';
 
 -- name: WipeActorDrafts :exec

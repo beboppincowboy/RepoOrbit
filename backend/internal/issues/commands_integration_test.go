@@ -1591,3 +1591,215 @@ func TestStateChangesOrderAroundLabelSteps(t *testing.T) {
 		t.Fatalf("rejected reopen applied something: %+v", issue)
 	}
 }
+
+func TestWriteOperationGetsAreReadOnlyAndProjectStalePending(t *testing.T) {
+	ctx := context.Background()
+	dbURL, pool := testutil.Database(t)
+	tr := &testutil.SQLRecorder{}
+	cfg, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.Tracer = tr
+	tracedPool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tracedPool.Close)
+
+	gh := fake.New("cid", "secret")
+	ghSrv := httptest.NewServer(gh.Handler())
+	t.Cleanup(ghSrv.Close)
+	client := githubapp.New("cid", "secret", ghSrv.URL, ghSrv.URL, appURL+"/auth/github/callback")
+	q := db.New(tracedPool)
+	authSvc := &auth.Service{Pool: tracedPool, Queries: q, GitHub: client, Key: bytes.Repeat([]byte{1}, 32)}
+	repos := &repositories.Service{Queries: q, Pool: tracedPool, GitHub: client, TokenSource: authSvc, TTL: time.Nanosecond, AppURL: appURL}
+	svc := &issues.Service{Pool: tracedPool, Queries: q, GitHub: client, Access: repos, GitHubURL: "https://github.test"}
+	h := &auth.Handler{Service: authSvc, AppURL: appURL}
+	api := http.NewServeMux()
+	svc.Register(api)
+	mux := http.NewServeMux()
+	mux.Handle("/auth/", h.Routes())
+	mux.Handle("/api/", h.Protect(api))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	e := &env{t: t, pool: pool, gh: gh, client: client, issues: svc, srv: srv}
+	alice := e.signIn("alice")
+	repo := e.repo("alice", "app", false)
+
+	var freshID, intactID, wipedID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, draft, state, outcome, created_at)
+		VALUES ($1, $2, 'fresh-pending', 'update', '\x00', '{"state":"closed"}', 'pending', '{}', now() - interval '50 seconds') RETURNING id`, alice.id, repo).Scan(&freshID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, draft, state, outcome, created_at)
+		VALUES ($1, $2, 'stale-intact', 'update', '\x00', '{"state":"closed"}', 'pending', '{}', now() - interval '65 seconds') RETURNING id`, alice.id, repo).Scan(&intactID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO write_operations (user_id, repository_id, idempotency_key, kind, request_hash, draft, state, outcome, created_at)
+		VALUES ($1, $2, 'stale-wiped', 'update', '\x00', NULL, 'pending', '{"redacted":true}', now() - interval '65 seconds') RETURNING id`, alice.id, repo).Scan(&wipedID); err != nil {
+		t.Fatal(err)
+	}
+
+	assertNoWriteOpUpdate := func(label string, queries []string) {
+		t.Helper()
+		for _, sql := range queries {
+			if strings.Contains(strings.ToUpper(sql), "UPDATE WRITE_OPERATIONS") {
+				t.Fatalf("%s ran UPDATE write_operations: %s", label, sql)
+			}
+		}
+	}
+
+	tr.Start()
+	listResp := alice.do("GET", fmt.Sprintf("/api/repositories/%d/write-operations", repo), "", nil)
+	assertNoWriteOpUpdate("GET list", tr.Stop())
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET list status %d: %s", listResp.StatusCode, alice.body(listResp))
+	}
+	var list struct {
+		Operations []struct {
+			ID      int64           `json:"id"`
+			State   string          `json:"state"`
+			Draft   json.RawMessage `json:"draft"`
+			Outcome struct {
+				Error    string `json:"error"`
+				Redacted bool   `json:"redacted"`
+			} `json:"outcome"`
+		} `json:"operations"`
+	}
+	if err := json.Unmarshal(alice.body(listResp), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Operations) != 3 {
+		t.Fatalf("expected 3 operations, got %+v", list.Operations)
+	}
+	byID := map[int64]int{}
+	for i, op := range list.Operations {
+		byID[op.ID] = i
+	}
+	if fresh := list.Operations[byID[freshID]]; fresh.State != "pending" {
+		t.Fatalf("list fresh pending: %+v", fresh)
+	}
+	intact := list.Operations[byID[intactID]]
+	if intact.State != "failed" || !strings.Contains(intact.Outcome.Error, "abandoned before sending") || intact.Outcome.Redacted {
+		t.Fatalf("list intact stale pending: %+v", intact)
+	}
+	wiped := list.Operations[byID[wipedID]]
+	if wiped.State != "failed" || !strings.Contains(wiped.Outcome.Error, "abandoned before sending") || !wiped.Outcome.Redacted {
+		t.Fatalf("list wiped stale pending: %+v", wiped)
+	}
+
+	tr.Start()
+	getResp := alice.do("GET", opPath(wipedID), "", nil)
+	assertNoWriteOpUpdate("GET one", tr.Stop())
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET one status %d: %s", getResp.StatusCode, alice.body(getResp))
+	}
+	var single struct {
+		State   string `json:"state"`
+		Outcome struct {
+			Error    string `json:"error"`
+			Redacted bool   `json:"redacted"`
+		} `json:"outcome"`
+	}
+	if err := json.Unmarshal(alice.body(getResp), &single); err != nil {
+		t.Fatal(err)
+	}
+	if single.State != "failed" || !strings.Contains(single.Outcome.Error, "abandoned before sending") || !single.Outcome.Redacted {
+		t.Fatalf("GET wiped stale pending: %+v", single)
+	}
+
+	if n, err := db.New(pool).MarkWriteOperationSent(ctx, freshID); err != nil || n != 1 {
+		t.Fatalf("MarkWriteOperationSent fresh pending updated %d rows (err=%v), want 1", n, err)
+	}
+	if n, err := db.New(pool).MarkWriteOperationSent(ctx, intactID); err != nil || n != 0 {
+		t.Fatalf("MarkWriteOperationSent stale pending updated %d rows (err=%v), want 0", n, err)
+	}
+}
+
+func TestWriteDispositionHeadersAndArchiveRecovery(t *testing.T) {
+	e := setup(t)
+	alice := e.signIn("alice")
+	carol := e.signIn("carol")
+	repo := e.repo("alice", "app", false)
+
+	if resp, _ := carol.send(create(repo), "perm-1", `{"title":"No metadata perm","labels":["bug"]}`); resp.StatusCode != http.StatusForbidden || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionNotRecorded {
+		t.Fatalf("403 disposition=%q status=%d", resp.Header.Get(issues.HeaderWriteDisposition), resp.StatusCode)
+	}
+	e.gh.Fail(true)
+	if resp, _ := alice.send(create(repo), "unverified-1", `{"title":"Precheck 503"}`); resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionNotRecorded {
+		t.Fatalf("precheck 503 disposition=%q status=%d", resp.Header.Get(issues.HeaderWriteDisposition), resp.StatusCode)
+	}
+	e.gh.Fail(false)
+
+	bumped := false
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		next.ServeHTTP(w, r)
+		if !bumped && r.Method == http.MethodPost && r.URL.Path == "/repos/alice/app/issues" {
+			bumped = true
+			tx, err := e.pool.Begin(context.Background())
+			if err == nil {
+				_ = accessfence.BumpAccess(context.Background(), tx, accessfence.ScopeUser, alice.id)
+				_ = tx.Commit(context.Background())
+			}
+		}
+	})
+	resp, _ := alice.send(create(repo), "fenced-1", `{"title":"Created before fence moved"}`)
+	body := string(alice.body(resp))
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionPossiblyRecorded || !strings.Contains(body, "same Idempotency-Key") {
+		t.Fatalf("fenced 503 status=%d disposition=%q body=%q", resp.StatusCode, resp.Header.Get(issues.HeaderWriteDisposition), body)
+	}
+
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+		if r.URL.Path == fmt.Sprintf("/repositories/%d", repo) || r.URL.Path == "/user/repos" {
+			rec := httptest.NewRecorder()
+			next.ServeHTTP(rec, r)
+			if r.URL.Path == "/user/repos" {
+				var list []map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &list); err == nil {
+					for i := range list {
+						list[i]["archived"] = true
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(rec.Code)
+					_ = json.NewEncoder(w).Encode(list)
+					return
+				}
+			} else {
+				var payload map[string]any
+				if err := json.Unmarshal(rec.Body.Bytes(), &payload); err == nil {
+					payload["archived"] = true
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(rec.Code)
+					_ = json.NewEncoder(w).Encode(payload)
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+	resp, recovered := alice.send(create(repo), "fenced-1", `{"title":"Created before fence moved"}`)
+	if resp.StatusCode != http.StatusOK || recovered.State != "succeeded" || recovered.IssueNumber == nil {
+		t.Fatalf("archive replay status=%d op=%+v body=%s", resp.StatusCode, recovered, alice.body(resp))
+	}
+	if len(e.gh.Issues(repo)) != 1 {
+		t.Fatalf("expected 1 upstream issue after recovery replay, got %d", len(e.gh.Issues(repo)))
+	}
+	if resp, _ := alice.send(create(repo), "archived-new", `{"title":"New after archive"}`); resp.StatusCode != http.StatusForbidden || resp.Header.Get(issues.HeaderWriteDisposition) != issues.WriteDispositionNotRecorded {
+		t.Fatalf("fresh archived write status=%d disposition=%q", resp.StatusCode, resp.Header.Get(issues.HeaderWriteDisposition))
+	}
+
+	e.intercept(func(w http.ResponseWriter, r *http.Request, next http.Handler) { next.ServeHTTP(w, r) })
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `CREATE FUNCTION fail_write_op_insert() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'boom'; END; $$ LANGUAGE plpgsql;
+		CREATE TRIGGER test_fail_write_op_insert BEFORE INSERT ON write_operations FOR EACH ROW EXECUTE FUNCTION fail_write_op_insert();`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = e.pool.Exec(ctx, `DROP TRIGGER IF EXISTS test_fail_write_op_insert ON write_operations; DROP FUNCTION IF EXISTS fail_write_op_insert();`)
+	})
+	if resp, _ := alice.send(create(repo), "db-error-500", `{"title":"DB insert error"}`); resp.StatusCode != http.StatusInternalServerError || resp.Header.Get(issues.HeaderWriteDisposition) != "" {
+		t.Fatalf("pre-insert 500 status=%d disposition=%q", resp.StatusCode, resp.Header.Get(issues.HeaderWriteDisposition))
+	}
+}

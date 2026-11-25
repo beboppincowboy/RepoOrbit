@@ -68,65 +68,21 @@ func canChangeStatusLabels(r githubapp.Repo) bool {
 	return writable(r) && (r.Permissions.Admin || r.Permissions.Maintain)
 }
 
-// statusLabelState answers GET /api/repositories/{id}/status-labels: {enabled, canChange, labels?}. labels
-// ([{name, exists}], read from GitHub with the viewer's token) is included only for a viewer who could turn status
-// labels on and they are off, so the review step can say which labels will be created and which reused.
-func (s *Service) statusLabelState(w http.ResponseWriter, r *http.Request) {
-	userID, ok := auth.SignedInUserID(r.Context())
-	repoID, idOK := pathID(r, "id")
-	if !ok || !idOK {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	d, ok := s.access(w, r, userID, repoID, false)
-	if !ok {
-		return
-	}
-	enabled, err := s.Queries.GetStatusLabels(r.Context(), repoID)
-	if err != nil {
-		s.internal(w, err)
-		return
-	}
-	type label struct {
-		Name   string `json:"name"`
-		Exists bool   `json:"exists"`
-	}
-	out := struct {
-		Enabled   bool    `json:"enabled"`
-		CanChange bool    `json:"canChange"`
-		Labels    []label `json:"labels,omitempty"`
-	}{Enabled: enabled, CanChange: canChangeStatusLabels(d.Repo)}
-	if out.CanChange && !enabled {
-		token, ok := s.token(w, r.Context(), userID)
-		if !ok {
-			return
-		}
-		for _, l := range statusLabels {
-			exists, err := s.GitHub.LabelExists(r.Context(), token, d.Repo.FullName, l.name)
-			if err != nil {
-				s.upstream(w, r.Context(), userID, err)
-				return
-			}
-			out.Labels = append(out.Labels, label{l.name, exists})
-		}
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
 // enableStatusLabels answers POST /api/repositories/{id}/status-labels (Idempotency-Key, body {}): a reviewed
 // operation that creates the missing status labels with the actor's token, reuses existing ones, and turns status
 // labels on once all three are confirmed on GitHub.
 func (s *Service) enableStatusLabels(w http.ResponseWriter, r *http.Request) {
+	sw := newSubmitWriter(w)
 	var body struct{}
-	if err := decodeStrict(w, r, &body); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := decodeStrict(sw, r, &body); err != nil {
+		http.Error(sw, err.Error(), http.StatusBadRequest)
 		return
 	}
 	d := &statusLabelsDraft{}
 	for _, l := range statusLabels {
 		d.Labels = append(d.Labels, l.name)
 	}
-	s.submit(w, r, command{kind: "status_labels", draft: d, allowed: canChangeStatusLabels})
+	s.submit(sw, r, command{kind: "status_labels", draft: d, allowed: canChangeStatusLabels})
 }
 
 // disableStatusLabels answers DELETE /api/repositories/{id}/status-labels with 204. Nothing is written to GitHub: the
