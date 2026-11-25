@@ -91,8 +91,6 @@ func TestStatusLabelsNeedAdminOrMaintain(t *testing.T) {
 	e.noInstallationAuthority()
 }
 
-// A 401 on a later label check revokes the viewer's GitHub authorization and answers 401, even while the first check
-// is still waiting on GitHub.
 func TestStatusLabelStateUnauthorizedRevokes(t *testing.T) {
 	e := setup(t)
 	alice := e.signIn("alice")
@@ -103,7 +101,7 @@ func TestStatusLabelStateUnauthorizedRevokes(t *testing.T) {
 			http.Error(w, "bad credentials", http.StatusUnauthorized)
 			return
 		case strings.HasSuffix(r.URL.Path, "/labels/status:todo"):
-			select { // a check canceled by the 401 ends here; a check made before it waits, then answers
+			select {
 			case <-r.Context().Done():
 				return
 			case <-time.After(300 * time.Millisecond):

@@ -332,10 +332,6 @@ func TestCredentialThrottleKeepsTheLaterTimeAndIgnoresThePast(t *testing.T) {
 	}
 }
 
-// Terminal issue-write operations are deleted after the 30-day retention period. An unresolved create is kept past
-// it, redacted, so a retry of the same content still finds it and cannot create a second issue.
-// The stale-pending sweep decides on the database clock, as MarkWriteOperationSent does: a worker whose clock runs two
-// minutes fast must not fail a write recorded a moment ago, before its sender marks it.
 func TestStalePendingSweepUsesDatabaseClock(t *testing.T) {
 	f := newFixture(t)
 	f.user(1)
@@ -350,6 +346,8 @@ func TestStalePendingSweepUsesDatabaseClock(t *testing.T) {
 	}
 }
 
+// Terminal issue-write operations are deleted after the 30-day retention period. An unresolved create is kept past
+// it, redacted, so a retry of the same content still finds it and cannot create a second issue.
 func TestWriteOperationRetention(t *testing.T) {
 	f := newFixture(t)
 	f.user(1)
