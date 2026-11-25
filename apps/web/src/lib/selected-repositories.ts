@@ -95,9 +95,10 @@ function newerRejection(
   return outcome && outcome.status !== "verified" && outcome.seq > sinceSeq ? outcome : null;
 }
 
-// filterAggregateByVisibility blanks an aggregate read that started before a recorded rejection; read it again.
 function refetchAggregateAfterRejection(queryClient: QueryClient, session: ViewerSession) {
-  void queryClient.invalidateQueries({ queryKey: crossRepositoryOverviewKey(session) });
+  const filters = { queryKey: crossRepositoryOverviewKey(session) };
+  // Invalidation alone reuses an in-flight first read that predates the rejection.
+  void queryClient.cancelQueries(filters).then(() => queryClient.invalidateQueries(filters));
 }
 
 // A denial recorded after a read started outranks that read's "unverified" answer: the older read cannot relist it.
