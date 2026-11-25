@@ -139,6 +139,22 @@ func (c *Client) SetIssueState(ctx context.Context, token, fullName string, numb
 	return c.issueCall(ctx, token, http.MethodPatch, fullName, fmt.Sprintf("/issues/%d", number), map[string]string{"state": state}, nil)
 }
 
+// LabelExists reports whether the repository has a label of this name; GitHub matches label names case-insensitively.
+func (c *Client) LabelExists(ctx context.Context, token, fullName, name string) (bool, error) {
+	err := c.issueCall(ctx, token, http.MethodGet, fullName, "/labels/"+url.PathEscape(name), nil, nil)
+	var api *APIError
+	if errors.As(err, &api) && api.NotFound() {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// CreateLabel creates a repository label with a hex color (no "#"). A 422 usually means a label of that name already
+// exists, so callers read the labels back (LabelExists) rather than trust either answer.
+func (c *Client) CreateLabel(ctx context.Context, token, fullName, name, color string) error {
+	return c.issueCall(ctx, token, http.MethodPost, fullName, "/labels", map[string]string{"name": name, "color": color}, nil)
+}
+
 // ListAssignees returns the logins that can be assigned issues in the repository, in GitHub's order.
 // ponytail: first page only (100 users); page through Link headers if suggestions must cover larger teams.
 func (c *Client) ListAssignees(ctx context.Context, token, fullName string) ([]string, error) {

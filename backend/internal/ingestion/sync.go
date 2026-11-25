@@ -261,7 +261,7 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 // A stored copy that is as new or newer, or a tombstoned issue, is left alone and nil returned: a sync page may have
 // been fetched before the stored copy. An invalid author, label or assignee is an error.
 func ProjectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue) error {
-	return projectIssue(ctx, tx, repoID, issue, false)
+	return projectIssue(ctx, tx, repoID, issue, false, true)
 }
 
 // LockIssue takes the per-issue write lock for the rest of tx: issue-write readbacks hold it while they project
@@ -277,10 +277,12 @@ func LockIssue(ctx context.Context, tx pgx.Tx, repoID, number int64) error {
 // the same updated_at: GitHub's timestamps have one-second resolution, so an edit in the same second
 // as the stored copy would otherwise be lost.
 func ProjectConfirmedIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue) error {
-	return projectIssue(ctx, tx, repoID, issue, true)
+	return projectIssue(ctx, tx, repoID, issue, true, true)
 }
 
-func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue, sameSecond bool) error {
+// projectIssue is ProjectIssue (sameSecond false) or ProjectConfirmedIssue (true). With cleanup, a projected closed
+// issue that still has a status label queues the app's status label cleanup; the cleanup itself projects without it.
+func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue, sameSecond, cleanup bool) error {
 	actorID, actorLogin, actorType, err := evidenceActor(issue.User)
 	if err != nil {
 		return err
@@ -315,5 +317,8 @@ func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.
 			return err
 		}
 	}
-	return nil
+	if !cleanup {
+		return nil
+	}
+	return enqueueStatusCleanup(ctx, tx, repoID, issue)
 }

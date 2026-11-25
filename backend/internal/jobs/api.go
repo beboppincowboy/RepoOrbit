@@ -24,7 +24,8 @@ const (
 	KindActivityReleases     Kind = "activity_releases"
 	KindActivityIssueEvents  Kind = "activity_issue_events"
 	KindActivityCleanup      Kind = "activity_cleanup"
-	KindStarReconcile        Kind = "star_reconcile" // Key "user:<users.id>"
+	KindStarReconcile        Kind = "star_reconcile"       // Key "user:<users.id>"
+	KindStatusLabelCleanup   Kind = "status_label_cleanup" // Key "repo:<repositories.id>"
 )
 
 // Clock is injected everywhere timing matters.

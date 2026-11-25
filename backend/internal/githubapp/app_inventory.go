@@ -139,7 +139,7 @@ func (c *Client) inventoryRequest(ctx context.Context, method, token, path strin
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("github app: request failed")
+		return false, fmt.Errorf("github app: request failed: %w", err) // keeps *url.Error matchable for callers that defer on transport failures
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -190,30 +190,38 @@ func (c *Client) inventoryRequest(ctx context.Context, method, token, path strin
 	return next, nil
 }
 
-// RepositoryInstallation resolves the app grant for one repository.
+// RepositoryInstallation resolves the app grant for one repository: its installation ID, or 0 for none.
 func (c *Client) RepositoryInstallation(ctx context.Context, key *rsa.PrivateKey, fullName string) (int64, error) {
+	id, _, err := c.RepositoryInstallationGrant(ctx, key, fullName)
+	return id, err
+}
+
+// RepositoryInstallationGrant is RepositoryInstallation plus whether the installation holds Issues write permission
+// (false with no installation), read from the same response.
+func (c *Client) RepositoryInstallationGrant(ctx context.Context, key *rsa.PrivateKey, fullName string) (id int64, issuesWrite bool, err error) {
 	owner, name, ok := strings.Cut(fullName, "/")
 	if !ok || owner == "" || name == "" || strings.Contains(name, "/") || owner == "." || owner == ".." || name == "." || name == ".." {
-		return 0, fmt.Errorf("github app: invalid repository name")
+		return 0, false, fmt.Errorf("github app: invalid repository name")
 	}
 	jwt, err := c.appJWT(key)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	var installation struct {
-		ID        int64           `json:"id"`
-		Suspended json.RawMessage `json:"suspended_at"`
+		ID          int64             `json:"id"`
+		Suspended   json.RawMessage   `json:"suspended_at"`
+		Permissions map[string]string `json:"permissions"`
 	}
 	_, err = c.inventoryRequest(ctx, http.MethodGet, jwt, "/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(name)+"/installation", &installation)
 	if err != nil {
 		var api *APIError
 		if errors.As(err, &api) && api.NotFound() {
-			return 0, nil
+			return 0, false, nil
 		}
-		return 0, err
+		return 0, false, err
 	}
 	if installation.ID <= 0 || string(installation.Suspended) != "null" {
-		return 0, fmt.Errorf("github app: invalid or suspended repository installation")
+		return 0, false, fmt.Errorf("github app: invalid or suspended repository installation")
 	}
-	return installation.ID, nil
+	return installation.ID, installation.Permissions["issues"] == "write", nil
 }

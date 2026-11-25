@@ -334,6 +334,7 @@ export type WriteOperationIssue = {
 export type WriteOperationOutcome = {
   issue?: WriteOperationIssue;
   unapplied?: string[];
+  created?: string[]; // status_labels only: the labels the operation created (the others already existed)
   unappliedCount?: number;
   error?: string;
   allStepsAnswered?: boolean;
@@ -343,16 +344,24 @@ export type WriteOperationOutcome = {
 export type WriteOperation = {
   id: number;
   repositoryId: number;
-  kind: "create" | "update";
+  // "cleanup" is the GitHub App removing a status label from a closed issue (actor ""); its id is from a separate sequence.
+  kind: "create" | "update" | "status_labels" | "cleanup";
   state: "pending" | "unknown" | "succeeded" | "failed";
   issueNumber: number | null;
-  draft: IssueCreateDraft | IssueUpdateDraft | null;
+  draft: IssueCreateDraft | IssueUpdateDraft | StatusLabelsDraft | CleanupDraft | null;
   outcome: WriteOperationOutcome | null;
   actor: string;
   searchUrl?: string;
   createdAt: string;
   updatedAt: string;
 };
+
+export type StatusLabelsDraft = { labels: string[] };
+export type CleanupDraft = { label: string };
+
+// A repository's status source: whether status labels are on, whether the viewer (Admin or Maintain) may change that,
+// and, only for such a viewer while they are off, which of the three labels already exist on GitHub.
+export type StatusLabelState = { enabled: boolean; canChange: boolean; labels?: { name: string; exists: boolean }[] };
 
 export type IssueWriteErrorKind =
   | "validation"
@@ -500,7 +509,30 @@ export async function submitIssueUpdate(repositoryId: string, issueNumber: numbe
   return submitIssueWrite(`/api/repositories/${encodeURIComponent(repositoryId)}/issues/${encodeURIComponent(String(issueNumber))}/updates`, idempotencyKey, draft);
 }
 
-async function submitIssueWrite(path: string, idempotencyKey: string, draft: IssueCreateDraft | IssueUpdateDraft): Promise<WriteOperation> {
+export async function fetchStatusLabels(repositoryId: string, signal?: AbortSignal): Promise<StatusLabelState> {
+  const response = await fetch(`/api/repositories/${encodeURIComponent(repositoryId)}/status-labels`, { cache: "no-store", signal });
+  if (!response.ok) throw await toIssueWriteError(response);
+  return response.json();
+}
+
+// Turns status labels on: a reviewed write that creates the missing labels and reuses existing ones.
+export async function enableStatusLabels(repositoryId: string, idempotencyKey: string): Promise<WriteOperation> {
+  return submitIssueWrite(`/api/repositories/${encodeURIComponent(repositoryId)}/status-labels`, idempotencyKey, {});
+}
+
+// Turns status labels off. Nothing is written to GitHub; the labels stay.
+export async function disableStatusLabels(repositoryId: string): Promise<void> {
+  const response = await fetch(`/api/repositories/${encodeURIComponent(repositoryId)}/status-labels`, {
+    method: "DELETE",
+    headers: { "X-CSRF-Token": csrfToken ?? "" },
+    cache: "no-store",
+  }).catch(() => {
+    throw new IssueWriteError("Could not reach the server. Check the setting before trying again.", { status: 0, kind: "transport" });
+  });
+  if (!response.ok) throw await toIssueWriteError(response);
+}
+
+async function submitIssueWrite(path: string, idempotencyKey: string, draft: IssueCreateDraft | IssueUpdateDraft | Record<string, never>): Promise<WriteOperation> {
   const response = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "", "Idempotency-Key": idempotencyKey },

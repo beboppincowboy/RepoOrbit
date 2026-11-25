@@ -5,8 +5,10 @@ import {
   IssueWriteError,
   fetchWriteOperations,
   recheckWriteOperation,
+  type CleanupDraft,
   type IssueCreateDraft,
   type IssueUpdateDraft,
+  type StatusLabelsDraft,
   type WriteOperation,
   type WriteOperationIssue,
 } from "@/lib/api";
@@ -26,8 +28,31 @@ function safeHref(url?: string | null): string | null {
   return /^https?:\/\//i.test(url) ? url : null;
 }
 
+// Operations come from two id sequences (user writes and the app's cleanups), so rows are keyed by both.
+function rowKey(op: WriteOperation): string {
+  return `${op.kind === "cleanup" ? "app" : "user"}-${op.id}`;
+}
+
+function title(op: WriteOperation): string {
+  switch (op.kind) {
+    case "create": return "Create issue";
+    case "update": return `Update issue #${op.issueNumber}`;
+    case "status_labels": return "Turn on status labels";
+    case "cleanup": return `Remove status label from closed issue #${op.issueNumber}`;
+  }
+}
+
 function summarizeDraft(op: WriteOperation): string {
   if (!op.draft) return "Draft removed (redacted)";
+  if (op.kind === "status_labels") {
+    const created = op.outcome?.created ?? [];
+    const labels = (op.draft as StatusLabelsDraft).labels ?? [];
+    if (op.state !== "succeeded") return `Labels: ${labels.join(", ")}`;
+    // A label not in created may have existed already or been created by a request whose answer was lost.
+    const others = labels.filter(l => !created.includes(l));
+    return [created.length ? `created: ${created.join(", ")}` : "", others.length ? `confirmed present: ${others.join(", ")}` : ""].filter(Boolean).join(" · ");
+  }
+  if (op.kind === "cleanup") return `-label: ${(op.draft as CleanupDraft).label} (the issue is closed, so it is in Done)`;
   if (op.kind === "create") {
     const d = op.draft as IssueCreateDraft;
     const parts = [`Create "${d.title}"`];
@@ -47,6 +72,10 @@ function summarizeDraft(op: WriteOperation): string {
 
 export function writeOperationsQueryKey(viewerKey: string, repositoryId: string) {
   return ["writeOperations", viewerKey, repositoryId] as const;
+}
+
+export function statusLabelsQueryKey(viewerKey: string, repositoryId: string) {
+  return ["statusLabels", viewerKey, repositoryId] as const;
 }
 
 export function WriteHistory({
@@ -78,7 +107,7 @@ export function WriteHistory({
       <div className="flex flex-none items-center justify-between gap-2 border-b border-border px-4 py-3">
         <div>
           <h2 className="m-0 text-sm">Write history</h2>
-          <p className="m-0 text-xs text-muted-foreground">Your audited GitHub issue writes in this repository.</p>
+          <p className="m-0 text-xs text-muted-foreground">Your audited GitHub issue writes here, and the GitHub App&rsquo;s status label cleanup.</p>
         </div>
         {!demo && !frozen && (
           <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}>
@@ -115,10 +144,11 @@ export function WriteHistory({
           <ul aria-label="Write operations" className="m-0 list-none p-0">
             {query.data.map(op => (
               <WriteHistoryRow
-                key={op.id}
+                key={rowKey(op)}
                 op={op}
                 onUpdated={updated => {
-                  queryClient.setQueryData<WriteOperation[]>(queryKey, prev => prev?.map(item => (item.id === updated.id ? updated : item)) ?? [updated]);
+                  queryClient.setQueryData<WriteOperation[]>(queryKey, prev => prev?.map(item => (rowKey(item) === rowKey(updated) ? updated : item)) ?? [updated]);
+                  if (updated.kind === "status_labels") void queryClient.invalidateQueries({ queryKey: statusLabelsQueryKey(viewerKey, repositoryId) });
                   onResolved(updated);
                 }}
                 onEditIssue={onEditIssue}
@@ -186,7 +216,7 @@ function WriteHistoryRow({
       <div className="flex flex-wrap items-center gap-2">
         <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${tone}`}>{label}</span>
         <span className="font-medium">
-          {op.kind === "create" ? "Create issue" : `Update issue #${op.issueNumber}`}
+          {title(op)}
           {op.kind === "create" && op.issueNumber && (
             <>
               {" · "}
@@ -200,7 +230,7 @@ function WriteHistoryRow({
           )}
         </span>
         <span className="ml-auto font-mono text-xs text-muted-foreground">
-          @{op.actor} · {stamp.format(new Date(op.createdAt)).replace(",", "")} UTC
+          {op.kind === "cleanup" ? "GitHub App" : `@${op.actor}`} · {stamp.format(new Date(op.createdAt)).replace(",", "")} UTC
         </span>
       </div>
 
@@ -230,7 +260,11 @@ function WriteHistoryRow({
         <div className="text-xs text-destructive">{op.outcome.error}</div>
       )}
 
-      {op.state === "unknown" && (
+      {op.state === "unknown" && op.kind === "cleanup" && (
+        <div className="text-xs text-warning">No reliable answer yet; the app retries the removal on its own.</div>
+      )}
+
+      {op.state === "unknown" && op.kind !== "cleanup" && (
         <div className="flex flex-col gap-2 rounded-lg border border-warning bg-warning-soft p-2.5 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span>Outcome uncertain — verify on GitHub and recheck instead of resending.</span>

@@ -164,6 +164,17 @@ type ActivityTombstone struct {
 	DeletedAt    pgtype.Timestamptz
 }
 
+type AppOperation struct {
+	ID           int64
+	RepositoryID int64
+	IssueNumber  int64
+	Label        string
+	State        string
+	Outcome      []byte
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
 type CredentialThrottle struct {
 	UserID     int64
 	RetryAfter pgtype.Timestamptz
@@ -205,12 +216,14 @@ type OauthState struct {
 }
 
 type Repository struct {
-	ID          int64
-	Name        string
-	Description string
-	IsDemo      bool
-	IsPrivate   bool
-	Archived    bool
+	ID                    int64
+	Name                  string
+	Description           string
+	IsDemo                bool
+	IsPrivate             bool
+	Archived              bool
+	StatusLabels          bool
+	StatusLabelsChangedAt pgtype.Timestamptz
 }
 
 type RepositorySync struct {

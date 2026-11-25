@@ -69,6 +69,9 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/repositories/{id}/write-operations", s.list)
 	mux.HandleFunc("GET /api/write-operations/{id}", s.get)
 	mux.HandleFunc("POST /api/write-operations/{id}/recheck", s.recheck)
+	mux.HandleFunc("GET /api/repositories/{id}/status-labels", s.statusLabelState)
+	mux.HandleFunc("POST /api/repositories/{id}/status-labels", s.enableStatusLabels)
+	mux.HandleFunc("DELETE /api/repositories/{id}/status-labels", s.disableStatusLabels)
 }
 
 // createDraft is a new issue as the user reviewed it.
@@ -105,14 +108,16 @@ type issueView struct {
 
 // outcome is what GitHub actually did. Unapplied lists requested changes the confirmed issue does not show, each as
 // "add label X", "remove label X", "add assignee X", "remove assignee X" or "state open|closed" (or one fixed
-// sentence when a wiped create's labels and assignees cannot be verified). AllStepsAnswered (updates only) means every
+// sentence when a wiped create's labels and assignees cannot be verified); for a status_labels operation, "create
+// label X" for each status label the repository still lacks. AllStepsAnswered (updates only) means every
 // step got a definite answer (2xx, 4xx, or failed before it was sent), so nothing of the update can still land and a
 // recheck may fail it. Once the draft is wiped the stored outcome is redacted instead, by SQL redacted_write_outcome, to
 // {issue: {number, url, state}, unappliedCount, error, redacted: true}; clients must accept both shapes.
 type outcome struct {
 	Issue            *issueView `json:"issue,omitempty"`
 	Unapplied        []string   `json:"unapplied,omitempty"`
-	Error            string     `json:"error,omitempty"` // a summary that never quotes credentials or content
+	Created          []string   `json:"created,omitempty"` // status_labels only: the labels this operation created (the others were reused)
+	Error            string     `json:"error,omitempty"`   // a summary that never quotes credentials or content
 	AllStepsAnswered bool       `json:"allStepsAnswered,omitempty"`
 }
 
@@ -120,12 +125,12 @@ type outcome struct {
 type opView struct {
 	ID           int64           `json:"id"`
 	RepositoryID int64           `json:"repositoryId"`        // the repository's GitHub ID
-	Kind         string          `json:"kind"`                // "create" or "update"
+	Kind         string          `json:"kind"`                // "create", "update", "status_labels" or, for the app's own writes, "cleanup"
 	State        string          `json:"state"`               // the operation's state: "pending", "unknown", "succeeded" or "failed"
-	IssueNumber  *int64          `json:"issueNumber"`         // an update's target; a create's issue once confirmed, else null
+	IssueNumber  *int64          `json:"issueNumber"`         // an update's or cleanup's target; a create's issue once confirmed, else null
 	Draft        json.RawMessage `json:"draft"`               // null once wiped after the actor lost access
 	Outcome      json.RawMessage `json:"outcome"`             // an outcome, full or redacted
-	Actor        string          `json:"actor"`               // the initiating user's GitHub login
+	Actor        string          `json:"actor"`               // the initiating user's GitHub login; "" for the app's own writes (kind "cleanup")
 	SearchURL    string          `json:"searchUrl,omitempty"` // unknown creates only: a GitHub issue search for the actor's issue with the draft title
 	CreatedAt    time.Time       `json:"createdAt"`
 	UpdatedAt    time.Time       `json:"updatedAt"`
@@ -453,7 +458,8 @@ func (s *Service) assignees(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string][]string{"assignees": logins})
 }
 
-// list returns the viewer's own operations on one repository; other users' operations are never listed.
+// list returns the viewer's own operations on one repository, merged newest first with the app's own writes there
+// (status label cleanup, kind "cleanup"); other users' operations are never listed.
 func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 	userID, ok := auth.SignedInUserID(r.Context())
 	repoID, idOK := pathID(r, "id")
@@ -474,13 +480,24 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
+	appRows, err := s.Queries.ListAppOperations(r.Context(), repoID)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
 	if !s.fenceHolds(w, r.Context(), snap) {
 		return
 	}
-	out := make([]opView, 0, len(rows))
+	out := make([]opView, 0, len(rows)+len(appRows))
 	for _, row := range rows {
 		out = append(out, s.view(db.GetWriteOperationRow(row)))
 	}
+	for _, row := range appRows {
+		draft, _ := json.Marshal(map[string]string{"label": row.Label})
+		out = append(out, opView{ID: row.ID, RepositoryID: row.RepositoryID, Kind: "cleanup", State: row.State, IssueNumber: &row.IssueNumber,
+			Draft: draft, Outcome: row.Outcome, CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time})
+	}
+	slices.SortStableFunc(out, func(a, b opView) int { return b.CreatedAt.Compare(a.CreatedAt) })
 	writeJSON(w, http.StatusOK, map[string]any{"operations": out})
 }
 
@@ -534,9 +551,9 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 
 // command is one validated write, ready to record and send.
 type command struct {
-	kind        string // "create" or "update"
+	kind        string // "create", "update" or "status_labels"
 	issueNumber int64  // update target
-	draft       any    // *createDraft or *updateDraft
+	draft       any    // *createDraft, *updateDraft or *statusLabelsDraft
 	contentHash []byte // create only
 	hasMetadata bool   // create only: labels or assignees requested
 	assignees   []string
@@ -760,12 +777,16 @@ func (s *Service) submit(w http.ResponseWriter, r *http.Request, c command) {
 		s.respond(w, ctx, http.StatusOK, userID, opID, snap)
 		return
 	}
-	if c.kind == "create" {
+	switch c.kind {
+	case "status_labels":
+		state, out := s.ensureStatusLabels(ctx, userID, token, d.Repo.FullName)
+		err = s.finishStatusLabels(ctx, opID, repoID, snap, state, out)
+	case "create":
 		// A create's confirmed copy is GitHub's create response: nothing stored for the new issue is older, so it is
 		// projected without ordering against earlier readbacks and never replaces a same-second copy.
 		state, out, confirmed := s.sendCreate(ctx, userID, token, d.Repo.FullName, c.draft.(*createDraft))
 		err = s.finish(ctx, opID, repoID, snap, 0, confirmed != nil, func() (string, outcome, *githubapp.Issue, error) { return state, out, confirmed, nil })
-	} else {
+	default:
 		u := c.draft.(*updateDraft)
 		sent := s.applyUpdate(ctx, userID, token, d.Repo.FullName, c.issueNumber, u)
 		var readErr error
@@ -984,7 +1005,8 @@ func (s *Service) finish(ctx context.Context, opID, repoID int64, snap accessfen
 // with identical title and body, is indistinguishable. Widen it if real skew is larger.
 const sendSkew = 5 * time.Second
 
-// recheck resolves an unknown operation without resending it. A create needs the issue number the actor found on
+// recheck resolves an unknown operation without resending it. A status_labels operation re-reads the labels under a
+// fresh Admin or Maintain check (recheckStatusLabels). A create needs the issue number the actor found on
 // GitHub; it is linked only when that issue is in this repository, authored by the actor, has the drafted title and
 // body, and was created no earlier than the send. Anything else keeps the operation unknown (409) with its draft. An
 // update is re-read: it succeeds only once every requested change shows, fails only when no request of it can still
@@ -1004,6 +1026,10 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 	}
 	if row.State != "unknown" {
 		writeJSON(w, http.StatusOK, s.view(row))
+		return
+	}
+	if row.Kind == "status_labels" {
+		s.recheckStatusLabels(w, r, userID, row, d, snap)
 		return
 	}
 	number := row.IssueNumber.Int64

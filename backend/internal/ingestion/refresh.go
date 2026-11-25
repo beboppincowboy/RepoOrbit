@@ -73,6 +73,7 @@ func (d *Deps) Register(w *jobs.Worker) {
 	w.Register(jobs.KindActivityIssueEvents, d.SyncIssueEvents)
 	w.Register(jobs.KindActivityReviews, d.SyncReviews)
 	w.Register(jobs.KindActivityComments, d.SyncComments)
+	w.Register(jobs.KindStatusLabelCleanup, d.CleanupStatusLabels)
 }
 
 func (d *Deps) throttledUntil(ctx context.Context, userID int64) time.Time {
