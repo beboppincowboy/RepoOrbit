@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "re
 import { useInfiniteQuery, useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
-import { clearRepositoryIssueDrafts, hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/components/issue-editor";
+import { hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/components/issue-editor";
+import { IssueBoard } from "@/components/issue-board";
+import { clearRepositoryIssueDrafts } from "@/lib/drafts";
 import { IssueIcon, PullRequestIcon } from "@/components/needs-attention";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
@@ -30,7 +32,7 @@ import {
   type WriteOperationIssue,
 } from "@/lib/api";
 
-const tabs = { overview: "Overview", issues: "Issues", pulls: "Pull Requests", contributors: "Contributors", activity: "Activity" } as const;
+const tabs = { overview: "Overview", issues: "Issues", board: "Board", pulls: "Pull Requests", contributors: "Contributors", activity: "Activity" } as const;
 type Tab = keyof typeof tabs;
 const windows = [7, 30, 90] as const;
 type EditorSearch = "new" | number | undefined;
@@ -46,12 +48,15 @@ function parseEditorSearch(raw: unknown): EditorSearch {
 }
 
 export const Route = createFileRoute("/_shell/workspace/$repositoryId")({
-  validateSearch: (search: Record<string, unknown>): { days: MetricWindow; tab: Tab; editor?: "new" | number } => {
+  validateSearch: (search: Record<string, unknown>): { days: MetricWindow; tab: Tab; editor?: "new" | number; issue?: number } => {
     const editor = parseEditorSearch(search.editor);
+    // The Board's task drawer opens for issue=N.
+    const issue = parseEditorSearch(search.issue);
     return {
       days: search.days === 7 || search.days === 90 ? search.days : 30,
       tab: typeof search.tab === "string" && Object.hasOwn(tabs, search.tab) ? search.tab as Tab : "overview",
       ...(editor !== undefined ? { editor } : {}),
+      ...(typeof issue === "number" ? { issue } : {}),
     };
   },
   component: RepositoryWorkspace,
@@ -210,7 +215,7 @@ function RepositoryWorkspace() {
   const capabilitiesQuery = useQuery({
     queryKey: ["issueCapabilities", viewerKey, repositoryId],
     queryFn: ({ signal }) => fetchIssueCapabilities(repositoryId, signal),
-    enabled: !demo && !snapshot && Boolean(overview) && (editorOpen || search.tab === "issues"),
+    enabled: !demo && !snapshot && Boolean(overview) && (editorOpen || search.tab === "issues" || search.tab === "board"),
     gcTime: 0,
     retry: false,
   });
@@ -227,7 +232,7 @@ function RepositoryWorkspace() {
   const assigneesQuery = useQuery({
     queryKey: ["assignableUsers", viewerKey, repositoryId],
     queryFn: ({ signal }) => fetchAssignableUsers(repositoryId, signal),
-    enabled: !demo && !snapshot && Boolean(overview) && editorOpen,
+    enabled: !demo && !snapshot && Boolean(overview) && (editorOpen || search.tab === "board"),
     // Each fetch is a live GitHub call on the viewer's token; the assignable list rarely changes.
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
@@ -360,6 +365,21 @@ function RepositoryWorkspace() {
         onResolved={handleWriteRecorded}
       />
     )}
+    {search.tab === "board" && (snapshot ? <p className={`${card} p-4`}>The Board needs a live connection. Saved issue counts are available on Overview.</p> : (
+      <IssueBoard
+        key={repositoryId}
+        repositoryId={repositoryId}
+        viewerKey={viewerKey}
+        viewerLogin={session.user?.login ?? null}
+        demo={demo}
+        github={github}
+        capabilities={capabilitiesQuery.data ?? null}
+        capabilitiesError={capabilitiesQuery.isError ? capabilitiesQuery.error.message : null}
+        assignable={assigneeSuggestions}
+        openIssue={search.issue}
+        onOpenIssue={issue => void navigate({ search: prev => ({ ...prev, issue }), replace: true })}
+      />
+    ))}
     {search.tab === "pulls" && (snapshot ? <p className={`${card} p-4`}>The pull request list needs a live connection. Saved PR counts are available on Overview.</p> : <PullRequests key={repositoryId} id={repositoryId} viewer={viewerKey} github={github} />)}
     {search.tab === "contributors" && <Contributors overview={overview} days={search.days} />}
     {search.tab === "activity" && <section className={`${card} flex-1 overflow-auto`}><Timeline overview={overview} github={github} /></section>}

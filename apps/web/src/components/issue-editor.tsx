@@ -12,6 +12,7 @@ import {
   type WriteOperation,
   type WriteOperationIssue,
 } from "@/lib/api";
+import { issueDraftStorageKey, readStorage, removeStorage, writeStorage } from "@/lib/drafts";
 
 // Matches backend/internal/issues/commands.go limits and syntax rules.
 const MAX_TITLE = 256;
@@ -60,48 +61,6 @@ type StoredUpdateDraft = {
   lastOperation: WriteOperation | null;
   step: Exclude<Step, "submitting" | "confirmed">;
 };
-
-const DRAFT_PREFIX = "repoorbit:issue-draft:";
-
-function issueDraftStorageKey(viewerKey: string, repositoryId: string, target: "create" | number): string {
-  return `${DRAFT_PREFIX}${viewerKey}:${repositoryId}:${target === "create" ? "create" : `update:${target}`}`;
-}
-
-export function clearRepositoryIssueDrafts(viewerKey: string, repositoryId: string): void {
-  if (typeof window === "undefined") return;
-  const prefix = `${DRAFT_PREFIX}${viewerKey}:${repositoryId}:`;
-  try {
-    for (const key of Object.keys(window.localStorage)) {
-      if (key.startsWith(prefix)) window.localStorage.removeItem(key);
-    }
-  } catch { /* ignore storage errors */ }
-}
-
-function readStorage<T>(key: string): T | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as T;
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeStorage(key: string, value: unknown): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch { /* ignore quota/private-mode errors */ }
-}
-
-function removeStorage(key: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.removeItem(key);
-  } catch { /* ignore storage errors */ }
-}
 
 export function hasSavedCreateDraft(viewerKey: string, repositoryId: string): boolean {
   const saved = readStorage<StoredCreateDraft>(issueDraftStorageKey(viewerKey, repositoryId, "create"));
