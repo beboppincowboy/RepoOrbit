@@ -8,6 +8,7 @@ import { StatusSourceSetup } from "@/components/status-source-setup";
 import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
 import { BOARD_STATUSES, deriveChange, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardSaver, type BoardTarget } from "@/lib/board";
+import { runRecovery } from "@/lib/board-recovery";
 import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from "@/lib/board-review";
 import { saveBoardChanges } from "@/lib/board-save";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type BoardStatus, type IssueCapabilities, type ViewerSession } from "@/lib/api";
@@ -34,8 +35,8 @@ const noRows: BoardIssue[] = [];
 const OPEN_CAP = 500;
 const CLOSED_CAP = 50;
 const locked = (card?: BoardCard) => card?.phase === "pending" || card?.phase === "unknown";
-// The storage event only reaches other tabs. This one tells a mounted Board in this tab that a save changed the cards,
-// including a Board mounted again while an earlier one's save is still running.
+// The storage event only reaches other tabs. This one tells a mounted Board in this tab that a save or a recovery changed
+// the cards, including a Board mounted again while an earlier one's is still running.
 const CARDS_SAVED = "repoorbit:board-cards-saved";
 
 // Saves the cards the review showed, then reads the Board again.
@@ -46,7 +47,8 @@ export function useBoardSave(viewerKey: string, repositoryId: string, saver: Boa
   };
 }
 
-// Whether a save started in this tab is still running. It outlives the Board, so one mounted again meanwhile stays busy.
+// Whether a save or a recovery started in this tab is still running. It outlives the Board, so one mounted again
+// meanwhile stays busy.
 let saveRunning = false;
 const SAVE_RUNNING = "repoorbit:board-save-running";
 function setSaveRunning(running: boolean) {
@@ -168,6 +170,29 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     } finally {
       setSaveRunning(false);
       setReviewed(null);
+    }
+  }
+
+  // Resolves an unknown card, one send at a time with the save. Resolves the failure to show, or null.
+  async function recover(issueNumber: number): Promise<string | null> {
+    const stored = () => loadBoardCards(viewerKey, repositoryId).find(card => card.number === issueNumber);
+    const card = stored();
+    if (!card || saveRunning || blocked) return null;
+    setSaveRunning(true);
+    try {
+      const recovery = await runRecovery(card, { repositoryId });
+      const current = stored();
+      // Signing out, losing access or another tab may settle the card meanwhile; this result must not bring it back.
+      if (!recovery || current?.phase !== "unknown" || current.request?.idempotencyKey !== card.request?.idempotencyKey) return null;
+      if (recovery.outcome.kind === "removed") removeBoardCard(viewerKey, repositoryId, issueNumber);
+      else saveBoardCard(viewerKey, repositoryId, recovery.outcome.card);
+      window.dispatchEvent(new Event(CARDS_SAVED));
+      await refetchBoard();
+      return recovery.error;
+    } finally {
+      setSaveRunning(false);
+      // Also redraws a card whose action was no longer offered when it was pressed.
+      window.dispatchEvent(new Event(CARDS_SAVED));
     }
   }
 
@@ -361,6 +386,9 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
           assignable={assignable}
           blocked={blocked ?? (locked(openCard) ? "This card's last save is not confirmed yet." : null)}
           sideEffects={openCard ? deriveChange(openCard.snapshot, openCard.target, saver)?.sideEffects ?? [] : []}
+          recoveryBlocked={blocked}
+          busy={saving}
+          onRecover={() => recover(openIssue)}
           onStage={target => openRow && stage(openRow, target)}
           onDiscard={() => { removeBoardCard(viewerKey, repositoryId, openIssue); setCards(loadBoardCards(viewerKey, repositoryId)); }}
           onClose={closeDrawer}
