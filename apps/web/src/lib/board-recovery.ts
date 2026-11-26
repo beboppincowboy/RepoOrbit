@@ -1,4 +1,4 @@
-import { IssueWriteError, canReplayWithSameKey, recheckWriteOperation, submitIssueUpdate } from "./api";
+import { canReplayWithSameKey, recheckWriteOperation, submitIssueUpdate } from "./api";
 import { applySaveResult, type BoardCard, type BoardSaveOutcome } from "./board";
 
 // "recheck" asks GitHub's operation record about a send that has an operation id. "resend" sends the stored request again
@@ -33,17 +33,16 @@ export async function runRecovery(card: BoardCard, { repositoryId, now, submit =
   const action = recoveryAction(card, now);
   if (action === "none") return null;
   try {
+    const signal = AbortSignal.timeout(120_000);
     const operation = action === "recheck"
-      ? await recheck(card.operationId!, card.number)
-      : await submit(repositoryId, card.number, card.request!.idempotencyKey, card.request!.draft);
+      ? await recheck(card.operationId!, card.number, signal)
+      : await submit(repositoryId, card.number, card.request!.idempotencyKey, card.request!.draft, signal);
     const error = operation.state === "failed" ? operation.outcome?.error ?? "GitHub did not apply every requested change." : null;
     return { outcome: applySaveResult(card, { operation }), error };
   } catch (thrown) {
     const error = thrown instanceof Error ? thrown.message : "Could not reach GitHub.";
     if (action === "resend") return { outcome: applySaveResult(card, { error: thrown, isReplay: true }), error };
-    // A failed recheck says nothing about the original write, so the card stays as it is. An unresolved one may carry
-    // the operation as the server now holds it.
-    const operation = thrown instanceof IssueWriteError && thrown.kind === "recheck_unresolved" ? thrown.operation : null;
-    return { outcome: operation ? applySaveResult(card, { operation }) : { kind: "card", card }, error };
+    // Leave the original write locked until a recheck returns an operation successfully.
+    return { outcome: { kind: "card", card }, error };
   }
 }

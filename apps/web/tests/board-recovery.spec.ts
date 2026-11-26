@@ -78,6 +78,27 @@ test.describe('board recovery', () => {
     const card = unknown();
     const { sends, options } = fakes(refusal);
     expect(await runRecovery(card, options)).toEqual({ outcome: { kind: 'card', card }, error: 'Permission refused.' });
-    expect(sends).toEqual([['repo-1', 3, 'ro-stored', draft]]);
+    expect(sends).toEqual([['repo-1', 3, 'ro-stored', draft, expect.any(AbortSignal)]]);
   });
+
+  for (const [name, thrown, message] of [
+    ['transport failure', new IssueWriteError('Timed out.', { status: 0, kind: 'transport' }), 'Timed out.'],
+    ['unresolved operation', new IssueWriteError('Unresolved.', {
+      status: 409, kind: 'recheck_unresolved',
+      operation: { id: 41, repositoryId: 1, kind: 'update', state: 'failed', issueNumber: 3, draft, outcome: null, actor: 'ada', createdAt: '', updatedAt: '' },
+    }), 'Unresolved.'],
+    ['non-Error rejection', null, 'Could not reach GitHub.'],
+  ] as const) {
+    test(`a recheck with ${name} keeps the original card`, async () => {
+      const card = unknown({ operationId: 41 });
+      const { sends, rechecks, options } = fakes();
+      const result = await runRecovery(card, {
+        ...options,
+        recheck: async (...args) => { rechecks.push(args); throw thrown; },
+      });
+      expect(result).toEqual({ outcome: { kind: 'card', card }, error: message });
+      expect(rechecks).toEqual([[41, 3, expect.any(AbortSignal)]]);
+      expect(sends).toEqual([]);
+    });
+  }
 });
