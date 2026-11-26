@@ -200,6 +200,13 @@ test.describe('applySaveResult', () => {
     expect(applySaveResult(sent(), { error })).toEqual(cleared('changed', { snapshot: current }));
   });
 
+  test('an assignee-only edit keeps a teammate’s closed status when staged again', () => {
+    const current = snap({ state: 'closed', status: 'done', assignees: ['sam'], updatedAt: t1 });
+    const error = new IssueWriteError('changed', { status: 409, kind: 'changed_on_github', current });
+    const target = to('todo', ['alex'], ['sam']);
+    expect(applySaveResult(sent({ target }), { error })).toEqual(cleared('changed', { snapshot: current, target: { ...target, status: 'done' } }));
+  });
+
   test('a not_recorded failure maps to failed and clears the request and key', () => {
     const error = new IssueWriteError('refused', { status: 422, kind: 'unprocessable', disposition: 'not-recorded' });
     expect(applySaveResult(sent(), { error })).toEqual(cleared('failed'));
@@ -250,7 +257,7 @@ test.describe('applySaveResult', () => {
     expect(applySaveResult(sent(), { error })).toEqual(lockedUnknown(null));
   });
 
-  // Contract for the save loop (a later unit): cards already unknown or pending are skipped, never re-sent or mapped.
+  // Contract for the save loop: cards already unknown or pending are skipped, never re-sent or mapped.
   test('contract: the save loop only maps staged, changed or failed cards, and never mutates the card it passes', () => {
     for (const phase of ['staged', 'changed', 'failed'] as const) {
       const card = sent({ phase });

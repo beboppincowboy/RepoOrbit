@@ -119,12 +119,12 @@ export function isChangedOnGitHub(card: BoardCard, row: BoardIssue): boolean {
 
 // Where a sent card goes next: by operation state when the send resolved, otherwise by how the error classifies.
 // Contract: the save loop never sends or maps a card that is already unknown or pending.
-// An unknown card keeps its request, key and attemptedAt for recovery; failed and changed cards drop them, so saving
-// again sends a new request under a new key.
+// An unknown card keeps its request, key and attemptedAt for recovery; failed and changed cards drop them, so staging
+// and saving again sends a new request under a new key.
 export function applySaveResult(card: BoardCard, result: BoardSaveResult): BoardSaveOutcome {
   const unknown = (operationId: number | null): BoardSaveOutcome => ({ kind: "card", card: { ...card, phase: "unknown", operationId } });
-  const released = (phase: "failed" | "changed", operationId: number | null, snapshot = card.snapshot): BoardSaveOutcome =>
-    ({ kind: "card", card: { ...card, phase, snapshot, request: null, operationId, attemptedAt: null } });
+  const released = (phase: "failed" | "changed", operationId: number | null, snapshot = card.snapshot, target = card.target): BoardSaveOutcome =>
+    ({ kind: "card", card: { ...card, phase, snapshot, target, request: null, operationId, attemptedAt: null } });
 
   if ("operation" in result) {
     const { id, state } = result.operation;
@@ -136,8 +136,10 @@ export function applySaveResult(card: BoardCard, result: BoardSaveResult): Board
   // The card's earlier operation id belongs to this send only when the same key is being resent.
   const sameKeyId = result.isReplay ? card.operationId : null;
   switch (failure.outcome) {
-    case "changed_on_github":
-      return released("changed", null, failure.current);
+    case "changed_on_github": {
+      const target = card.target.status === card.snapshot.status ? { ...card.target, status: failure.current.status } : card.target;
+      return released("changed", null, failure.current, target);
+    }
     case "not_recorded":
       return released("failed", null);
     case "recheck_unresolved":
