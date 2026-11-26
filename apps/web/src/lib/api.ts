@@ -607,8 +607,8 @@ export async function submitIssueCreate(repositoryId: string, idempotencyKey: st
   return submitIssueWrite(`/api/repositories/${encodeURIComponent(repositoryId)}/issues`, idempotencyKey, draft);
 }
 
-export async function submitIssueUpdate(repositoryId: string, issueNumber: number, idempotencyKey: string, draft: IssueUpdateDraft): Promise<WriteOperation> {
-  return submitIssueWrite(`/api/repositories/${encodeURIComponent(repositoryId)}/issues/${encodeURIComponent(String(issueNumber))}/updates`, idempotencyKey, draft);
+export async function submitIssueUpdate(repositoryId: string, issueNumber: number, idempotencyKey: string, draft: IssueUpdateDraft, signal?: AbortSignal): Promise<WriteOperation> {
+  return submitIssueWrite(`/api/repositories/${encodeURIComponent(repositoryId)}/issues/${encodeURIComponent(String(issueNumber))}/updates`, idempotencyKey, draft, signal);
 }
 
 export async function fetchStatusLabels(repositoryId: string, signal?: AbortSignal): Promise<StatusLabelState> {
@@ -634,12 +634,13 @@ export async function disableStatusLabels(repositoryId: string): Promise<void> {
   if (!response.ok) throw await toIssueWriteError(response);
 }
 
-async function submitIssueWrite(path: string, idempotencyKey: string, draft: IssueCreateDraft | IssueUpdateDraft | Record<string, never>): Promise<WriteOperation> {
+async function submitIssueWrite(path: string, idempotencyKey: string, draft: IssueCreateDraft | IssueUpdateDraft | Record<string, never>, signal?: AbortSignal): Promise<WriteOperation> {
   const response = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "", "Idempotency-Key": idempotencyKey },
     cache: "no-store",
     body: JSON.stringify(draft),
+    signal,
   }).catch(() => {
     throw new IssueWriteError("No reliable answer from the server. Your draft is preserved; check Write history before retrying.", { status: 0, kind: "transport" });
   });
@@ -647,13 +648,14 @@ async function submitIssueWrite(path: string, idempotencyKey: string, draft: Iss
   return response.json();
 }
 
-export async function recheckWriteOperation(operationId: number, issueNumber?: number): Promise<WriteOperation> {
+export async function recheckWriteOperation(operationId: number, issueNumber?: number, signal?: AbortSignal): Promise<WriteOperation> {
   const payload = issueNumber !== undefined ? { issueNumber } : {};
   const response = await fetch(`/api/write-operations/${encodeURIComponent(String(operationId))}/recheck`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "" },
     cache: "no-store",
     body: JSON.stringify(payload),
+    signal,
   }).catch(() => {
     throw new IssueWriteError("Could not reach the server to recheck this operation. Try again shortly.", { status: 0, kind: "transport" });
   });

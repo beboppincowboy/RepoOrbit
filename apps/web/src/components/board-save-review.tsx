@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import type { BoardReviewItem } from "@/lib/board-review";
 
@@ -15,26 +15,20 @@ type BoardSaveReviewProps = {
 
 // The dialog that lists what a save will send. It takes focus when it opens, and Escape closes it.
 export function BoardSaveReview({ items, blocked, saving, confirmDisabled, onConfirm, onClose }: BoardSaveReviewProps) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => ref.current?.focus(), []);
-  useEffect(() => {
-    // Captured first and stopped, so Escape does not also close a task drawer open behind the review.
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      onClose();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [onClose]);
+  const ref = useRef<HTMLDialogElement>(null);
+  useLayoutEffect(() => {
+    const dialog = ref.current!;
+    dialog.showModal();
+    return () => dialog.close();
+  }, []);
 
   return (
-    <div
+    <dialog
       ref={ref}
-      role="dialog"
       aria-label="Review staged changes"
-      tabIndex={-1}
-      className="fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100vh-24px)] w-[min(520px,calc(100vw-24px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[0_18px_44px_rgba(15,23,42,.22)] outline-none"
+      onCancel={event => { event.preventDefault(); onClose(); }}
+      onKeyDown={event => { if (event.key === "Escape") event.stopPropagation(); }}
+      className="fixed top-1/2 left-1/2 max-h-[calc(100vh-24px)] w-[min(520px,calc(100vw-24px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border border-border bg-card text-foreground shadow-[0_18px_44px_rgba(15,23,42,.22)] outline-none open:flex backdrop:bg-scrim"
     >
       <h2 className="m-0 flex-none border-b border-border p-4 text-base">Review staged changes</h2>
       <ul className="m-0 flex min-h-0 flex-1 list-none flex-col gap-2 overflow-y-auto p-4 text-[13px]">
@@ -53,6 +47,6 @@ export function BoardSaveReview({ items, blocked, saving, confirmDisabled, onCon
           <Button size="sm" disabled={confirmDisabled} onClick={onConfirm}>{saving ? "Saving…" : "Confirm"}</Button>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }
