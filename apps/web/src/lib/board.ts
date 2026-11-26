@@ -34,6 +34,7 @@ export type BoardCard = {
 // of an already-used Idempotency-Key, where a refusal no longer proves the first send went unrecorded.
 export type BoardSaveResult = { operation: WriteOperation } | { error: unknown; isReplay?: boolean };
 
+// Where a card goes after a send or a recovery: "removed" deletes it from storage, "card" stores the card given.
 export type BoardSaveOutcome = { kind: "removed" } | { kind: "card"; card: BoardCard };
 
 export type BoardChange = { draft: IssueUpdateDraft; sideEffects: string[] };
@@ -46,6 +47,11 @@ export function loadBoardCards(viewerKey: string, repositoryId: string): BoardCa
   return readStorageByPrefix<BoardCard>(boardDraftPrefix(viewerKey, repositoryId))
     .filter(card => card.version === 1)
     .sort((a, b) => a.number - b.number);
+}
+
+// The stored card for one issue number, read from storage now (undefined when none is staged).
+export function loadBoardCard(viewerKey: string, repositoryId: string, issueNumber: number): BoardCard | undefined {
+  return loadBoardCards(viewerKey, repositoryId).find(card => card.number === issueNumber);
 }
 
 export function saveBoardCard(viewerKey: string, repositoryId: string, card: BoardCard): boolean {

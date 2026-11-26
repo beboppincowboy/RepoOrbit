@@ -1,5 +1,5 @@
 import { generateIdempotencyKey, submitIssueUpdate } from "./api";
-import { applySaveResult, deriveChange, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardSaver, type BoardSaveResult } from "./board";
+import { applySaveResult, deriveChange, loadBoardCard, removeBoardCard, saveBoardCard, type BoardCard, type BoardSaver, type BoardSaveResult } from "./board";
 
 export type BoardSaveOptions = {
   viewerKey: string;
@@ -18,11 +18,12 @@ const unchangedSinceReview = (card: BoardCard, reviewed: BoardCard) =>
   JSON.stringify([card.snapshot, card.target]) === JSON.stringify([reviewed.snapshot, reviewed.target]);
 
 // Sends the reviewed cards as issue updates, one at a time in issue-number order. Each card is reloaded just before its
-// turn and sent only if it is still staged as reviewed. Resolves false, sending nothing, while another save is running.
+// turn and sent only if it is still staged as reviewed. Resolves true once every reviewed card has been sent or skipped, and
+// false, sending nothing, when another save is already running.
 export async function saveBoardChanges({ viewerKey, repositoryId, reviewed, saver, onChange, submit = submitIssueUpdate }: BoardSaveOptions): Promise<boolean> {
   if (saving) return false;
   saving = true;
-  const stored = (issueNumber: number) => loadBoardCards(viewerKey, repositoryId).find(card => card.number === issueNumber);
+  const stored = (issueNumber: number) => loadBoardCard(viewerKey, repositoryId, issueNumber);
   try {
     for (const seen of [...reviewed].sort((a, b) => a.number - b.number)) {
       const card = stored(seen.number);

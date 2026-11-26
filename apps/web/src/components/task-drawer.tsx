@@ -17,7 +17,7 @@ const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const has = (list: string[], value: string) => list.some(item => same(item, value));
 
 // Each recovery action's button, idle and while it runs.
-const recoveryNames = { recheck: ["Recheck", "Rechecking…"], "check-recorded-status": ["Check recorded status", "Checking…"] } as const;
+const recoveryNames = { recheck: ["Recheck", "Rechecking…"], "resend": ["Check recorded status", "Checking…"] } as const;
 
 type TaskDrawerProps = {
   repositoryId: string;
