@@ -1,7 +1,9 @@
 import { IssueWriteError, canReplayWithSameKey, recheckWriteOperation, submitIssueUpdate } from "./api";
 import { applySaveResult, type BoardCard, type BoardSaveOutcome } from "./board";
 
-export type BoardRecoveryAction = "recheck" | "check-recorded-status" | "none";
+// "recheck" asks GitHub's operation record about a send that has an operation id. "resend" sends the stored request again
+// under its stored Idempotency-Key. "none" leaves the card locked.
+export type BoardRecoveryAction = "recheck" | "resend" | "none";
 
 export type BoardRecovery = {
   // Where the card goes now.
@@ -17,12 +19,12 @@ export type BoardRecoveryOptions = {
   recheck?: typeof recheckWriteOperation;
 };
 
-// How an unknown card can be resolved. With no operation id, the stored request can be resent under its stored key only
-// inside the replay window. Otherwise the card offers nothing and stays locked.
+// Which recovery an unknown card offers now. A card with an operation id is rechecked. A card without one can resend its
+// stored request under its stored key, only inside the replay window (canReplayWithSameKey). Any other card offers none.
 export function recoveryAction(card: BoardCard, now: number = Date.now()): BoardRecoveryAction {
   if (card.phase !== "unknown") return "none";
   if (card.operationId !== null) return "recheck";
-  return card.request && canReplayWithSameKey(card.attemptedAt, now) ? "check-recorded-status" : "none";
+  return card.request && canReplayWithSameKey(card.attemptedAt, now) ? "resend" : "none";
 }
 
 // Runs the action the card offers now. Resolves null, calling nothing, when it offers none. Storing the outcome is the
@@ -38,7 +40,7 @@ export async function runRecovery(card: BoardCard, { repositoryId, now, submit =
     return { outcome: applySaveResult(card, { operation }), error };
   } catch (thrown) {
     const error = thrown instanceof Error ? thrown.message : "Could not reach GitHub.";
-    if (action === "check-recorded-status") return { outcome: applySaveResult(card, { error: thrown, isReplay: true }), error };
+    if (action === "resend") return { outcome: applySaveResult(card, { error: thrown, isReplay: true }), error };
     // A failed recheck says nothing about the original write, so the card stays as it is. An unresolved one may carry
     // the operation as the server now holds it.
     const operation = thrown instanceof IssueWriteError && thrown.kind === "recheck_unresolved" ? thrown.operation : null;

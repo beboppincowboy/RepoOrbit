@@ -42,8 +42,8 @@ test.describe('board recovery', () => {
     expect(recoveryAction(unknown({ operationId: 41, attemptedAt: new Date(now - 400 * day).toISOString() }), now)).toBe('recheck');
   });
 
-  test('Happy path: an unknown card with no operation id and an attemptedAt inside the window offers check-recorded-status', () => {
-    expect(recoveryAction(unknown(), now)).toBe('check-recorded-status');
+  test('Happy path: an unknown card with no operation id and an attemptedAt inside the window offers resend', () => {
+    expect(recoveryAction(unknown(), now)).toBe('resend');
   });
 
   test('Edge: an unknown card with no operation id and an attemptedAt outside the window offers none, and the helper returns no resend action', async () => {

@@ -7,7 +7,7 @@ import { BoardSaveReview } from "@/components/board-save-review";
 import { StatusSourceSetup } from "@/components/status-source-setup";
 import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
-import { BOARD_STATUSES, deriveChange, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardSaver, type BoardTarget } from "@/lib/board";
+import { BOARD_STATUSES, deriveChange, loadBoardCard, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardSaver, type BoardTarget } from "@/lib/board";
 import { runRecovery } from "@/lib/board-recovery";
 import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from "@/lib/board-review";
 import { saveBoardChanges } from "@/lib/board-save";
@@ -39,7 +39,8 @@ const locked = (card?: BoardCard) => card?.phase === "pending" || card?.phase ==
 // the cards, including a Board mounted again while an earlier one's is still running.
 const CARDS_SAVED = "repoorbit:board-cards-saved";
 
-// Saves the cards the review showed, then reads the Board again.
+// Returns a function that saves the reviewed cards, then reads the Board again if a save actually ran. The returned
+// function resolves when the save finishes, and does nothing when another save is already running.
 export function useBoardSave(viewerKey: string, repositoryId: string, saver: BoardSaver, refetchBoard: () => Promise<unknown>) {
   return async (reviewed: BoardCard[]) => {
     const ran = await saveBoardChanges({ viewerKey, repositoryId, reviewed, saver, onChange: () => window.dispatchEvent(new Event(CARDS_SAVED)) });
@@ -174,7 +175,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
 
   // Resolves an unknown card, one send at a time with the save. Resolves the failure to show, or null.
   async function recover(issueNumber: number): Promise<string | null> {
-    const stored = () => loadBoardCards(viewerKey, repositoryId).find(card => card.number === issueNumber);
+    const stored = () => loadBoardCard(viewerKey, repositoryId, issueNumber);
     const card = stored();
     if (!card || saveRunning || blocked) return null;
     setSaveRunning(true);
