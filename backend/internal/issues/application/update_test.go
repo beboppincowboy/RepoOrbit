@@ -592,7 +592,7 @@ func TestUpdatePartialFailure(t *testing.T) {
 	}
 }
 
-// Ported from apply_update_test.go: AllStepsAnswered is true exactly when classify calls the failing step "failed"
+// AllStepsAnswered is true exactly when classify calls the failing step "failed"
 // (or nothing failed), and the update stops at the first error.
 func TestApplyStepsAllStepsAnswered(t *testing.T) {
 	for _, tc := range []struct {

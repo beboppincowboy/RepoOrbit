@@ -34,15 +34,6 @@ func remoteError(err error) error {
 	return &application.RemoteError{Kind: domain.HTTPError, Status: api.Status, Err: err}
 }
 
-// classify maps a GitHub client error onto domain.Classify's state and reason, exactly as the gateway's errors classify.
-func classify(err error) (string, string) {
-	var re *application.RemoteError
-	if errors.As(remoteError(err), &re) {
-		return domain.Classify(re.Kind, re.Status)
-	}
-	return domain.Classify(domain.OtherError, 0)
-}
-
 func viewIssue(issue githubapp.Issue) *issueView {
 	labels := make([]string, len(issue.Labels))
 	for i, l := range issue.Labels {
