@@ -101,8 +101,9 @@ func TestClassify(t *testing.T) {
 		state, reason string
 	}{
 		{NotSent, 0, "failed", "the request could not be prepared; nothing was sent to GitHub"},
-		{HTTPError, 401, "failed", "GitHub rejected the request (status 401)"},
-		{HTTPError, 404, "failed", "GitHub rejected the request (status 404)"},
+		{Unauthorized, 401, "failed", "GitHub rejected the request (status 401)"},
+		{NotFound, 404, "failed", "GitHub rejected the request (status 404)"},
+		{HTTPError, 422, "failed", "GitHub rejected the request (status 422)"},
 		{HTTPError, 500, "unknown", "GitHub answered status 500; the change may or may not have been applied"},
 		{OtherError, 0, "unknown", "no reliable answer from GitHub; the change may or may not have been applied"},
 	} {

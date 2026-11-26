@@ -568,15 +568,21 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 	s.respond(sw, ctx, http.StatusCreated, userID, opID, snap)
 }
 
+// classify maps a GitHub client error onto a domain error kind and returns domain.Classify's state and reason.
 func classify(err error) (string, string) {
 	if errors.Is(err, githubapp.ErrNotSent) {
 		return domain.Classify(domain.NotSent, 0)
 	}
 	var api *githubapp.APIError
-	if errors.As(err, &api) {
-		return domain.Classify(domain.HTTPError, api.Status)
+	switch {
+	case !errors.As(err, &api):
+		return domain.Classify(domain.OtherError, 0)
+	case api.Unauthorized():
+		return domain.Classify(domain.Unauthorized, api.Status)
+	case api.NotFound():
+		return domain.Classify(domain.NotFound, api.Status)
 	}
-	return domain.Classify(domain.OtherError, 0)
+	return domain.Classify(domain.HTTPError, api.Status)
 }
 
 func viewIssue(issue githubapp.Issue) *issueView {
