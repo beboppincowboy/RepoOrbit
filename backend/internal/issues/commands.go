@@ -586,14 +586,15 @@ func classify(err error) (string, string) {
 }
 
 func viewIssue(issue githubapp.Issue) *issueView {
-	v := &issueView{Number: issue.Number, URL: issue.HTMLURL, Title: issue.Title, State: issue.State, Labels: []string{}, Assignees: []string{}}
-	for _, l := range issue.Labels {
-		v.Labels = append(v.Labels, l.Name)
+	labels := make([]string, len(issue.Labels))
+	for i, l := range issue.Labels {
+		labels[i] = l.Name
 	}
-	for _, a := range issue.Assignees {
-		v.Assignees = append(v.Assignees, a.Login)
+	assignees := make([]string, len(issue.Assignees))
+	for i, a := range issue.Assignees {
+		assignees[i] = a.Login
 	}
-	return v
+	return domain.NewIssueView(issue.Number, issue.HTMLURL, issue.Title, issue.State, labels, assignees)
 }
 
 func (s *Service) sendCreate(ctx context.Context, userID int64, token, fullName string, d *createDraft) (string, outcome, *githubapp.Issue) {

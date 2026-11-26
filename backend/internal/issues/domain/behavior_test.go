@@ -74,6 +74,10 @@ func TestOutcomeJSON(t *testing.T) {
 	if !strings.Contains(string(b), `"unapplied"`) {
 		t.Fatalf("wire format: %s", b)
 	}
+	b, _ = json.Marshal(NewIssueView(7, "u", "t", "open", nil, nil))
+	if want := `{"number":7,"url":"u","title":"t","state":"open","labels":[],"assignees":[]}`; string(b) != want {
+		t.Fatalf("issue view: %s, want %s", b, want)
+	}
 }
 func TestPlanUpdate(t *testing.T) {
 	d := UpdateDraft{State: "open", Labels: Delta{Add: []string{"a"}, Remove: []string{"b", "c"}}, Assignees: Delta{Remove: []string{"d"}, Add: []string{"e"}}}
