@@ -35,9 +35,11 @@ async function startStub() {
     req.on('close', () => { entry.closed = true; });
     (stub.handler ?? echo)(req, res);
   });
+  // Raw bytes per upstream socket: node's parser rejects bad framing before the handler, so `seen` alone can't show a forward.
+  server.on('connection', s => s.on('data', d => stub.raw.push(d)));
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   // No request can arrive before the port is known, so `stub` is always set by the time the handler runs.
-  const stub = { seen: [] as Seen[], handler: undefined as Handler | undefined, server, port: (server.address() as AddressInfo).port };
+  const stub = { seen: [] as Seen[], raw: [] as Buffer[], handler: undefined as Handler | undefined, server, port: (server.address() as AddressInfo).port };
   return stub;
 }
 
@@ -108,7 +110,7 @@ for (const runtime of ['node', 'bun']) {
       await new Promise(r => stub.server.close(r));
       rmSync(dir, { recursive: true, force: true });
     });
-    test.beforeEach(() => { stub.seen.length = 0; stub.handler = undefined; });
+    test.beforeEach(() => { stub.seen.length = 0; stub.raw.length = 0; stub.handler = undefined; });
 
     test('serves hashed assets with immutable caching', async () => {
       const js = await fetch(`${web.url}/assets/app-1a2b3c.js`);
@@ -183,12 +185,15 @@ for (const runtime of ['node', 'bun']) {
       expect(res.status).toBe(200);
       expect(lines.filter(l => l.startsWith('transfer-encoding:'))).toHaveLength(1);
       expect(lines.filter(l => l.startsWith('content-length:'))).toHaveLength(0);
+      expect(lines.filter(l => l.startsWith('transfer-encoding:'))[0].split(':')[1].trim()).toBe('chunked');
+      expect(res.body.toString().endsWith('0\r\n\r\n')).toBe(true);
       // Decode chunked framing by hand.
       let rest = res.body.toString();
       let decoded = '';
       for (;;) {
         const eol = rest.indexOf('\r\n');
         const size = parseInt(rest.slice(0, eol), 16);
+        if (Number.isNaN(size)) throw new Error(`bad chunk size in ${JSON.stringify(rest.slice(0, 20))}`);
         if (!size) break;
         decoded += rest.slice(eol + 2, eol + 2 + size);
         rest = rest.slice(eol + 2 + size + 2);
@@ -203,6 +208,7 @@ for (const runtime of ['node', 'bun']) {
       expect(two.status).toBe(400);
       await sleep(200);
       expect(stub.seen).toHaveLength(0);
+      expect(Buffer.concat(stub.raw)).toHaveLength(0);
     });
 
     test('unreachable upstream is 502 Bad gateway', async () => {
@@ -227,7 +233,8 @@ for (const runtime of ['node', 'bun']) {
     });
 
     test('early upstream 413 reaches the client before the upload finishes', async () => {
-      stub.handler = (_req, res) => { res.writeHead(413, { connection: 'close' }).end('too large'); };
+      // Reply only after the first body chunk, with a marker a locally generated 413 could not contain.
+      stub.handler = (req, res) => { req.once('data', () => res.writeHead(413, { connection: 'close' }).end('stub-413-marker')); };
       // Trickle the upload so the 413 is read before the server resets the connection over the unread body.
       const total = 4 * 1024 * 1024;
       const piece = Buffer.alloc(16 * 1024, 'a');
@@ -242,18 +249,22 @@ for (const runtime of ['node', 'bun']) {
           s.write(`POST /api/upload HTTP/1.1\r\nHost: x\r\nContent-Length: ${total}\r\n\r\n`);
           t = setInterval(() => { if (sent < total && !s.destroyed) { s.write(piece); sent += piece.length; } }, 10);
         });
-        s.on('data', c => { text += c.toString(); if (text.includes('413')) done(sent); });
+        s.on('data', c => { text += c.toString(); if (/^HTTP\/1\.\d 413/.test(text) && text.includes('stub-413-marker')) done(sent); });
         setTimeout(() => { clearInterval(t); s.destroy(); reject(new Error(`no 413 (sent ${sent})`)); }, 8000);
       });
       expect(sentAtResponse).toBeGreaterThan(0);
       expect(sentAtResponse).toBeLessThan(total);
+      expect(stub.seen).toHaveLength(1);
     });
 
-    test('/webhooks/github is not proxied', async () => {
-      const res = await fetch(`${web.url}/webhooks/github`);
-      expect(await res.text()).toBe(SHELL);
-      expect((await fetch(`${web.url}/webhooks/github`, { method: 'POST', body: '{}' })).status).toBe(405);
+    test('/webhooks/github, /live and /ready are not proxied', async () => {
+      for (const path of ['/webhooks/github', '/live', '/ready']) {
+        const res = await fetch(web.url + path);
+        expect(await res.text(), path).toBe(SHELL);
+        expect((await fetch(web.url + path, { method: 'POST', body: '{}' })).status, path).toBe(405);
+      }
       expect(stub.seen).toHaveLength(0);
+      expect(Buffer.concat(stub.raw)).toHaveLength(0);
     });
   });
 }
