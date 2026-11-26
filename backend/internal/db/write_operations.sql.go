@@ -209,7 +209,7 @@ func (q *Queries) GetWriteOperationByKey(ctx context.Context, arg GetWriteOperat
 }
 
 const getWriteOperationScope = `-- name: GetWriteOperationScope :one
-SELECT repository_id, state,
+SELECT repository_id,
  (state = 'pending' AND created_at < now() - interval '1 minute') AS stale_pending
 FROM write_operations WHERE id = $1 AND user_id = $2
 `
@@ -221,14 +221,13 @@ type GetWriteOperationScopeParams struct {
 
 type GetWriteOperationScopeRow struct {
 	RepositoryID int64
-	State        string
 	StalePending pgtype.Bool
 }
 
 func (q *Queries) GetWriteOperationScope(ctx context.Context, arg GetWriteOperationScopeParams) (GetWriteOperationScopeRow, error) {
 	row := q.db.QueryRow(ctx, getWriteOperationScope, arg.ID, arg.UserID)
 	var i GetWriteOperationScopeRow
-	err := row.Scan(&i.RepositoryID, &i.State, &i.StalePending)
+	err := row.Scan(&i.RepositoryID, &i.StalePending)
 	return i, err
 }
 

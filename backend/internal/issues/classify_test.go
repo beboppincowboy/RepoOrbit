@@ -6,9 +6,21 @@ import (
 	"testing"
 
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
+	"github.com/repoorbit/repoorbit/backend/internal/issues/application"
+	"github.com/repoorbit/repoorbit/backend/internal/issues/domain"
 )
 
-// classify maps GitHub client errors onto domain.Classify; applyUpdate sets AllStepsAnswered exactly when it says failed.
+// classify follows a GitHub client error the way production does: the gateway's remoteError, then domain.Classify
+// (application.classify), with anything that is not a RemoteError classified as no reliable answer.
+func classify(err error) (string, string) {
+	var re *application.RemoteError
+	if errors.As(remoteError(err), &re) {
+		return domain.Classify(re.Kind, re.Status)
+	}
+	return domain.Classify(domain.OtherError, 0)
+}
+
+// The gateway's error mapping gives the stored state and reason for each kind of GitHub client error.
 func TestClassifyMapsGitHubErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
