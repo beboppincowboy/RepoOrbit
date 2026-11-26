@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import { demo, mockSelected, mockSession, selectedRepo, signedIn } from './mocks';
 
 
@@ -67,6 +67,47 @@ async function openDrawer(page: Page, n: number) {
   const drawer = page.getByRole('dialog', { name: `Issue #${n}` });
   await expect(drawer).toBeVisible();
   return drawer;
+}
+
+const saveButton = (page: Page) => page.getByRole('button', { name: 'Save…' });
+const review = (page: Page) => page.getByRole('dialog', { name: 'Review staged changes' });
+
+// Stages a status move through the drawer, as a user does, and closes the drawer again.
+async function stageStatus(page: Page, n: number, status: string) {
+  const drawer = await openDrawer(page, n);
+  await drawer.getByRole('radio', { name: status, exact: true }).check();
+  await expect(card(page, n)).toContainText('Staged');
+  await page.keyboard.press('Escape');
+  await expect(drawer).toHaveCount(0);
+}
+
+async function confirmSave(page: Page) {
+  await saveButton(page).click();
+  await review(page).getByRole('button', { name: 'Confirm' }).click();
+}
+
+const operation = (n: number, state: 'succeeded' | 'failed' | 'unknown', id = 600 + n) => ({
+  id, repositoryId: 1, kind: 'update', state, issueNumber: n, draft: {},
+  outcome: state === 'succeeded' ? { allStepsAnswered: true } : { error: 'GitHub did not apply every requested change.' },
+  actor: 'ada', createdAt: '2026-11-25T12:00:00Z', updatedAt: '2026-11-25T12:00:01Z',
+});
+
+type SentUpdate = { number: number; key: string; body: Record<string, unknown> };
+
+// Mocks the Board's update route, recording each request before answer replies to it.
+async function mockUpdates(page: Page, answer: (route: Route, sent: SentUpdate) => Promise<void> = (route, sent) => route.fulfill({ status: 201, json: operation(sent.number, 'succeeded') })) {
+  const sent: SentUpdate[] = [];
+  await page.route('**/api/repositories/1/issues/*/updates', async route => {
+    const request = route.request();
+    const update = {
+      number: Number(new URL(request.url()).pathname.split('/').at(-2)),
+      key: request.headers()['idempotency-key'] ?? '',
+      body: request.postDataJSON() as Record<string, unknown>,
+    };
+    sent.push(update);
+    await answer(route, update);
+  });
+  return sent;
 }
 
 test.beforeEach(async ({ page }) => {
@@ -305,3 +346,280 @@ test('failing an independent Board refetch hides rows, filters, staging controls
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('repoorbit:issue-draft:real:ada:1:')))).toEqual([]);
   await expect(page.getByRole('navigation', { name: 'Primary' }).getByRole('link', { name: /^(repo-1|Repository)$/ })).toHaveCount(0);
 });
+
+test('Save is disabled with no staged cards and enabled with one or more (R1)', async ({ page }) => {
+  await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  await expect(card(page, 3)).toHaveAttribute('draggable', 'true');
+  await expect(saveButton(page)).toBeDisabled();
+  await expect(saveButton(page)).toHaveAttribute('title', 'No staged changes to save.');
+
+  await stageStatus(page, 3, 'In Progress');
+  await expect(saveButton(page)).toBeEnabled();
+  await stageStatus(page, 1, 'Todo');
+  await expect(page.getByText('2 staged changes')).toBeVisible();
+  await expect(saveButton(page)).toBeEnabled();
+});
+
+test('demo mode disables Save and its title gives the reason (R1)', async ({ page }) => {
+  await setup(page, { session: demo });
+  await page.goto('/workspace/1?tab=board');
+  await expect(card(page, 3)).toBeVisible();
+  await expect(saveButton(page)).toBeDisabled();
+  await expect(saveButton(page)).toHaveAttribute('title', 'Demo mode — remote GitHub writes are disabled, so Board changes cannot be staged.');
+});
+
+test('the review lists each staged card with its title, from-to change and side effects, and sends nothing (R2)', async ({ page }) => {
+  const { posts } = await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'Done');
+  await stageStatus(page, 1, 'In Progress');
+  await saveButton(page).click();
+
+  const items = review(page).locator('[data-review-card]');
+  await expect(items).toHaveCount(2);
+  await expect(items.nth(0)).toHaveAttribute('data-review-card', '1');
+  await expect(items.nth(0)).toContainText('#1 Plan the roadmap');
+  await expect(items.nth(0)).toContainText('Backlog → In Progress');
+  await expect(items.nth(0).getByRole('listitem')).toHaveText(['Assigns you (ada)']);
+  await expect(items.nth(1)).toHaveAttribute('data-review-card', '3');
+  await expect(items.nth(1)).toContainText('#3 Write the importer');
+  await expect(items.nth(1)).toContainText('Todo → Done');
+  await expect(items.nth(1).getByRole('listitem')).toHaveText(['Closes the issue as completed', 'Removes label status:todo']);
+
+  await review(page).getByRole('button', { name: 'Cancel' }).click();
+  await expect(review(page)).toHaveCount(0);
+  await expect(page.getByText('2 staged changes')).toBeVisible();
+  expect(posts).toEqual([]);
+});
+
+test('confirming two staged cards sends one update each in issue-number order and clears the staged count (R3, R4)', async ({ page }) => {
+  const { posts } = await setup(page);
+  const finished: string[] = [];
+  const sent = await mockUpdates(page, async (route, update) => {
+    finished.push(`request ${update.number}`);
+    // Holds the first answer back, so a second send that did not wait for it would be recorded before it.
+    if (update.number === 3) await new Promise(resolve => setTimeout(resolve, 300));
+    finished.push(`answer ${update.number}`);
+    await route.fulfill({ status: 201, json: operation(update.number, 'succeeded') });
+  });
+  await page.goto('/workspace/1?tab=board');
+  // Staged highest first. As text, 12 would also sort before 3.
+  await stageStatus(page, 12, 'Todo');
+  await stageStatus(page, 3, 'In Progress');
+  await confirmSave(page);
+
+  await expect(page.getByText('0 staged changes')).toBeVisible();
+  await expect(review(page)).toHaveCount(0);
+  await expect(saveButton(page)).toBeDisabled();
+  expect(finished).toEqual(['request 3', 'answer 3', 'request 12', 'answer 12']);
+  expect(sent.map(update => update.body)).toEqual([
+    { labels: { add: ['status:in-progress'], remove: ['status:todo'] }, expect: { status: 'todo', assignees: ['alex'], statusLabels: ['status:todo'] } },
+    { labels: { add: ['status:todo'] }, expect: { status: 'backlog', assignees: [], statusLabels: [] } },
+  ]);
+  for (const update of sent) expect(update.key).toMatch(/^[A-Za-z0-9_.:-]{1,128}$/);
+  expect(sent[0].key).not.toBe(sent[1].key);
+  expect(await boardKeys(page)).toEqual([]);
+  expect(posts).toHaveLength(2);
+});
+
+test('a changed_on_github response marks the card Changed on GitHub, with no Board read before the send (R5)', async ({ page }) => {
+  await setup(page);
+  const events: string[] = [];
+  page.on('request', request => {
+    const path = new URL(request.url()).pathname;
+    if (path === '/graphql' && String(request.postDataJSON().query).startsWith('query RepositoryBoard')) events.push('board read');
+    else if (path.startsWith('/api/repositories/1/issues/')) events.push(`${request.method()} ${path}`);
+  });
+  const sent = await mockUpdates(page, route => route.fulfill({
+    status: 409,
+    json: { current: { state: 'open', labels: ['status:review'], assignees: ['sam'], status: 'in_review', updatedAt: '2026-11-25T11:00:00Z' } },
+  }));
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  await saveButton(page).click();
+  await expect(review(page)).toBeVisible();
+  events.length = 0;
+  await review(page).getByRole('button', { name: 'Confirm' }).click();
+
+  await expect(card(page, 3)).toContainText('Changed on GitHub');
+  await expect(review(page)).toHaveCount(0);
+  // The Board is read again only after the send.
+  await expect.poll(() => events).toEqual(['POST /api/repositories/1/issues/3/updates', 'board read']);
+  expect(sent).toHaveLength(1);
+  expect(await storedCard(page, 3)).toMatchObject({ phase: 'changed', request: null, snapshot: { status: 'in_review', assignees: ['sam'] }, target: { status: 'in_progress' } });
+  await expect(saveButton(page)).toBeDisabled();
+});
+
+test('a not-recorded response leaves the card Failed, and saving it again sends a new Idempotency-Key (R6)', async ({ page }) => {
+  await setup(page);
+  const sent = await mockUpdates(page, route => route.fulfill({
+    status: 503, contentType: 'text/plain', headers: { 'RepoOrbit-Write-Disposition': 'not-recorded' }, body: 'GitHub access could not be verified right now.',
+  }));
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  await confirmSave(page);
+
+  await expect(column(page, 'Todo').locator('[data-issue-card="3"]')).toContainText('Failed · keeps In Progress');
+  await expect(card(page, 3)).toHaveAttribute('draggable', 'true');
+  await expect(saveButton(page)).toBeDisabled();
+  expect(await storedCard(page, 3)).toMatchObject({ phase: 'failed', request: null, operationId: null });
+  expect(sent).toHaveLength(1);
+
+  // A failed card is saved again by staging it again.
+  await card(page, 3).dragTo(column(page, 'In Review'), { steps: 15 });
+  await expect(card(page, 3)).toContainText('Staged · from Todo');
+  await confirmSave(page);
+
+  await expect(card(page, 3)).toContainText('Failed · keeps In Review');
+  expect(sent).toHaveLength(2);
+  expect(sent[0].key).toBeTruthy();
+  expect(sent[1].key).toBeTruthy();
+  expect(sent[1].key).not.toBe(sent[0].key);
+});
+
+test('an unknown card with an operation id is locked and Recheck calls the recheck route (R7)', async ({ page }) => {
+  await setup(page);
+  const sent = await mockUpdates(page, route => route.fulfill({ status: 202, json: operation(3, 'unknown', 77) }));
+  const rechecks: Record<string, unknown>[] = [];
+  await page.route('**/api/write-operations/77/recheck', route => {
+    rechecks.push(route.request().postDataJSON());
+    return route.fulfill({ status: 200, json: operation(3, 'succeeded', 77) });
+  });
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  await confirmSave(page);
+
+  await expect(column(page, 'In Progress').locator('[data-issue-card="3"]')).toContainText('Unknown · from Todo');
+  await expect(card(page, 3)).toHaveAttribute('draggable', 'false');
+  await expect(saveButton(page)).toBeDisabled();
+  const drawer = await openDrawer(page, 3);
+  await expect(drawer.getByRole('radio', { name: 'Done' })).toBeDisabled();
+  await expect(drawer.getByRole('button', { name: 'Discard' })).toBeDisabled();
+  await expect(drawer.getByRole('button', { name: 'Check recorded status' })).toHaveCount(0);
+  expect(rechecks).toEqual([]);
+  await drawer.getByRole('button', { name: 'Recheck' }).click();
+
+  await expect(drawer.getByRole('region', { name: 'Staged change' })).toHaveCount(0);
+  expect(rechecks).toEqual([{ issueNumber: 3 }]);
+  expect(sent).toHaveLength(1);
+  expect(await boardKeys(page)).toEqual([]);
+});
+
+test('an unknown card with no operation id is locked and Check recorded status resends under the same Idempotency-Key (R7)', async ({ page }) => {
+  await setup(page);
+  let answered = false;
+  const sent = await mockUpdates(page, route => {
+    if (answered) return route.fulfill({ status: 200, json: operation(3, 'succeeded') });
+    answered = true;
+    return route.fulfill({ status: 502, contentType: 'text/plain', headers: { 'RepoOrbit-Write-Disposition': 'possibly-recorded' }, body: 'No reliable answer from GitHub.' });
+  });
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  await confirmSave(page);
+
+  await expect(column(page, 'In Progress').locator('[data-issue-card="3"]')).toContainText('Unknown · from Todo');
+  await expect(card(page, 3)).toHaveAttribute('draggable', 'false');
+  await expect(saveButton(page)).toBeDisabled();
+  const stored = await storedCard(page, 3);
+  expect(stored).toMatchObject({ phase: 'unknown', operationId: null, request: { idempotencyKey: sent[0].key } });
+  expect(Date.now() - Date.parse(stored.attemptedAt)).toBeLessThan(60_000);
+
+  const drawer = await openDrawer(page, 3);
+  await expect(drawer.getByRole('radio', { name: 'Done' })).toBeDisabled();
+  await expect(drawer.getByRole('button', { name: 'Discard' })).toBeDisabled();
+  await expect(drawer.getByRole('button', { name: 'Recheck' })).toHaveCount(0);
+  expect(sent).toHaveLength(1);
+  await drawer.getByRole('button', { name: 'Check recorded status' }).click();
+
+  await expect(drawer.getByRole('region', { name: 'Staged change' })).toHaveCount(0);
+  expect(sent).toHaveLength(2);
+  expect(sent[1].key).toBe(sent[0].key);
+  expect(sent[1].body).toEqual(sent[0].body);
+  expect(await boardKeys(page)).toEqual([]);
+});
+
+for (const [change, alter] of [
+  ['removed', null],
+  ['changed', { status: 'done', assigneesAdd: [], assigneesRemove: [] }],
+] as const) {
+  test(`a card whose stored entry is ${change} after the review is not sent (R9)`, async ({ page }) => {
+    await setup(page);
+    const sent = await mockUpdates(page);
+    await page.goto('/workspace/1?tab=board');
+    await stageStatus(page, 3, 'In Progress');
+    await stageStatus(page, 12, 'Todo');
+    await saveButton(page).click();
+    await expect(review(page).locator('[data-review-card]')).toHaveCount(2);
+    // A same-tab write fires no storage event, so the open review still shows card 3 as it was.
+    await page.evaluate(([key, target]) => {
+      if (target === null) return localStorage.removeItem(key);
+      localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key)!), target }));
+    }, ['repoorbit:issue-draft:real:ada:1:board:3', alter] as const);
+    await expect(review(page).locator('[data-review-card="3"]')).toContainText('Todo → In Progress');
+    await review(page).getByRole('button', { name: 'Confirm' }).click();
+
+    await expect(review(page)).toHaveCount(0);
+    expect(sent.map(update => update.number)).toEqual([12]);
+    if (alter === null) {
+      await expect(page.getByText('0 staged changes')).toBeVisible();
+      expect(await storedCard(page, 3)).toBeNull();
+    } else {
+      await expect(page.getByText('1 staged change')).toBeVisible();
+      expect(await storedCard(page, 3)).toMatchObject({ phase: 'staged', target: alter, request: null });
+    }
+  });
+}
+
+test('the request and attemptedAt are in browser storage before the update request is observed', async ({ page }) => {
+  await setup(page);
+  // Snapshots each card's storage entry at the instant the app calls fetch for its update, before anything is sent.
+  await page.addInitScript(() => {
+    const send = window.fetch.bind(window);
+    const storedAtSend: unknown[] = [];
+    Object.assign(window, { storedAtSend });
+    window.fetch = (input, init) => {
+      const number = /\/issues\/(\d+)\/updates$/.exec(String(input))?.[1];
+      if (number) storedAtSend.push(JSON.parse(localStorage.getItem(`repoorbit:issue-draft:real:ada:1:board:${number}`) ?? 'null'));
+      return send(input, init);
+    };
+  });
+  const sent = await mockUpdates(page);
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  await stageStatus(page, 12, 'Todo');
+  const before = Date.now();
+  await confirmSave(page);
+  await expect(page.getByText('0 staged changes')).toBeVisible();
+
+  const atSend = await page.evaluate(() => (window as unknown as { storedAtSend: Record<string, unknown>[] }).storedAtSend);
+  expect(sent).toHaveLength(2);
+  expect(atSend).toHaveLength(2);
+  sent.forEach((update, i) => {
+    // A send in flight is stored as unknown, so a reload during it leaves the card locked.
+    expect(atSend[i]).toMatchObject({ number: update.number, phase: 'unknown', operationId: null });
+    expect(atSend[i].request).toEqual({ draft: update.body, idempotencyKey: update.key });
+    const attemptedAt = Date.parse(String(atSend[i].attemptedAt));
+    expect(attemptedAt).toBeGreaterThanOrEqual(before);
+    expect(attemptedAt).toBeLessThanOrEqual(Date.now());
+  });
+});
+
+for (const { state, badge, columnName, draggable } of [
+  { state: 'failed', badge: 'Failed · keeps In Progress', columnName: 'Todo', draggable: 'true' },
+  { state: 'unknown', badge: 'Unknown · from Todo', columnName: 'In Progress', draggable: 'false' },
+] as const) {
+  test(`a resolved response with operation state ${state} shows that state, not success`, async ({ page }) => {
+    await setup(page);
+    const sent = await mockUpdates(page, route => route.fulfill({ status: 201, json: operation(3, state, 88) }));
+    await page.goto('/workspace/1?tab=board');
+    await stageStatus(page, 3, 'In Progress');
+    await confirmSave(page);
+
+    await expect(review(page)).toHaveCount(0);
+    await expect(column(page, columnName).locator('[data-issue-card="3"]')).toContainText(badge);
+    await expect(card(page, 3)).toHaveAttribute('draggable', draggable);
+    expect(await storedCard(page, 3)).toMatchObject({ phase: state, operationId: 88 });
+    expect(sent).toHaveLength(1);
+  });
+}
