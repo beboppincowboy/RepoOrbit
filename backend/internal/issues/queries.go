@@ -13,6 +13,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/issues/domain"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
@@ -203,8 +204,8 @@ func (s *Service) statusLabelState(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		exists, err := mapConcurrent(r.Context(), statusLabels, func(ctx context.Context, l statusLabel) (bool, error) {
-			return s.GitHub.LabelExists(ctx, token, d.Repo.FullName, l.name)
+		exists, err := mapConcurrent(r.Context(), statusLabels, func(ctx context.Context, l domain.StatusLabel) (bool, error) {
+			return s.GitHub.LabelExists(ctx, token, d.Repo.FullName, l.Name)
 		})
 		if err != nil {
 			s.upstream(w, r.Context(), userID, err)
@@ -212,7 +213,7 @@ func (s *Service) statusLabelState(w http.ResponseWriter, r *http.Request) {
 		}
 		out.Labels = make([]label, len(statusLabels))
 		for i, l := range statusLabels {
-			out.Labels[i] = label{l.name, exists[i]}
+			out.Labels[i] = label{l.Name, exists[i]}
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
