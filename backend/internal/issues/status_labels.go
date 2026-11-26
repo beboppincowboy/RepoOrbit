@@ -13,38 +13,11 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
+	"github.com/repoorbit/repoorbit/backend/internal/issues/domain"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
-type statusLabel struct{ name, color string }
-
-var statusLabels = []statusLabel{
-	{"status:todo", "c5def5"},
-	{"status:in-progress", "fbca04"},
-	{"status:review", "0e8a16"},
-}
-
-var boardStates = []string{"backlog", "todo", "in_progress", "in_review", "done"}
-
-func statusRank(label string) int {
-	for i, l := range statusLabels {
-		if strings.ToLower(label) == l.name {
-			return i + 1
-		}
-	}
-	return 0
-}
-
-func boardStatus(state string, labels []string) string {
-	if state == "closed" {
-		return boardStates[len(boardStates)-1]
-	}
-	top := 0
-	for _, l := range labels {
-		top = max(top, statusRank(l))
-	}
-	return boardStates[top]
-}
+var statusLabels = domain.StatusLabels
 
 type statusLabelsDraft struct {
 	Labels []string `json:"labels"`
@@ -53,7 +26,7 @@ type statusLabelsDraft struct {
 const recheckGrace = 2 * time.Minute
 
 func canChangeStatusLabels(r githubapp.Repo) bool {
-	return writable(r) && (r.Permissions.Admin || r.Permissions.Maintain)
+	return domain.CanChangeStatusLabels(domainRepo(r))
 }
 
 // enableStatusLabels answers POST /api/repositories/{id}/status-labels (Idempotency-Key, body {}): a reviewed
@@ -68,7 +41,7 @@ func (s *Service) enableStatusLabels(w http.ResponseWriter, r *http.Request) {
 	}
 	d := &statusLabelsDraft{}
 	for _, l := range statusLabels {
-		d.Labels = append(d.Labels, l.name)
+		d.Labels = append(d.Labels, l.Name)
 	}
 	s.submit(sw, r, command{kind: "status_labels", draft: d, allowed: canChangeStatusLabels})
 }
@@ -116,12 +89,12 @@ func (s *Service) ensureStatusLabels(ctx context.Context, userID int64, token, f
 	out := outcome{}
 	answered := true
 	for _, l := range statusLabels {
-		err := s.GitHub.CreateLabel(ctx, token, fullName, l.name, l.color)
+		err := s.GitHub.CreateLabel(ctx, token, fullName, l.Name, l.Color)
 		var api *githubapp.APIError
 		if errors.As(err, &api) && api.Status == http.StatusUnprocessableEntity {
 			err = nil
 		} else if err == nil {
-			out.Created = append(out.Created, l.name)
+			out.Created = append(out.Created, l.Name)
 		}
 		if err != nil {
 			s.revokeIfUnauthorized(ctx, userID, err)
@@ -140,8 +113,8 @@ func (s *Service) ensureStatusLabels(ctx context.Context, userID int64, token, f
 
 func (s *Service) readStatusLabels(ctx context.Context, token, fullName string, out outcome) (string, outcome) {
 	out.Unapplied = nil
-	exists, err := mapConcurrent(ctx, statusLabels, func(ctx context.Context, l statusLabel) (bool, error) {
-		return s.GitHub.LabelExists(ctx, token, fullName, l.name)
+	exists, err := mapConcurrent(ctx, statusLabels, func(ctx context.Context, l domain.StatusLabel) (bool, error) {
+		return s.GitHub.LabelExists(ctx, token, fullName, l.Name)
 	})
 	if err != nil {
 		_, msg := classify(err)
@@ -150,10 +123,10 @@ func (s *Service) readStatusLabels(ctx context.Context, token, fullName string, 
 	}
 	for i, l := range statusLabels {
 		if !exists[i] {
-			out.Unapplied = append(out.Unapplied, "create label "+l.name)
+			out.Unapplied = append(out.Unapplied, "create label "+l.Name)
 		}
 	}
-	return resolved(out), out
+	return domain.Resolved(out), out
 }
 
 func (s *Service) finishStatusLabels(ctx context.Context, opID, repoID int64, snap accessfence.Snapshot, state string, out outcome) error {

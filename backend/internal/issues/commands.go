@@ -6,20 +6,16 @@ package issues
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -30,15 +26,11 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
+	"github.com/repoorbit/repoorbit/backend/internal/issues/domain"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
 const (
-	maxTitle = 256   // GitHub's title limit, in characters
-	maxBody  = 65536 // GitHub's body limit, in characters
-	maxItems = 10    // labels or assignees per list; GitHub allows at most 10 assignees
-	maxLabel = 50    // GitHub's label name limit
-
 	headerWriteDisposition           = "RepoOrbit-Write-Disposition"
 	writeDispositionNotRecorded      = "not-recorded"
 	writeDispositionPossiblyRecorded = "possibly-recorded"
@@ -61,11 +53,6 @@ func (sw *submitWriter) WriteHeader(code int) {
 	}
 	sw.ResponseWriter.WriteHeader(code)
 }
-
-var (
-	loginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
-	keyPattern   = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,128}$`)
-)
 
 // Service serves the issue write API. Mount Register's routes behind auth.Handler.Protect (Origin + CSRF checks).
 type Service struct {
@@ -97,54 +84,11 @@ func (s *Service) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/repositories/{id}/status-labels", s.disableStatusLabels)
 }
 
-type createDraft struct {
-	Title     string   `json:"title"`
-	Body      string   `json:"body"`
-	Labels    []string `json:"labels"`
-	Assignees []string `json:"assignees"`
-}
-
-type delta struct {
-	Add    []string `json:"add"`
-	Remove []string `json:"remove"`
-}
-
-type updateDraft struct {
-	Labels    delta        `json:"labels"`
-	Assignees delta        `json:"assignees"`
-	State     string       `json:"state"`
-	Expect    *expectation `json:"expect,omitempty"`
-}
-
-type expectation struct {
-	Status       string   `json:"status"`
-	Assignees    []string `json:"assignees"`
-	StatusLabels []string `json:"statusLabels"`
-}
-
-type issueView struct {
-	Number    int64    `json:"number"`
-	URL       string   `json:"url"`
-	Title     string   `json:"title"`
-	State     string   `json:"state"`
-	Labels    []string `json:"labels"`
-	Assignees []string `json:"assignees"`
-}
-
-// outcome is what GitHub actually did. Unapplied lists requested changes the confirmed issue does not show, each as
-// "add label X", "remove label X", "add assignee X", "remove assignee X" or "state open|closed" (or one fixed
-// sentence when a wiped create's labels and assignees cannot be verified); for a status_labels operation, "create
-// label X" for each status label the repository still lacks. AllStepsAnswered (updates only) means every
-// step got a definite answer (2xx, 4xx, or failed before it was sent), so nothing of the update can still land and a
-// recheck may fail it. Once the draft is wiped the stored outcome is redacted instead, by SQL redacted_write_outcome, to
-// {issue: {number, url, state}, unappliedCount, error, redacted: true}; clients must accept both shapes.
-type outcome struct {
-	Issue            *issueView `json:"issue,omitempty"`
-	Unapplied        []string   `json:"unapplied,omitempty"`
-	Created          []string   `json:"created,omitempty"`
-	Error            string     `json:"error,omitempty"`
-	AllStepsAnswered bool       `json:"allStepsAnswered,omitempty"`
-}
+type createDraft = domain.CreateDraft
+type updateDraft = domain.UpdateDraft
+type delta = domain.Delta
+type issueView = domain.IssueView
+type outcome = domain.Outcome
 
 type opView struct {
 	ID           int64           `json:"id"`
@@ -172,114 +116,13 @@ func decodeStrict(w http.ResponseWriter, r *http.Request, out any) error {
 	return nil
 }
 
-func names(list []string, what string, valid func(string) bool) ([]string, error) {
-	if len(list) > maxItems {
-		return nil, fmt.Errorf("at most %d %ss", maxItems, what)
-	}
-	for i, v := range list {
-		if !valid(v) {
-			return nil, fmt.Errorf("invalid %s %q", what, v)
-		}
-		if slices.IndexFunc(list[:i], func(o string) bool { return strings.EqualFold(o, v) }) >= 0 {
-			return nil, fmt.Errorf("duplicate %s %q", what, v)
-		}
-	}
-	if len(list) == 0 {
-		return nil, nil
-	}
-	return list, nil
+func domainRepo(r githubapp.Repo) domain.Repo {
+	p := r.Permissions
+	return domain.Repo{HasIssues: r.HasIssues, Archived: r.Archived, Permissions: domain.RepoPermissions{Admin: p.Admin, Maintain: p.Maintain, Push: p.Push, Triage: p.Triage, Pull: p.Pull}}
 }
-
-func validLabel(v string) bool {
-	return strings.TrimSpace(v) == v && v != "" && utf8.RuneCountInString(v) <= maxLabel
-}
-func validLogin(v string) bool { return loginPattern.MatchString(v) }
-
-func (d *createDraft) validate() (err error) {
-	d.Title = strings.TrimSpace(d.Title)
-	if d.Title == "" || utf8.RuneCountInString(d.Title) > maxTitle {
-		return fmt.Errorf("title must be 1 to %d characters", maxTitle)
-	}
-	if utf8.RuneCountInString(d.Body) > maxBody {
-		return fmt.Errorf("body must be at most %d characters", maxBody)
-	}
-	if d.Labels, err = names(d.Labels, "label", validLabel); err != nil {
-		return err
-	}
-	d.Assignees, err = names(d.Assignees, "assignee", validLogin)
-	return err
-}
-
-func (d *updateDraft) validate() (err error) {
-	for _, l := range []*[]string{&d.Labels.Add, &d.Labels.Remove} {
-		if *l, err = names(*l, "label", validLabel); err != nil {
-			return err
-		}
-	}
-	for _, l := range []*[]string{&d.Assignees.Add, &d.Assignees.Remove} {
-		if *l, err = names(*l, "assignee", validLogin); err != nil {
-			return err
-		}
-	}
-	for _, x := range []delta{d.Labels, d.Assignees} {
-		for _, v := range x.Add {
-			if slices.ContainsFunc(x.Remove, func(o string) bool { return strings.EqualFold(o, v) }) {
-				return fmt.Errorf("%q is both added and removed", v)
-			}
-		}
-	}
-	if d.State != "" && d.State != "open" && d.State != "closed" {
-		return errors.New(`state must be "open" or "closed"`)
-	}
-	if len(d.Labels.Add)+len(d.Labels.Remove)+len(d.Assignees.Add)+len(d.Assignees.Remove) == 0 && d.State == "" {
-		return errors.New("no change requested")
-	}
-	if e := d.Expect; e != nil {
-		if !slices.Contains(boardStates, e.Status) {
-			return fmt.Errorf("expect.status must be one of %s", strings.Join(boardStates, ", "))
-		}
-		if e.Assignees, err = names(e.Assignees, "expected assignee", validLogin); err != nil {
-			return err
-		}
-		e.StatusLabels, err = names(e.StatusLabels, "expected status label", func(v string) bool { return statusRank(v) > 0 })
-		return err
-	}
-	return nil
-}
-
-func (e *expectation) matches(issue *issueView) bool {
-	sameSet := func(a, b []string) bool {
-		within := func(x, y []string) bool { return !slices.ContainsFunc(x, func(v string) bool { return !has(y, v) }) }
-		return within(a, b) && within(b, a)
-	}
-	if boardStatus(issue.State, issue.Labels) != e.Status || !sameSet(issue.Assignees, e.Assignees) {
-		return false
-	}
-	live := slices.DeleteFunc(slices.Clone(issue.Labels), func(l string) bool { return statusRank(l) == 0 })
-	return issue.State == "closed" || sameSet(live, e.StatusLabels)
-}
-
-func contentHash(title, body string) []byte {
-	norm := func(s string) string { return strings.ReplaceAll(strings.TrimSpace(s), "\r\n", "\n") }
-	sum := sha256.Sum256([]byte(norm(title) + "\x00" + norm(body)))
-	return sum[:]
-}
-
-// Per-action rules follow GitHub: anyone who can read may open a plain issue; labels or assignees on a new issue need
-// push (GitHub silently drops them otherwise); changing labels or assignees later and closing or reopening need
-// triage. Archived repositories and repositories without issues accept no writes.
-func canPush(r githubapp.Repo) bool { p := r.Permissions; return p.Push || p.Maintain || p.Admin }
-func canTriage(r githubapp.Repo) bool {
-	return r.Permissions.Triage || canPush(r)
-}
-func writable(r githubapp.Repo) bool  { return r.HasIssues && !r.Archived }
-func canCreate(r githubapp.Repo) bool { return writable(r) && (r.Permissions.Pull || canTriage(r)) }
-func canCreateWithMetadata(r githubapp.Repo) bool {
-	return canCreate(r) && canPush(r)
-}
-func canManage(r githubapp.Repo) bool {
-	return writable(r) && canTriage(r)
-}
+func canCreate(r githubapp.Repo) bool             { return domain.CanCreate(domainRepo(r)) }
+func canCreateWithMetadata(r githubapp.Repo) bool { return domain.CanCreateWithMetadata(domainRepo(r)) }
+func canManage(r githubapp.Repo) bool             { return domain.CanManage(domainRepo(r)) }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -438,7 +281,7 @@ func (s *Service) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(sw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := d.validate(); err != nil {
+	if err := d.Validate(); err != nil {
 		http.Error(sw, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -446,7 +289,7 @@ func (s *Service) create(w http.ResponseWriter, r *http.Request) {
 	if len(d.Labels)+len(d.Assignees) > 0 {
 		allowed = canCreateWithMetadata
 	}
-	s.submit(sw, r, command{kind: "create", draft: &d, contentHash: contentHash(d.Title, d.Body), hasMetadata: len(d.Labels)+len(d.Assignees) > 0, assignees: d.Assignees, allowed: allowed})
+	s.submit(sw, r, command{kind: "create", draft: &d, contentHash: domain.ContentHash(d.Title, d.Body), hasMetadata: len(d.Labels)+len(d.Assignees) > 0, assignees: d.Assignees, allowed: allowed})
 }
 
 func (s *Service) update(w http.ResponseWriter, r *http.Request) {
@@ -461,7 +304,7 @@ func (s *Service) update(w http.ResponseWriter, r *http.Request) {
 		http.Error(sw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := d.validate(); err != nil {
+	if err := d.Validate(); err != nil {
 		http.Error(sw, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -547,7 +390,7 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 		return
 	}
 	key := r.Header.Get("Idempotency-Key")
-	if !keyPattern.MatchString(key) {
+	if !domain.ValidKey(key) {
 		http.Error(sw, "an Idempotency-Key header of 1 to 128 letters, digits, or ._:- is required", http.StatusBadRequest)
 		return
 	}
@@ -556,8 +399,7 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 		s.internal(sw, err)
 		return
 	}
-	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%d\x00%d\x00%s", c.kind, repoID, c.issueNumber, draft))
-	hash := sum[:]
+	hash := domain.RequestHash(c.kind, repoID, c.issueNumber, draft)
 
 	d, snap, ok := s.checkedAccess(sw, r, userID, repoID)
 	if !ok {
@@ -600,9 +442,9 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 			}
 		}
 		if e := c.draft.(*updateDraft).Expect; e != nil {
-			if live := viewIssue(issue); !e.matches(live) {
+			if live := viewIssue(issue); !e.Matches(live) {
 				writeJSON(sw, http.StatusConflict, map[string]any{"error": "changed on GitHub", "current": map[string]any{"state": live.State,
-					"labels": live.Labels, "assignees": live.Assignees, "status": boardStatus(live.State, live.Labels), "updatedAt": issue.UpdatedAt}})
+					"labels": live.Labels, "assignees": live.Assignees, "status": domain.BoardStatus(live.State, live.Labels), "updatedAt": issue.UpdatedAt}})
 				return
 			}
 		}
@@ -726,64 +568,33 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 	s.respond(sw, ctx, http.StatusCreated, userID, opID, snap)
 }
 
+// classify maps a GitHub client error onto a domain error kind and returns domain.Classify's state and reason.
 func classify(err error) (string, string) {
 	if errors.Is(err, githubapp.ErrNotSent) {
-		return "failed", "the request could not be prepared; nothing was sent to GitHub"
+		return domain.Classify(domain.NotSent, 0)
 	}
 	var api *githubapp.APIError
-	if errors.As(err, &api) && api.Status >= 400 && api.Status < 500 {
-		return "failed", fmt.Sprintf("GitHub rejected the request (status %d)", api.Status)
+	switch {
+	case !errors.As(err, &api):
+		return domain.Classify(domain.OtherError, 0)
+	case api.Unauthorized():
+		return domain.Classify(domain.Unauthorized, api.Status)
+	case api.NotFound():
+		return domain.Classify(domain.NotFound, api.Status)
 	}
-	if api != nil {
-		return "unknown", fmt.Sprintf("GitHub answered status %d; the change may or may not have been applied", api.Status)
-	}
-	return "unknown", "no reliable answer from GitHub; the change may or may not have been applied"
+	return domain.Classify(domain.HTTPError, api.Status)
 }
 
 func viewIssue(issue githubapp.Issue) *issueView {
-	v := &issueView{Number: issue.Number, URL: issue.HTMLURL, Title: issue.Title, State: issue.State, Labels: []string{}, Assignees: []string{}}
-	for _, l := range issue.Labels {
-		v.Labels = append(v.Labels, l.Name)
+	labels := make([]string, len(issue.Labels))
+	for i, l := range issue.Labels {
+		labels[i] = l.Name
 	}
-	for _, a := range issue.Assignees {
-		v.Assignees = append(v.Assignees, a.Login)
+	assignees := make([]string, len(issue.Assignees))
+	for i, a := range issue.Assignees {
+		assignees[i] = a.Login
 	}
-	return v
-}
-
-func has(list []string, v string) bool {
-	return slices.ContainsFunc(list, func(o string) bool { return strings.EqualFold(o, v) })
-}
-
-func unapplied(issue *issueView, labels, assignees delta, state string) []string {
-	var out []string
-	for _, x := range []struct {
-		what    string
-		want    delta
-		current []string
-	}{{"label", labels, issue.Labels}, {"assignee", assignees, issue.Assignees}} {
-		for _, v := range x.want.Add {
-			if !has(x.current, v) {
-				out = append(out, "add "+x.what+" "+v)
-			}
-		}
-		for _, v := range x.want.Remove {
-			if has(x.current, v) {
-				out = append(out, "remove "+x.what+" "+v)
-			}
-		}
-	}
-	if state != "" && issue.State != state {
-		out = append(out, "state "+state)
-	}
-	return out
-}
-
-func resolved(out outcome) string {
-	if len(out.Unapplied) > 0 {
-		return "failed"
-	}
-	return "succeeded"
+	return domain.NewIssueView(issue.Number, issue.HTMLURL, issue.Title, issue.State, labels, assignees)
 }
 
 func (s *Service) sendCreate(ctx context.Context, userID int64, token, fullName string, d *createDraft) (string, outcome, *githubapp.Issue) {
@@ -794,8 +605,8 @@ func (s *Service) sendCreate(ctx context.Context, userID int64, token, fullName 
 		return state, outcome{Error: msg}, nil
 	}
 	out := outcome{Issue: viewIssue(issue)}
-	out.Unapplied = unapplied(out.Issue, delta{Add: d.Labels}, delta{Add: d.Assignees}, "")
-	return resolved(out), out, &issue
+	out.Unapplied = domain.Unapplied(out.Issue, delta{Add: d.Labels}, delta{Add: d.Assignees}, "")
+	return domain.Resolved(out), out, &issue
 }
 
 // applyUpdate applies add/remove steps (each idempotent), stopping at the first error; readBack then decides the
@@ -803,29 +614,22 @@ func (s *Service) sendCreate(ctx context.Context, userID int64, token, fullName 
 // first step and a close the last, so a change that reopens or closes an issue never adds a label while it is still
 // closed, where the app's status label cleanup could strip it; a rejected reopen applies nothing.
 func (s *Service) applyUpdate(ctx context.Context, userID int64, token, fullName string, number int64, d *updateDraft) outcome {
-	steps := []func() error{}
-	setState := func() error { return s.GitHub.SetIssueState(ctx, token, fullName, number, d.State) }
-	if d.State == "open" {
-		steps = append(steps, setState)
-	}
-	if len(d.Labels.Add) > 0 {
-		steps = append(steps, func() error { return s.GitHub.AddLabels(ctx, token, fullName, number, d.Labels.Add) })
-	}
-	for _, l := range d.Labels.Remove {
-		steps = append(steps, func() error { return s.GitHub.RemoveLabel(ctx, token, fullName, number, l) })
-	}
-	if len(d.Assignees.Remove) > 0 {
-		steps = append(steps, func() error { return s.GitHub.RemoveAssignees(ctx, token, fullName, number, d.Assignees.Remove) })
-	}
-	if len(d.Assignees.Add) > 0 {
-		steps = append(steps, func() error { return s.GitHub.AddAssignees(ctx, token, fullName, number, d.Assignees.Add) })
-	}
-	if d.State == "closed" {
-		steps = append(steps, setState)
-	}
 	out := outcome{AllStepsAnswered: true}
-	for _, step := range steps {
-		if err := step(); err != nil {
+	for _, step := range domain.PlanUpdate(*d) {
+		var err error
+		switch step.Kind {
+		case domain.Reopen, domain.Close:
+			err = s.GitHub.SetIssueState(ctx, token, fullName, number, d.State)
+		case domain.AddLabels:
+			err = s.GitHub.AddLabels(ctx, token, fullName, number, step.Names)
+		case domain.RemoveLabel:
+			err = s.GitHub.RemoveLabel(ctx, token, fullName, number, step.Names[0])
+		case domain.RemoveAssignees:
+			err = s.GitHub.RemoveAssignees(ctx, token, fullName, number, step.Names)
+		case domain.AddAssignees:
+			err = s.GitHub.AddAssignees(ctx, token, fullName, number, step.Names)
+		}
+		if err != nil {
 			s.revokeIfUnauthorized(ctx, userID, err)
 			var state string
 			state, out.Error = classify(err)
@@ -844,11 +648,11 @@ func (s *Service) readBack(ctx context.Context, token, fullName string, number i
 		return "unknown", out, nil, err
 	}
 	out.Issue = viewIssue(issue)
-	out.Unapplied = unapplied(out.Issue, d.Labels, d.Assignees, d.State)
+	out.Unapplied = domain.Unapplied(out.Issue, d.Labels, d.Assignees, d.State)
 	if len(out.Unapplied) > 0 && !out.AllStepsAnswered {
 		return "unknown", out, &issue, nil
 	}
-	return resolved(out), out, &issue, nil
+	return domain.Resolved(out), out, &issue, nil
 }
 
 var errAlreadyLinked = errors.New("issue already linked to another operation")
@@ -961,7 +765,7 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 		if row.Kind == "create" {
 			if issue.PullRequest != nil || issue.User == nil || issue.User.ID != row.ActorGithubID ||
 				!strings.EqualFold(issue.RepoURL, s.GitHub.APIURL+"/repos/"+d.Repo.FullName) ||
-				!bytes.Equal(contentHash(issue.Title, issue.Body), row.ContentHash) ||
+				!bytes.Equal(domain.ContentHash(issue.Title, issue.Body), row.ContentHash) ||
 				!row.SentAt.Valid || issue.CreatedAt.Before(row.SentAt.Time.Add(-sendSkew)) {
 				return "", outcome{}, nil, errMismatch
 			}
@@ -971,7 +775,7 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 				if err := json.Unmarshal(row.Draft, &draft); err != nil {
 					return "", outcome{}, nil, err
 				}
-				out.Unapplied = unapplied(out.Issue, delta{Add: draft.Labels}, delta{Add: draft.Assignees}, "")
+				out.Unapplied = domain.Unapplied(out.Issue, delta{Add: draft.Labels}, delta{Add: draft.Assignees}, "")
 			case row.HasRequestedMetadata:
 				out.Unapplied = []string{"requested labels or assignees (unverifiable: the draft was removed)"}
 			}
@@ -981,13 +785,13 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 			if row.Draft == nil || json.Unmarshal(row.Draft, &draft) != nil || json.Unmarshal(row.Outcome, &sent) != nil {
 				return "", outcome{}, nil, errMismatch
 			}
-			out.Unapplied = unapplied(out.Issue, draft.Labels, draft.Assignees, draft.State)
+			out.Unapplied = domain.Unapplied(out.Issue, draft.Labels, draft.Assignees, draft.State)
 			if len(out.Unapplied) > 0 && !sent.AllStepsAnswered {
 				return "", outcome{}, nil, errMismatch
 			}
 			out.Error, out.AllStepsAnswered = sent.Error, sent.AllStepsAnswered
 		}
-		return resolved(out), out, &issue, nil
+		return domain.Resolved(out), out, &issue, nil
 	})
 	switch {
 	case fetchErr != nil:
