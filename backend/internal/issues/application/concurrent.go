@@ -25,11 +25,17 @@ func MapConcurrent[T, R any](ctx context.Context, items []T, fn func(context.Con
 	slots := make(chan struct{}, maxConcurrentCalls)
 	for i, item := range items {
 		// Slots are taken in item order, so a failure cancels every item still waiting for one.
+		// A free slot always wins, so up to maxConcurrentCalls items run even after a sibling failed (a 401 among
+		// them still takes precedence); only an item that must wait for a slot is skipped once the batch is cancelled.
 		select {
 		case slots <- struct{}{}:
-		case <-ctx.Done():
-			errs[i] = ctx.Err()
-			continue
+		default:
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				errs[i] = ctx.Err()
+				continue
+			}
 		}
 		wg.Add(1)
 		go func(i int, item T) {
