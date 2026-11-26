@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
+	"github.com/repoorbit/repoorbit/backend/internal/issues/application"
 	"github.com/repoorbit/repoorbit/backend/internal/issues/domain"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
@@ -63,20 +63,12 @@ func (s *Service) disableStatusLabels(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "only Admin or Maintain users can turn status labels off", http.StatusForbidden)
 		return
 	}
-	err := db.InTx(r.Context(), s.Pool, func(tx pgx.Tx) error {
-		if current, err := snap.StillCurrent(r.Context(), tx); err != nil {
-			return err
-		} else if !current {
-			return errAccessMoved
-		}
-		_, err := s.Queries.WithTx(tx).DisableStatusLabels(r.Context(), repoID)
-		return err
-	})
+	moved, err := operationStore{s}.DisableStatusLabels(r.Context(), repoID, snap)
 	switch {
-	case errors.Is(err, errAccessMoved):
-		http.Error(w, "access changed; retry", http.StatusServiceUnavailable)
 	case err != nil:
 		s.internal(w, err)
+	case moved:
+		http.Error(w, "access changed; retry", http.StatusServiceUnavailable)
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}
@@ -113,7 +105,7 @@ func (s *Service) ensureStatusLabels(ctx context.Context, userID int64, token, f
 
 func (s *Service) readStatusLabels(ctx context.Context, token, fullName string, out outcome) (string, outcome) {
 	out.Unapplied = nil
-	exists, err := mapConcurrent(ctx, statusLabels, func(ctx context.Context, l domain.StatusLabel) (bool, error) {
+	exists, err := application.MapConcurrent(ctx, statusLabels, func(ctx context.Context, l domain.StatusLabel) (bool, error) {
 		return s.GitHub.LabelExists(ctx, token, fullName, l.Name)
 	})
 	if err != nil {
@@ -130,28 +122,7 @@ func (s *Service) readStatusLabels(ctx context.Context, token, fullName string, 
 }
 
 func (s *Service) finishStatusLabels(ctx context.Context, opID, repoID int64, snap accessfence.Snapshot, state string, out outcome) error {
-	return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
-		q := s.Queries.WithTx(tx)
-		if state == "succeeded" {
-			current, err := snap.StillCurrent(ctx, tx)
-			if err != nil {
-				return err
-			}
-			if !current {
-				state, out.Error = "unknown", "access changed before status labels could be turned on; recheck"
-			}
-		}
-		body, err := json.Marshal(out)
-		if err != nil {
-			return err
-		}
-		n, err := q.FinishWriteOperation(ctx, db.FinishWriteOperationParams{ID: opID, State: state, Outcome: body})
-		if err != nil || n == 0 || state != "succeeded" {
-			return err
-		}
-		_, err = q.EnableStatusLabels(ctx, db.EnableStatusLabelsParams{RepositoryID: repoID, OperationID: opID})
-		return err
-	})
+	return operationStore{s}.SettleStatusLabels(ctx, opID, repoID, snap, state, out)
 }
 
 func (s *Service) recheckStatusLabels(w http.ResponseWriter, r *http.Request, userID int64, row db.GetWriteOperationRow, d repositories.Decision, snap accessfence.Snapshot) {
@@ -173,7 +144,7 @@ func (s *Service) recheckStatusLabels(w http.ResponseWriter, r *http.Request, us
 	}
 	if state == "failed" && row.SentAt.Valid && time.Since(row.SentAt.Time) < recheckGrace {
 		if s.fenceHolds(w, ctx, snap) {
-			writeJSON(w, http.StatusConflict, s.view(row))
+			writeJSON(w, http.StatusConflict, s.view(toOperation(row)))
 		}
 		return
 	}

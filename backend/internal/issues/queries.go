@@ -13,6 +13,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/issues/application"
 	"github.com/repoorbit/repoorbit/backend/internal/issues/domain"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
@@ -22,10 +23,10 @@ var (
 	abandonedPendingRedactedOutcome = json.RawMessage(`{"error":"abandoned before sending; nothing was sent to GitHub","redacted":true}`)
 )
 
-func (s *Service) view(row db.GetWriteOperationRow) opView {
+func (s *Service) view(row application.Operation) opView {
 	state := row.State
 	rawOutcome := row.Outcome
-	if row.StalePending.Bool {
+	if row.StalePending {
 		state = "failed"
 		if len(row.Draft) == 0 {
 			rawOutcome = abandonedPendingRedactedOutcome
@@ -34,9 +35,9 @@ func (s *Service) view(row db.GetWriteOperationRow) opView {
 		}
 	}
 	v := opView{ID: row.ID, RepositoryID: row.RepositoryID, Kind: row.Kind, State: state, Draft: row.Draft, Outcome: rawOutcome,
-		Actor: row.ActorLogin, CreatedAt: row.CreatedAt.Time, UpdatedAt: row.UpdatedAt.Time}
-	if row.IssueNumber.Valid {
-		v.IssueNumber = &row.IssueNumber.Int64
+		Actor: row.ActorLogin, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	if row.IssueNumber != 0 {
+		v.IssueNumber = &row.IssueNumber
 	}
 	if row.Kind == "create" && state == "unknown" {
 		q := "is:issue author:" + row.ActorLogin
@@ -116,7 +117,7 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]opView, 0, len(rows)+len(appRows))
 	for _, row := range rows {
-		out = append(out, s.view(db.GetWriteOperationRow(row)))
+		out = append(out, s.view(toOperation(db.GetWriteOperationRow(row))))
 	}
 	for _, row := range appRows {
 		draft, _ := json.Marshal(map[string]string{"label": row.Label})
@@ -170,7 +171,7 @@ func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request, settleSt
 
 func (s *Service) get(w http.ResponseWriter, r *http.Request) {
 	if _, row, _, _, ok := s.loadOperation(w, r, false); ok {
-		writeJSON(w, http.StatusOK, s.view(row))
+		writeJSON(w, http.StatusOK, s.view(toOperation(row)))
 	}
 }
 
@@ -204,7 +205,7 @@ func (s *Service) statusLabelState(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		exists, err := mapConcurrent(r.Context(), statusLabels, func(ctx context.Context, l domain.StatusLabel) (bool, error) {
+		exists, err := application.MapConcurrent(r.Context(), statusLabels, func(ctx context.Context, l domain.StatusLabel) (bool, error) {
 			return s.GitHub.LabelExists(ctx, token, d.Repo.FullName, l.Name)
 		})
 		if err != nil {
