@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { IssueWriteError, recheckWriteOperation, submitIssueUpdate, type IssueUpdateDraft, type WriteOperation } from '../src/lib/api';
 import { loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard } from '../src/lib/board';
 import { saveBoardChanges, type BoardSaveOptions } from '../src/lib/board-save';
+import { mockWindowStorage } from './mocks';
 
 const viewer = 'user:ada';
 const repo = 'repo-1';
@@ -43,33 +44,16 @@ const save = (reviewed: BoardCard[], submit: BoardSaveOptions['submit'], onChang
   saveBoardChanges({ viewerKey: viewer, repositoryId: repo, reviewed, saver: ada, onChange, submit });
 
 test.describe('saveBoardChanges', () => {
-  const originalWindow = globalThis.window;
-  let refuseWrites = false;
-  let dropWrites = false;
+  let restoreWindow: () => void;
+  const storageOptions = { refuseWrites: false, dropWrites: false };
 
   test.beforeEach(() => {
-    refuseWrites = false;
-    dropWrites = false;
-    // Stored entries are own properties, as in the browser, so Object.keys lists them.
-    const localStorage = Object.create({
-      getItem(this: Record<string, string>, key: string): string | null {
-        return Object.prototype.hasOwnProperty.call(this, key) ? this[key] : null;
-      },
-      setItem(this: Record<string, string>, key: string, value: string): void {
-        if (refuseWrites) throw new Error('QuotaExceededError');
-        if (!dropWrites) this[key] = String(value);
-      },
-      removeItem(this: Record<string, string>, key: string): void {
-        delete this[key];
-      },
-    }) as Storage;
-    globalThis.window = { localStorage } as unknown as Window & typeof globalThis;
+    storageOptions.refuseWrites = false;
+    storageOptions.dropWrites = false;
+    restoreWindow = mockWindowStorage(storageOptions).restore;
   });
 
-  test.afterEach(() => {
-    if (originalWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
-    else globalThis.window = originalWindow;
-  });
+  test.afterEach(() => restoreWindow());
 
   test('happy path: two staged cards are sent one at a time in issue-number order and both leave the staged list', async () => {
     const reviewed = review(12, 3).reverse();
@@ -214,7 +198,7 @@ test.describe('saveBoardChanges', () => {
 
   test('edge: a card whose request cannot be stored is not sent and stays staged', async () => {
     const reviewed = review(3);
-    refuseWrites = true;
+    storageOptions.refuseWrites = true;
     const { sends, submit } = fakeSubmit();
     await save(reviewed, submit);
     expect(sends).toEqual([]);
@@ -223,7 +207,7 @@ test.describe('saveBoardChanges', () => {
 
   test('edge: a card whose storage write is silently dropped is not sent and stays staged', async () => {
     const reviewed = review(3);
-    dropWrites = true;
+    storageOptions.dropWrites = true;
     const { sends, submit } = fakeSubmit();
     await save(reviewed, submit);
     expect(sends).toEqual([]);

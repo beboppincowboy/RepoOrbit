@@ -3,26 +3,16 @@ import { QueryClient } from '@tanstack/react-query';
 import { logout, type ViewerSession } from '../src/lib/api';
 import { issueDraftStorageKey } from '../src/lib/drafts';
 import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified } from '../src/lib/selected-repositories';
+import { mockWindowStorage } from './mocks';
 
 const session: ViewerSession = { mode: 'real', user: { login: 'ada', demo: false }, csrfToken: null };
 
-function fakeStorage(): Storage {
-  return Object.create({
-    getItem(this: Record<string, string>, key: string) { return Object.prototype.hasOwnProperty.call(this, key) ? this[key] : null; },
-    setItem(this: Record<string, string>, key: string, value: string) { this[key] = String(value); },
-    removeItem(this: Record<string, string>, key: string) { delete this[key]; },
-  }) as Storage;
-}
-
 async function withWindow<T>(fn: (storage: Storage) => Promise<T> | T): Promise<T> {
-  const original = globalThis.window;
-  const storage = fakeStorage();
-  globalThis.window = { localStorage: storage } as unknown as Window & typeof globalThis;
+  const { storage, restore } = mockWindowStorage();
   try {
     return await fn(storage);
   } finally {
-    if (original === undefined) Reflect.deleteProperty(globalThis, 'window');
-    else globalThis.window = original;
+    restore();
   }
 }
 

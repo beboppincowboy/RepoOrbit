@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { BOARD_STATUSES, stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
-import { recoveryAction } from "@/lib/board-recovery";
+import { canDiscardBoardCard, recoveryAction } from "@/lib/board-recovery";
 import { confirmDisabled } from "@/lib/board-review";
 import type { BoardIssue, BoardStatus } from "@/lib/api";
 
@@ -64,6 +64,7 @@ export function TaskDrawer({ repositoryId, issueNumber, issue, card, github, ass
   const [recovering, setRecovering] = useState(false);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const action = card ? recoveryAction(card) : "none";
+  const canDiscard = card ? canDiscardBoardCard(card) : false;
 
   async function recover() {
     setRecovering(true);
@@ -137,7 +138,9 @@ export function TaskDrawer({ repositoryId, issueNumber, issue, card, github, ass
                 ? "This change may already be on GitHub. Recheck reads the issue again to confirm it."
                 : action === "resend"
                   ? "This change may already be on GitHub. Checking resends the same request under the same key, so GitHub is not asked to apply it twice."
-                  : "This change may already be on GitHub, and it can't be checked from here. The card stays locked."}</span>
+                  : canDiscard
+                    ? "This change may already be on GitHub. Check GitHub first, then discard."
+                    : "This change may already be on GitHub, and it can't be checked from here. The card stays locked."}</span>
               {action !== "none" && <>
                 {recoveryBlocked && <p role="status" className="m-0">{recoveryBlocked}</p>}
                 <Button size="sm" className="self-start" disabled={confirmDisabled({ blocked: recoveryBlocked, saving: busy })} aria-busy={recovering} onClick={() => void recover()}>
@@ -150,7 +153,7 @@ export function TaskDrawer({ repositoryId, issueNumber, issue, card, github, ass
               <Button variant="outline" size="sm" className="self-start" disabled={disabled || !issue?.status} onClick={() => onStage(card.target)}>Stage again</Button>
             </> : <span className="text-xs text-muted-foreground">Nothing is sent to GitHub until you save.</span>}
             {recoveryError && card.phase !== "staged" && <p role="alert" className="m-0 rounded-[10px] border border-destructive bg-destructive-soft px-3 py-2">{recoveryError}</p>}
-            <Button variant="outline" size="sm" className="self-start" disabled={card.phase === "pending" || card.phase === "unknown"} onClick={onDiscard}>Discard</Button>
+            <Button variant="outline" size="sm" className="self-start" disabled={!canDiscard} onClick={onDiscard}>Discard</Button>
           </section>
         )}
       </div>
