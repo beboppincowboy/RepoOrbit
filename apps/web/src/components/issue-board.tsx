@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
+import { BoardSaveReview } from "@/components/board-save-review";
 import { StatusSourceSetup } from "@/components/status-source-setup";
 import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
 import { BOARD_STATUSES, deriveChange, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardSaver, type BoardTarget } from "@/lib/board";
+import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from "@/lib/board-review";
 import { saveBoardChanges } from "@/lib/board-save";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type BoardStatus, type IssueCapabilities, type ViewerSession } from "@/lib/api";
 import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/lib/selected-repositories";
@@ -44,6 +46,18 @@ export function useBoardSave(viewerKey: string, repositoryId: string, saver: Boa
   };
 }
 
+// Whether a save started in this tab is still running. It outlives the Board, so one mounted again meanwhile stays busy.
+let saveRunning = false;
+const SAVE_RUNNING = "repoorbit:board-save-running";
+function setSaveRunning(running: boolean) {
+  saveRunning = running;
+  window.dispatchEvent(new Event(SAVE_RUNNING));
+}
+function subscribeSaveRunning(onChange: () => void) {
+  window.addEventListener(SAVE_RUNNING, onChange);
+  return () => window.removeEventListener(SAVE_RUNNING, onChange);
+}
+
 type IssueBoardProps = {
   session: ViewerSession;
   repositoryId: string;
@@ -69,6 +83,9 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   const [assignee, setAssignee] = useState("");
   const [label, setLabel] = useState("");
   const [text, setText] = useState("");
+  // The staged cards as they were when the review opened; null while it is closed.
+  const [reviewed, setReviewed] = useState<BoardCard[] | null>(null);
+  const saving = useSyncExternalStore(subscribeSaveRunning, () => saveRunning, () => false);
   useEffect(() => {
     const reload = () => setCards(loadBoardCards(viewerKey, repositoryId));
     window.addEventListener("storage", reload);
@@ -139,6 +156,20 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     return null;
   }
   const blocked = getBlockedReason();
+  const save = useBoardSave(viewerKey, repositoryId, saver, refetchBoard);
+  // A Board that stops showing its columns takes the review with it.
+  if (reviewed && !board?.statusLabels) setReviewed(null);
+
+  async function confirmSave() {
+    if (!reviewed || saveRunning || blocked) return;
+    setSaveRunning(true);
+    try {
+      await save(reviewed);
+    } finally {
+      setSaveRunning(false);
+      setReviewed(null);
+    }
+  }
 
   function stage(row: BoardIssue, target: BoardTarget) {
     const card = cardOf(row.number);
@@ -249,7 +280,8 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     </div>
   );
 
-  const staged = cards.filter(card => card.phase === "staged").length;
+  const stagedCards = reviewableCards(cards);
+  const staged = stagedCards.length;
   const select = (labelText: string, value: string, onChange: (value: string) => void, values: string[], all: string): ReactNode => (
     <select aria-label={labelText} value={value} onChange={e => onChange(e.target.value)} className={field}>
       <option value="">{all}</option>
@@ -301,7 +333,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
         {board?.statusLabels && (
           <div className="ml-auto flex items-center gap-2 text-xs">
             <span className={muted}>{staged === 1 ? "1 staged change" : `${staged} staged changes`} · nothing is sent to GitHub until you save</span>
-            <Button size="sm" disabled title="Reviewing and saving staged changes is not available yet.">Save…</Button>
+            <Button size="sm" {...saveButtonState({ staged, blocked, saving })} aria-busy={saving} onClick={() => setReviewed(stagedCards)}>{saving ? "Saving…" : "Save…"}</Button>
           </div>
         )}
       </section>
@@ -332,6 +364,16 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
           onStage={target => openRow && stage(openRow, target)}
           onDiscard={() => { removeBoardCard(viewerKey, repositoryId, openIssue); setCards(loadBoardCards(viewerKey, repositoryId)); }}
           onClose={closeDrawer}
+        />
+      )}
+      {reviewed && board?.statusLabels && (
+        <BoardSaveReview
+          items={reviewItems(reviewed, rows, saver, STATUS_NAMES)}
+          blocked={blocked}
+          saving={saving}
+          confirmDisabled={confirmDisabled({ blocked, saving })}
+          onConfirm={() => void confirmSave()}
+          onClose={() => setReviewed(null)}
         />
       )}
     </div>
