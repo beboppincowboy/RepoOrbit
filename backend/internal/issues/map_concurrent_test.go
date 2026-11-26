@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 )
@@ -46,5 +48,26 @@ func TestMapConcurrentUnauthorizedWins(t *testing.T) {
 	var api *githubapp.APIError
 	if !errors.As(err, &api) || !api.Unauthorized() {
 		t.Fatalf("got %v, want the Unauthorized error", err)
+	}
+}
+
+// GitHub answers bursts on one user token with secondary rate limits, so at most maxConcurrentCalls run at once.
+func TestMapConcurrentCapsInFlightCalls(t *testing.T) {
+	var mu sync.Mutex
+	inFlight, peak := 0, 0
+	items := make([]int, 10)
+	_, err := mapConcurrent(context.Background(), items, func(context.Context, int) (int, error) {
+		mu.Lock()
+		inFlight++
+		peak = max(peak, inFlight)
+		mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return 0, nil
+	})
+	if err != nil || peak != maxConcurrentCalls {
+		t.Fatalf("peak %d, err %v; want peak %d", peak, err, maxConcurrentCalls)
 	}
 }
