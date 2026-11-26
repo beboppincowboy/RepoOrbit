@@ -22,7 +22,7 @@ export DATABASE_URL="postgres://repoorbit:repoorbit@$DB_HOST/$DB?sslmode=disable
 (cd apps/web && bun run build >/dev/null)
 "$BIN/fakegithub" & PIDS+=($!)
 (cd backend && API_ADDR=127.0.0.1:8090 exec "$BIN/api") & PIDS+=($!)
-(cd apps/web && PORT=3100 HOST=127.0.0.1 API_ORIGIN=http://127.0.0.1:8090 exec node server.mjs) & PIDS+=($!)
+(cd apps/web && PORT=3100 HOST=127.0.0.1 API_ORIGIN=http://127.0.0.1:8090 exec bun server.mjs) & PIDS+=($!)
 for url in http://127.0.0.1:8090/ready http://127.0.0.1:3100/login; do
   for _ in $(seq 60); do curl -fs -o /dev/null "$url" && break; sleep 1; done
   curl -fs -o /dev/null "$url"

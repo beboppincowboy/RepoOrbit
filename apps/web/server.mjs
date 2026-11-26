@@ -1,5 +1,6 @@
 // Production server: serves the built app shell and assets, and forwards /auth, /api and /graphql to the Go API
-// on the same origin. Uses only Node built-ins so the Docker image needs no node_modules at runtime.
+// on the same origin. Uses only node: built-ins, which run on Node and Bun (production runs it on Bun), so the
+// Docker image needs no node_modules at runtime. tests/server-parity.spec.ts checks both runtimes behave the same.
 import { createServer, request as requestHTTP } from "node:http";
 import { request as requestHTTPS } from "node:https";
 import { readFile, stat } from "node:fs/promises";

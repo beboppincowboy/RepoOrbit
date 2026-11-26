@@ -22,7 +22,7 @@ type Config struct {
 	// GitHubURL and GitHubAPIURL are configurable so tests and local development can use a fake GitHub.
 	GitHubURL    string // GITHUB_URL, default https://github.com
 	GitHubAPIURL string // GITHUB_API_URL, default https://api.github.com
-	// AppURL is the browser-facing origin (the Next.js server) that GitHub redirects back to.
+	// AppURL is the browser-facing origin (the web server) that GitHub redirects back to.
 	AppURL string // APP_URL, default http://localhost:3000; no trailing slash
 	// AppSlug is the GitHub App's URL name; optional, it only enables the "install the app" link.
 	AppSlug string // GITHUB_APP_SLUG
