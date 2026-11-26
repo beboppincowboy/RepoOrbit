@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/repoorbit/repoorbit/backend/internal/issues/domain"
 )
@@ -53,17 +52,10 @@ func (c *Commands) EnableStatusLabels(ctx context.Context, in EnableStatusLabels
 	}
 
 	ctx = context.WithoutCancel(ctx)
-	opID, reserved, err := c.Store.Reserve(ctx, a.Fence, NewOperation{UserID: in.UserID, RepositoryID: in.RepoID, Key: in.Key, Kind: "status_labels",
+	opID, res, ok := c.reserveOnce(ctx, a.Fence, NewOperation{UserID: in.UserID, RepositoryID: in.RepoID, Key: in.Key, Kind: "status_labels",
 		RequestHash: hash, Draft: draft})
-	if err != nil {
-		return internalResult(DispositionNone, err)
-	}
-	if res, ok := c.reserved(ctx, in.UserID, in.Key, hash, a.Fence, reserved); !ok {
+	if !ok {
 		return res
-	}
-	if reserved != Reserved {
-		// A status_labels operation carries no content hash, so it cannot hit the unresolved-create constraint.
-		return internalResult(DispositionNone, fmt.Errorf("unexpected reserve result %d for status_labels", reserved))
 	}
 	if res, ok := c.markSent(ctx, in.UserID, opID, a.Fence); !ok {
 		return res

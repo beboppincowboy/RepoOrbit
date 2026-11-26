@@ -165,6 +165,23 @@ func (c *Commands) reserved(ctx context.Context, userID int64, key string, hash 
 	return Result{}, true
 }
 
+// reserveOnce inserts an operation that carries no content hash (an update or status_labels) as pending. Such an
+// operation cannot hit the unresolved-create constraint, so any result but Reserved, ReserveRace or
+// ReserveAccessMoved is an internal error. ok is false when res is the answer.
+func (c *Commands) reserveOnce(ctx context.Context, fence Fence, op NewOperation) (int64, Result, bool) {
+	opID, reserved, err := c.Store.Reserve(ctx, fence, op)
+	if err != nil {
+		return 0, internalResult(DispositionNone, err), false
+	}
+	if res, ok := c.reserved(ctx, op.UserID, op.Key, op.RequestHash, fence, reserved); !ok {
+		return 0, res, false
+	}
+	if reserved != Reserved {
+		return 0, internalResult(DispositionNone, fmt.Errorf("unexpected reserve result %d for %s", reserved, op.Kind)), false
+	}
+	return opID, Result{}, true
+}
+
 // markSent claims a reserved operation for sending; when the claim was lost the operation is failed as stale and
 // answered 200, and ok is false.
 func (c *Commands) markSent(ctx context.Context, userID, opID int64, fence Fence) (Result, bool) {
@@ -236,17 +253,10 @@ func (c *Commands) UpdateIssue(ctx context.Context, in UpdateIssueInput) Result 
 	}
 
 	ctx = context.WithoutCancel(ctx)
-	opID, reserved, err := c.Store.Reserve(ctx, a.Fence, NewOperation{UserID: in.UserID, RepositoryID: in.RepoID, Key: in.Key, Kind: "update",
+	opID, res, ok := c.reserveOnce(ctx, a.Fence, NewOperation{UserID: in.UserID, RepositoryID: in.RepoID, Key: in.Key, Kind: "update",
 		IssueNumber: in.Number, RequestHash: hash, Draft: draft})
-	if err != nil {
-		return internalResult(DispositionNone, err)
-	}
-	if res, ok := c.reserved(ctx, in.UserID, in.Key, hash, a.Fence, reserved); !ok {
+	if !ok {
 		return res
-	}
-	if reserved != Reserved {
-		// An update carries no content hash, so it cannot hit the unresolved-create constraint.
-		return internalResult(DispositionNone, fmt.Errorf("unexpected reserve result %d for an update", reserved))
 	}
 	if res, ok := c.markSent(ctx, in.UserID, opID, a.Fence); !ok {
 		return res

@@ -74,7 +74,11 @@ func (a accessAdapter) CheckedAccess(ctx context.Context, userID, repoID int64) 
 }
 
 func (a accessAdapter) FenceCurrent(ctx context.Context, fence application.Fence) (bool, error) {
-	return fence.(accessfence.Snapshot).Current(ctx, a.s.Pool)
+	snap, err := snapshotOf(fence)
+	if err != nil {
+		return false, err
+	}
+	return snap.Current(ctx, a.s.Pool)
 }
 
 func (a accessAdapter) Token(ctx context.Context, userID int64) (string, error) {

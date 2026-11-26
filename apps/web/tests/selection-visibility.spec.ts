@@ -561,7 +561,7 @@ test('an error-free null repository alias is a denial even when its issues alias
     }
     if (String(query).startsWith('query RepositoryDetails')) {
       if (!mixed) {
-        return route.fulfill({ json: { data: { a0: { activity: quietActivity }, r0: issuePage('1'), a1: { activity: quietActivity }, r1: issuePage('2') } } });
+        return route.fulfill({ json: { data: { a0: { activity: quietActivity }, r0: issuePage('1'), a1: { activity: fullActivity }, r1: issuePage('2') } } });
       }
       return route.fulfill({
         json: {
@@ -579,6 +579,8 @@ test('an error-free null repository alias is a denial even when its issues alias
   await page.goto('/workspace/2');
   await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
   await page.evaluate(() => localStorage.setItem('repoorbit:issue-draft:real:ada:1:create', JSON.stringify({ version: 1, title: 'Private draft' })));
+  // Reconnect joins an in-flight selection pass, so flip the mock only after the first pass's details have landed.
+  await expect(sidebar(page).getByRole('link', { name: 'repo-2', exact: true })).toHaveAttribute('title', 'repo-2 · Synced');
 
   mixed = true;
   await page.evaluate(() => {
@@ -603,7 +605,7 @@ test('an open workspace stops showing a verified repository once a complete sele
     }
     if (String(query).startsWith('query RepositoryDetails')) {
       const ids = Object.values(variables as Record<string, string>);
-      return route.fulfill({ json: { data: Object.fromEntries(ids.flatMap((id, i) => [[`a${i}`, { activity: quietActivity }], [`r${i}`, issuePage(id)]])) } });
+      return route.fulfill({ json: { data: Object.fromEntries(ids.flatMap((id, i) => [[`a${i}`, { activity: fullActivity }], [`r${i}`, issuePage(id)]])) } });
     }
     if (String(query).startsWith('query RepositoryOverview')) {
       if (dropped) await heldOverview;
@@ -618,6 +620,9 @@ test('an open workspace stops showing a verified repository once a complete sele
     });
     await page.goto('/workspace/2');
     await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
+    // The heading needs only Overview. Reconnect joins an in-flight selection pass instead of starting a new one, so
+    // flip the mock only after the first pass has finished: its details turn the sidebar row from loading to Synced.
+    await expect(sidebar(page).getByRole('link', { name: 'repo-2', exact: true })).toHaveAttribute('title', 'repo-2 · Synced');
     dropped = true;
     await page.evaluate(() => {
       window.dispatchEvent(new Event('offline'));

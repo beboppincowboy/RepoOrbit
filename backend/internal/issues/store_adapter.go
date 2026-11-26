@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -20,6 +21,28 @@ import (
 type operationStore struct{ s *Service }
 
 var errAccessMoved = errors.New("access changed")
+
+// snapshotOf unwraps a fence handed back by the application; anything but an accessfence.Snapshot is a wiring bug.
+func snapshotOf(fence application.Fence) (accessfence.Snapshot, error) {
+	snap, ok := fence.(accessfence.Snapshot)
+	if !ok {
+		return accessfence.Snapshot{}, fmt.Errorf("issues: unexpected fence type %T", fence)
+	}
+	return snap, nil
+}
+
+// confirmedIssue unwraps Settlement.Confirmed: nil means nothing was confirmed (ok is false); anything but a
+// githubapp.Issue is a wiring bug.
+func confirmedIssue(confirmed any) (issue githubapp.Issue, ok bool, err error) {
+	if confirmed == nil {
+		return githubapp.Issue{}, false, nil
+	}
+	issue, ok = confirmed.(githubapp.Issue)
+	if !ok {
+		return githubapp.Issue{}, false, fmt.Errorf("issues: unexpected confirmed issue type %T", confirmed)
+	}
+	return issue, true, nil
+}
 
 func toOperation(row db.GetWriteOperationRow) application.Operation {
 	return application.Operation{ID: row.ID, RepositoryID: row.RepositoryID, RepositoryName: row.RepositoryName, Kind: row.Kind, State: row.State,
@@ -41,9 +64,13 @@ func (o operationStore) FindByKey(ctx context.Context, userID int64, key string)
 }
 
 func (o operationStore) Reserve(ctx context.Context, fence application.Fence, op application.NewOperation) (int64, application.ReserveResult, error) {
+	snap, err := snapshotOf(fence)
+	if err != nil {
+		return 0, 0, err
+	}
 	var id int64
-	err := db.InTx(ctx, o.s.Pool, func(tx pgx.Tx) error {
-		if current, err := fence.(accessfence.Snapshot).StillCurrent(ctx, tx); err != nil {
+	err = db.InTx(ctx, o.s.Pool, func(tx pgx.Tx) error {
+		if current, err := snap.StillCurrent(ctx, tx); err != nil {
 			return err
 		} else if !current {
 			return errAccessMoved
@@ -104,8 +131,11 @@ func (o operationStore) ActorGithubID(ctx context.Context, userID int64) (int64,
 }
 
 func (o operationStore) SettleUnderLock(ctx context.Context, s application.Settle, read func() (application.Settlement, error)) error {
-	snap := s.Fence.(accessfence.Snapshot)
-	err := db.InTx(ctx, o.s.Pool, func(tx pgx.Tx) (err error) {
+	snap, err := snapshotOf(s.Fence)
+	if err != nil {
+		return err
+	}
+	err = db.InTx(ctx, o.s.Pool, func(tx pgx.Tx) (err error) {
 		if s.LockNumber != 0 {
 			if _, err = tx.Exec(ctx, `SET LOCAL lock_timeout = '10s'`); err != nil {
 				return err
@@ -125,7 +155,10 @@ func (o operationStore) SettleUnderLock(ctx context.Context, s application.Settl
 		if err != nil {
 			return err
 		}
-		confirmed, isConfirmed := res.Confirmed.(githubapp.Issue)
+		confirmed, isConfirmed, err := confirmedIssue(res.Confirmed)
+		if err != nil {
+			return err
+		}
 		current := false
 		if isConfirmed && res.State != "unknown" {
 			if current, err = snap.StillCurrent(ctx, tx); err != nil {
@@ -156,7 +189,10 @@ func (o operationStore) SettleUnderLock(ctx context.Context, s application.Settl
 }
 
 func (o operationStore) SettleStatusLabels(ctx context.Context, opID, repoID int64, fence application.Fence, state string, out outcome) error {
-	snap := fence.(accessfence.Snapshot)
+	snap, err := snapshotOf(fence)
+	if err != nil {
+		return err
+	}
 	return db.InTx(ctx, o.s.Pool, func(tx pgx.Tx) error {
 		q := o.s.Queries.WithTx(tx)
 		if state == "succeeded" {
@@ -182,8 +218,12 @@ func (o operationStore) SettleStatusLabels(ctx context.Context, opID, repoID int
 }
 
 func (o operationStore) DisableStatusLabels(ctx context.Context, repoID int64, fence application.Fence) (bool, error) {
-	err := db.InTx(ctx, o.s.Pool, func(tx pgx.Tx) error {
-		if current, err := fence.(accessfence.Snapshot).StillCurrent(ctx, tx); err != nil {
+	snap, err := snapshotOf(fence)
+	if err != nil {
+		return false, err
+	}
+	err = db.InTx(ctx, o.s.Pool, func(tx pgx.Tx) error {
+		if current, err := snap.StillCurrent(ctx, tx); err != nil {
 			return err
 		} else if !current {
 			return errAccessMoved
