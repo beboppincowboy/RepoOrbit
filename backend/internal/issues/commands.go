@@ -337,6 +337,9 @@ func (s *Service) replay(sw *submitWriter, ctx context.Context, userID int64, ke
 	return true
 }
 
+// maxConcurrentCalls bounds parallel GitHub calls on one user token; GitHub meets bursts with secondary rate limits.
+const maxConcurrentCalls = 3
+
 func mapConcurrent[T, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error)) ([]R, error) {
 	if len(items) == 0 {
 		return nil, nil
@@ -346,10 +349,19 @@ func mapConcurrent[T, R any](ctx context.Context, items []T, fn func(context.Con
 	results := make([]R, len(items))
 	errs := make([]error, len(items))
 	var wg sync.WaitGroup
+	slots := make(chan struct{}, maxConcurrentCalls)
 	for i, item := range items {
+		// Slots are taken in item order, so a failure cancels every item still waiting for one.
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			errs[i] = ctx.Err()
+			continue
+		}
 		wg.Add(1)
 		go func(i int, item T) {
 			defer wg.Done()
+			defer func() { <-slots }()
 			res, err := fn(ctx, item)
 			if err != nil {
 				errs[i] = err
