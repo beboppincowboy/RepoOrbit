@@ -1,10 +1,11 @@
 import { test, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { connect, createServer as createTCPServer } from 'node:net';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { connect, createServer as createTCPServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 // server.mjs must behave identically under Node and Bun, so every assertion runs against both.
@@ -17,27 +18,26 @@ type Handler = (req: IncomingMessage, res: ServerResponse) => void;
 async function freePort(): Promise<number> {
   const s = createTCPServer();
   await new Promise<void>(r => s.listen(0, '127.0.0.1', r));
-  const { port } = s.address() as { port: number };
+  const { port } = s.address() as AddressInfo;
   await new Promise(r => s.close(r));
   return port;
 }
 
 // Records every upstream request; the handler is swapped per test.
 async function startStub() {
-  const seen: Seen[] = [];
-  const stub = { seen, handler: undefined as Handler | undefined, port: 0, server: undefined as unknown as Server };
   const echo: Handler = (req, res) => { req.on('end', () => res.writeHead(200, { 'content-type': 'text/plain' }).end('ok')); };
-  stub.server = createServer((req, res) => {
+  const server = createServer((req, res) => {
     const entry: Seen = { method: req.method, url: req.url, headers: req.headers, body: Buffer.alloc(0), complete: false, closed: false };
-    seen.push(entry);
+    stub.seen.push(entry);
     const chunks: Buffer[] = [];
     req.on('data', c => chunks.push(c));
     req.on('end', () => { entry.body = Buffer.concat(chunks); entry.complete = true; });
     req.on('close', () => { entry.closed = true; });
     (stub.handler ?? echo)(req, res);
   });
-  await new Promise<void>(r => stub.server.listen(0, '127.0.0.1', r));
-  stub.port = (stub.server.address() as { port: number }).port;
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  // No request can arrive before the port is known, so `stub` is always set by the time the handler runs.
+  const stub = { seen: [] as Seen[], handler: undefined as Handler | undefined, server, port: (server.address() as AddressInfo).port };
   return stub;
 }
 
@@ -50,7 +50,7 @@ async function startServer(runtime: string, dir: string, apiPort: number) {
     if (exited) throw new Error(`${runtime} server exited early`);
     const ok = await new Promise<boolean>(r => { const s = connect(port, '127.0.0.1', () => { s.destroy(); r(true); }); s.on('error', () => r(false)); });
     if (ok) return { child, port, url: `http://127.0.0.1:${port}` };
-    await new Promise(r => setTimeout(r, 100));
+    await sleep(100);
   }
   child.kill();
   throw new Error(`${runtime} server did not start`);
@@ -74,9 +74,10 @@ function rawRequest(port: number, text: string): Promise<{ head: string; body: B
 }
 
 const get = (path: string) => `GET ${path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n`;
+
 async function until(check: () => boolean, ms = 5000) {
   const end = Date.now() + ms;
-  while (!check() && Date.now() < end) await new Promise(r => setTimeout(r, 25));
+  while (!check() && Date.now() < end) await sleep(25);
 }
 
 for (const runtime of ['node', 'bun']) {
@@ -89,11 +90,12 @@ for (const runtime of ['node', 'bun']) {
 
     test.beforeAll(async () => {
       dir = mkdtempSync(join(tmpdir(), 'server-parity-'));
-      mkdirSync(join(dir, 'dist', 'client', 'assets'), { recursive: true });
+      const client = join(dir, 'dist', 'client');
+      mkdirSync(join(client, 'assets'), { recursive: true });
       copyFileSync(fileURLToPath(new URL('../server.mjs', import.meta.url)), join(dir, 'server.mjs'));
-      writeFileSync(join(dir, 'dist', 'client', 'assets', 'app-1a2b3c.js'), 'console.log(1)');
-      writeFileSync(join(dir, 'dist', 'client', 'assets', 'font-1a2b3c.woff2'), 'woff');
-      writeFileSync(join(dir, 'dist', 'client', '_shell.html'), SHELL);
+      writeFileSync(join(client, 'assets', 'app-1a2b3c.js'), 'console.log(1)');
+      writeFileSync(join(client, 'assets', 'font-1a2b3c.woff2'), 'woff');
+      writeFileSync(join(client, '_shell.html'), SHELL);
       writeFileSync(join(dir, 'secret.txt'), SECRET);
       writeFileSync(join(dir, 'dist', 'secret.txt'), SECRET);
       stub = await startStub();
@@ -199,7 +201,7 @@ for (const runtime of ['node', 'bun']) {
       expect(both.status).toBe(400);
       const two = await rawRequest(web.port, 'POST /api/x HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\nContent-Length: 5\r\nConnection: close\r\n\r\nabcd');
       expect(two.status).toBe(400);
-      await new Promise(r => setTimeout(r, 200));
+      await sleep(200);
       expect(stub.seen).toHaveLength(0);
     });
 
