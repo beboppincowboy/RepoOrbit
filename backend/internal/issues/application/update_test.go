@@ -62,6 +62,11 @@ type fakes struct {
 	missing      map[string]bool // LabelExists answers false for these names
 	labelErr     error
 	statusSettle *Settlement // what SettleStatusLabels was called with; nil when not called
+
+	labelCreateErrs map[string]error // CreateLabel answers these by label name
+	statusMoved     bool             // SettleStatusLabels sees a moved fence, as the store's transaction would
+	disableMoved    bool
+	disableErr      error
 }
 
 func (f *fakes) record(c string) {
@@ -139,8 +144,9 @@ func (g fakeGitHub) IsAssignable(ctx context.Context, _, _, login string) (bool,
 	}
 	return true, nil
 }
-func (g fakeGitHub) CreateLabel(context.Context, string, string, string, string) error {
-	return g.step("CreateLabel")
+func (g fakeGitHub) CreateLabel(_ context.Context, _, _, name, _ string) error {
+	g.f.record("GitHub.CreateLabel")
+	return g.f.labelCreateErrs[name]
 }
 func (g fakeGitHub) LabelExists(_ context.Context, _, _, name string) (bool, error) {
 	g.f.record("GitHub.LabelExists")
@@ -231,11 +237,18 @@ func (s fakeStore) SettleUnderLock(_ context.Context, st Settle, read func() (Se
 func (s fakeStore) SettleStatusLabels(_ context.Context, _, _ int64, _ Fence, state string, out domain.Outcome) error {
 	s.f.record("Store.SettleStatusLabels")
 	s.f.statusSettle = &Settlement{State: state, Outcome: out}
+	if state == "succeeded" && s.f.statusMoved {
+		state, out.Error = "unknown", "access changed before status labels could be turned on; recheck"
+	}
+	if s.f.settleErr != nil {
+		return s.f.settleErr
+	}
 	s.f.settled = Settlement{State: state, Outcome: out}
 	return nil
 }
 func (s fakeStore) DisableStatusLabels(context.Context, int64, Fence) (bool, error) {
-	return false, nil
+	s.f.record("Store.DisableStatusLabels")
+	return s.f.disableMoved, s.f.disableErr
 }
 
 func triage() Access {

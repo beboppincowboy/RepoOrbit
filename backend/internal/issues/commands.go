@@ -4,7 +4,6 @@
 package issues
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
@@ -83,7 +81,6 @@ func (s *Service) Register(mux *http.ServeMux) {
 
 type createDraft = domain.CreateDraft
 type updateDraft = domain.UpdateDraft
-type delta = domain.Delta
 type issueView = domain.IssueView
 type outcome = domain.Outcome
 
@@ -207,36 +204,6 @@ func (s *Service) revokeIfUnauthorized(ctx context.Context, userID int64, err er
 	}
 	accessAdapter{s}.Revoke(ctx, userID)
 	return true
-}
-
-func (s *Service) respond(w http.ResponseWriter, ctx context.Context, status int, userID, opID int64, snap accessfence.Snapshot) {
-	row, err := s.Queries.GetWriteOperation(ctx, db.GetWriteOperationParams{ID: opID, UserID: userID})
-	if err != nil {
-		w.Header().Set(headerWriteDisposition, writeDispositionPossiblyRecorded)
-		s.internal(w, err)
-		return
-	}
-	current, err := snap.Current(ctx, s.Pool)
-	if err != nil {
-		w.Header().Set(headerWriteDisposition, writeDispositionPossiblyRecorded)
-		s.internal(w, err)
-		return
-	}
-	if !current {
-		w.Header().Set(headerWriteDisposition, writeDispositionPossiblyRecorded)
-		http.Error(w, "access changed; the operation was recorded and may have been sent: retry with the same Idempotency-Key", http.StatusServiceUnavailable)
-		return
-	}
-	if status == http.StatusCreated && row.State == "unknown" {
-		status = http.StatusAccepted
-	}
-	writeJSON(w, status, s.view(toOperation(row)))
-}
-
-type command struct {
-	kind    string
-	draft   any
-	allowed func(githubapp.Repo) bool
 }
 
 // create answers POST /api/repositories/{id}/issues: it parses the request, runs application.CreateIssue and maps its
@@ -373,107 +340,6 @@ func (s *Service) writeResult(w http.ResponseWriter, res application.Result) {
 }
 
 const idempotencyKeyRequired = "an Idempotency-Key header of 1 to 128 letters, digits, or ._:- is required"
-
-func (s *Service) replay(sw *submitWriter, ctx context.Context, userID int64, key string, hash []byte, snap accessfence.Snapshot) bool {
-	prior, err := s.Queries.GetWriteOperationByKey(ctx, db.GetWriteOperationByKeyParams{UserID: userID, IdempotencyKey: key})
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return false
-	case err != nil:
-		sw.disposition = ""
-		s.internal(sw, err)
-	case !bytes.Equal(prior.RequestHash, hash):
-		sw.disposition = writeDispositionNotRecorded
-		http.Error(sw, "idempotency key reused with a different request", http.StatusUnprocessableEntity)
-	default:
-		sw.disposition = writeDispositionPossiblyRecorded
-		if prior.StalePending.Bool {
-			if err := s.Queries.FailStalePendingOperationByID(ctx, prior.ID); err != nil {
-				s.internal(sw, err)
-				return true
-			}
-		}
-		s.respond(sw, ctx, http.StatusOK, userID, prior.ID, snap)
-	}
-	return true
-}
-
-func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
-	ctx := r.Context()
-	userID, ok := auth.SignedInUserID(ctx)
-	repoID, idOK := pathID(r, "id")
-	if !ok || !idOK {
-		http.Error(sw, "not found", http.StatusNotFound)
-		return
-	}
-	key := r.Header.Get("Idempotency-Key")
-	if !domain.ValidKey(key) {
-		http.Error(sw, idempotencyKeyRequired, http.StatusBadRequest)
-		return
-	}
-	draft, err := json.Marshal(c.draft)
-	if err != nil {
-		s.internal(sw, err)
-		return
-	}
-	hash := domain.RequestHash(c.kind, repoID, 0, draft)
-
-	d, snap, ok := s.checkedAccess(sw, r, userID, repoID)
-	if !ok {
-		return
-	}
-	if s.replay(sw, ctx, userID, key, hash, snap) {
-		return
-	}
-	if !c.allowed(d.Repo) {
-		http.Error(sw, "your current GitHub permission does not allow this action", http.StatusForbidden)
-		return
-	}
-	token, ok := s.token(sw, ctx, userID)
-	if !ok {
-		return
-	}
-	sw.disposition = ""
-	ctx = context.WithoutCancel(ctx)
-	opID, reserved, err := operationStore{s}.Reserve(ctx, snap, application.NewOperation{UserID: userID, RepositoryID: repoID, Key: key, Kind: c.kind,
-		RequestHash: hash, Draft: draft})
-	switch {
-	case err != nil:
-		s.internal(sw, err)
-		return
-	case reserved == application.ReserveRace:
-		if !s.replay(sw, ctx, userID, key, hash, snap) {
-			s.internal(sw, errors.New("idempotency key vanished"))
-		}
-		return
-	case reserved == application.ReserveAccessMoved:
-		sw.disposition = writeDispositionNotRecorded
-		http.Error(sw, "access changed while submitting; nothing was sent", http.StatusServiceUnavailable)
-		return
-	case reserved != application.Reserved:
-		// A status_labels operation carries no content hash, so it cannot hit the unresolved-create constraint.
-		s.internal(sw, fmt.Errorf("unexpected reserve result %d for %s", reserved, c.kind))
-		return
-	}
-	sw.disposition = writeDispositionPossiblyRecorded
-	if n, err := s.Queries.MarkWriteOperationSent(ctx, opID); err != nil {
-		s.internal(sw, fmt.Errorf("mark sent: %w", err))
-		return
-	} else if n == 0 {
-		if err := s.Queries.FailStalePendingOperationByID(ctx, opID); err != nil {
-			s.internal(sw, err)
-			return
-		}
-		s.respond(sw, ctx, http.StatusOK, userID, opID, snap)
-		return
-	}
-	state, out := s.ensureStatusLabels(ctx, userID, token, d.Repo.FullName)
-	if err := s.finishStatusLabels(ctx, opID, repoID, snap, state, out); err != nil {
-		s.internal(sw, err)
-		return
-	}
-	s.respond(sw, ctx, http.StatusCreated, userID, opID, snap)
-}
 
 // recheck answers POST /api/write-operations/{id}/recheck: it decodes the body strictly before loading anything, runs
 // application.RecheckOperation and maps its result.
