@@ -39,6 +39,18 @@ type fakes struct {
 	op         Operation
 	settle     Settle
 	settled    Settlement
+
+	created    Issue           // CreateIssue's answer
+	createErr  error           // CreateIssue's error
+	reserves   []ReserveResult // when set, Reserve answers these in order; the last one repeats
+	reserveN   int
+	newOps     []NewOperation
+	staleN     int64 // FailStalePendingCreate's count
+	staleErr   error
+	unresolved *int64 // FindUnresolvedCreate's id; nil when none
+	latest     *int64 // FindLatestCreate's id; nil when none
+	lookupErr  error  // FindUnresolvedCreate's error
+	latestErr  error
 }
 
 func (f *fakes) record(c string) {
@@ -88,7 +100,7 @@ func (g fakeGitHub) FetchIssue(context.Context, string, string, int64) (Issue, e
 }
 func (g fakeGitHub) CreateIssue(context.Context, string, string, domain.CreateDraft) (Issue, error) {
 	g.f.record("GitHub.CreateIssue")
-	return Issue{}, nil
+	return g.f.created, g.f.createErr
 }
 func (g fakeGitHub) step(name string) error {
 	g.f.record("GitHub." + name)
@@ -133,19 +145,36 @@ func (s fakeStore) FindByKey(context.Context, int64, string) (PriorOperation, bo
 	}
 	return *s.f.prior, true, s.f.findErr
 }
-func (s fakeStore) Reserve(context.Context, Fence, NewOperation) (int64, ReserveResult, error) {
+func (s fakeStore) Reserve(_ context.Context, _ Fence, op NewOperation) (int64, ReserveResult, error) {
 	s.f.record("Store.Reserve")
-	if s.f.reserve != Reserved || s.f.reserveErr != nil {
-		return 0, s.f.reserve, s.f.reserveErr
+	s.f.newOps = append(s.f.newOps, op)
+	r := s.f.reserve
+	if len(s.f.reserves) > 0 {
+		r = s.f.reserves[min(s.f.reserveN, len(s.f.reserves)-1)]
+		s.f.reserveN++
+	}
+	if r != Reserved || s.f.reserveErr != nil {
+		return 0, r, s.f.reserveErr
 	}
 	return 11, Reserved, nil
 }
-func (s fakeStore) FailStalePendingCreate(context.Context, CreateKey) (int64, error) { return 0, nil }
+func (s fakeStore) FailStalePendingCreate(context.Context, CreateKey) (int64, error) {
+	s.f.record("Store.FailStalePendingCreate")
+	return s.f.staleN, s.f.staleErr
+}
 func (s fakeStore) FindUnresolvedCreate(context.Context, CreateKey) (int64, bool, error) {
-	return 0, false, nil
+	s.f.record("Store.FindUnresolvedCreate")
+	if s.f.unresolved == nil {
+		return 0, false, s.f.lookupErr
+	}
+	return *s.f.unresolved, true, s.f.lookupErr
 }
 func (s fakeStore) FindLatestCreate(context.Context, CreateKey) (int64, bool, error) {
-	return 0, false, nil
+	s.f.record("Store.FindLatestCreate")
+	if s.f.latest == nil {
+		return 0, false, s.f.latestErr
+	}
+	return *s.f.latest, true, s.f.latestErr
 }
 func (s fakeStore) MarkSent(context.Context, int64) (bool, error) {
 	s.f.record("Store.MarkSent")

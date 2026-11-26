@@ -234,15 +234,13 @@ func (s *Service) respond(w http.ResponseWriter, ctx context.Context, status int
 }
 
 type command struct {
-	kind        string
-	issueNumber int64
-	draft       any
-	contentHash []byte
-	hasMetadata bool
-	assignees   []string
-	allowed     func(githubapp.Repo) bool
+	kind    string
+	draft   any
+	allowed func(githubapp.Repo) bool
 }
 
+// create answers POST /api/repositories/{id}/issues: it parses the request, runs application.CreateIssue and maps its
+// result.
 func (s *Service) create(w http.ResponseWriter, r *http.Request) {
 	sw := newSubmitWriter(w)
 	var d createDraft
@@ -254,11 +252,18 @@ func (s *Service) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(sw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	allowed := canCreate
-	if len(d.Labels)+len(d.Assignees) > 0 {
-		allowed = canCreateWithMetadata
+	userID, ok := auth.SignedInUserID(r.Context())
+	repoID, idOK := pathID(r, "id")
+	if !ok || !idOK {
+		http.Error(sw, "not found", http.StatusNotFound)
+		return
 	}
-	s.submit(sw, r, command{kind: "create", draft: &d, contentHash: domain.ContentHash(d.Title, d.Body), hasMetadata: len(d.Labels)+len(d.Assignees) > 0, assignees: d.Assignees, allowed: allowed})
+	key := r.Header.Get("Idempotency-Key")
+	if !domain.ValidKey(key) {
+		http.Error(sw, idempotencyKeyRequired, http.StatusBadRequest)
+		return
+	}
+	s.writeResult(w, s.commands().CreateIssue(r.Context(), application.CreateIssueInput{UserID: userID, RepoID: repoID, Key: key, Draft: d}))
 }
 
 // update answers POST /api/repositories/{id}/issues/{number}/updates: it parses the request, runs
@@ -411,7 +416,7 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 		s.internal(sw, err)
 		return
 	}
-	hash := domain.RequestHash(c.kind, repoID, c.issueNumber, draft)
+	hash := domain.RequestHash(c.kind, repoID, 0, draft)
 
 	d, snap, ok := s.checkedAccess(sw, r, userID, repoID)
 	if !ok {
@@ -428,62 +433,10 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 	if !ok {
 		return
 	}
-	assignable, err := application.MapConcurrent(ctx, c.assignees, func(ctx context.Context, login string) (bool, error) {
-		return s.GitHub.IsAssignable(ctx, token, d.Repo.FullName, login)
-	})
-	if err != nil {
-		s.upstream(sw, ctx, userID, err)
-		return
-	}
-	var ineligible []string
-	for i, login := range c.assignees {
-		if !assignable[i] {
-			ineligible = append(ineligible, login)
-		}
-	}
-	if len(ineligible) > 0 {
-		http.Error(sw, "cannot be assigned in this repository: "+strings.Join(ineligible, ", "), http.StatusUnprocessableEntity)
-		return
-	}
-
 	sw.disposition = ""
 	ctx = context.WithoutCancel(ctx)
-	var opID int64
-	var reserved application.ReserveResult
-	for attempt := 0; ; attempt++ {
-		opID, reserved, err = operationStore{s}.Reserve(ctx, snap, application.NewOperation{UserID: userID, RepositoryID: repoID, Key: key, Kind: c.kind,
-			IssueNumber: c.issueNumber, RequestHash: hash, ContentHash: c.contentHash, HasRequestedMetadata: c.hasMetadata, Draft: draft})
-		if err != nil || reserved != application.ReserveUnresolvedCreate {
-			break
-		}
-		unresolved := db.FindUnresolvedCreateParams{UserID: userID, RepositoryID: repoID, ContentHash: c.contentHash}
-		if attempt == 0 {
-			n, err := s.Queries.FailStalePendingCreate(ctx, db.FailStalePendingCreateParams(unresolved))
-			if err != nil {
-				s.internal(sw, err)
-				return
-			}
-			if n > 0 {
-				continue
-			}
-		}
-		sw.disposition = writeDispositionNotRecorded
-		msg := "an earlier create of this issue is still unresolved; recheck it instead of resubmitting"
-		prior, err := s.Queries.FindUnresolvedCreate(ctx, unresolved)
-		if errors.Is(err, pgx.ErrNoRows) {
-			msg = "an earlier create of this issue was resolved while submitting; nothing was sent: check it before resubmitting"
-			prior, err = s.Queries.FindLatestCreate(ctx, db.FindLatestCreateParams(unresolved))
-		}
-		switch {
-		case err == nil:
-			writeJSON(sw, http.StatusConflict, map[string]any{"error": msg, "operationId": prior})
-		case errors.Is(err, pgx.ErrNoRows):
-			http.Error(sw, "an earlier create of this issue changed while submitting; nothing was sent, retry", http.StatusServiceUnavailable)
-		default:
-			s.internal(sw, err)
-		}
-		return
-	}
+	opID, reserved, err := operationStore{s}.Reserve(ctx, snap, application.NewOperation{UserID: userID, RepositoryID: repoID, Key: key, Kind: c.kind,
+		RequestHash: hash, Draft: draft})
 	switch {
 	case err != nil:
 		s.internal(sw, err)
@@ -496,6 +449,10 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 	case reserved == application.ReserveAccessMoved:
 		sw.disposition = writeDispositionNotRecorded
 		http.Error(sw, "access changed while submitting; nothing was sent", http.StatusServiceUnavailable)
+		return
+	case reserved != application.Reserved:
+		// A status_labels operation carries no content hash, so it cannot hit the unresolved-create constraint.
+		s.internal(sw, fmt.Errorf("unexpected reserve result %d for %s", reserved, c.kind))
 		return
 	}
 	sw.disposition = writeDispositionPossiblyRecorded
@@ -510,31 +467,12 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 		s.respond(sw, ctx, http.StatusOK, userID, opID, snap)
 		return
 	}
-	switch c.kind {
-	case "status_labels":
-		state, out := s.ensureStatusLabels(ctx, userID, token, d.Repo.FullName)
-		err = s.finishStatusLabels(ctx, opID, repoID, snap, state, out)
-	default: // create
-		state, out, confirmed := s.sendCreate(ctx, userID, token, d.Repo.FullName, c.draft.(*createDraft))
-		err = s.finish(ctx, opID, repoID, snap, 0, confirmed != nil, func() (string, outcome, *githubapp.Issue, error) { return state, out, confirmed, nil })
-	}
-	if err != nil {
+	state, out := s.ensureStatusLabels(ctx, userID, token, d.Repo.FullName)
+	if err := s.finishStatusLabels(ctx, opID, repoID, snap, state, out); err != nil {
 		s.internal(sw, err)
 		return
 	}
 	s.respond(sw, ctx, http.StatusCreated, userID, opID, snap)
-}
-
-func (s *Service) sendCreate(ctx context.Context, userID int64, token, fullName string, d *createDraft) (string, outcome, *githubapp.Issue) {
-	issue, err := s.GitHub.CreateIssue(ctx, token, fullName, githubapp.NewIssue{Title: d.Title, Body: d.Body, Labels: d.Labels, Assignees: d.Assignees})
-	if err != nil {
-		s.revokeIfUnauthorized(ctx, userID, err)
-		state, msg := classify(err)
-		return state, outcome{Error: msg}, nil
-	}
-	out := outcome{Issue: viewIssue(issue)}
-	out.Unapplied = domain.Unapplied(out.Issue, delta{Add: d.Labels}, delta{Add: d.Assignees}, "")
-	return domain.Resolved(out), out, &issue
 }
 
 var errAlreadyLinked = application.ErrAlreadyLinked

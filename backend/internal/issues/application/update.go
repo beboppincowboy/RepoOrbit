@@ -129,6 +129,56 @@ func (c *Commands) replay(ctx context.Context, userID int64, key string, hash []
 	return c.respond(ctx, userID, prior.ID, fence, false), true
 }
 
+// checkAssignable asks GitHub whether each login can be assigned, concurrently; ok is false when one cannot or GitHub
+// failed.
+func (c *Commands) checkAssignable(ctx context.Context, userID int64, token, fullName string, logins []string) (Result, bool) {
+	assignable, err := MapConcurrent(ctx, logins, func(ctx context.Context, login string) (bool, error) {
+		return c.GitHub.IsAssignable(ctx, token, fullName, login)
+	})
+	if err != nil {
+		return c.upstream(ctx, userID, err), false
+	}
+	var ineligible []string
+	for i, login := range logins {
+		if !assignable[i] {
+			ineligible = append(ineligible, login)
+		}
+	}
+	if len(ineligible) > 0 {
+		return Result{Kind: ResultUnassignable, Disposition: DispositionNotRecorded, Logins: ineligible}, false
+	}
+	return Result{}, true
+}
+
+// reserved answers a concurrent insert of the same key (by replaying it) and a fence that moved before the insert;
+// ok is true for any other reserve result.
+func (c *Commands) reserved(ctx context.Context, userID int64, key string, hash []byte, fence Fence, r ReserveResult) (Result, bool) {
+	switch r {
+	case ReserveRace:
+		if res, ok := c.replay(ctx, userID, key, hash, fence); ok {
+			return res, false
+		}
+		return internalResult(DispositionNone, errors.New("idempotency key vanished")), false
+	case ReserveAccessMoved:
+		return Result{Kind: ResultSubmitAccessMoved, Disposition: DispositionNotRecorded}, false
+	}
+	return Result{}, true
+}
+
+// markSent claims a reserved operation for sending; when the claim was lost the operation is failed as stale and
+// answered 200, and ok is false.
+func (c *Commands) markSent(ctx context.Context, userID, opID int64, fence Fence) (Result, bool) {
+	if sent, err := c.Store.MarkSent(ctx, opID); err != nil {
+		return internalResult(DispositionPossiblyRecorded, fmt.Errorf("mark sent: %w", err)), false
+	} else if !sent {
+		if err := c.Store.FailStale(ctx, opID); err != nil {
+			return internalResult(DispositionPossiblyRecorded, err), false
+		}
+		return c.respond(ctx, userID, opID, fence, false), false
+	}
+	return Result{}, true
+}
+
 // UpdateIssue records an update, sends its steps with the user's own token and settles what GitHub shows afterwards.
 // Order: checked access → replay → permission (or the author's state-only fallback) → token → fetch → expected
 // state → assignability → reserve → mark sent → steps → settle under the issue lock. Nothing is recorded before
@@ -181,47 +231,25 @@ func (c *Commands) UpdateIssue(ctx context.Context, in UpdateIssueInput) Result 
 		return Result{Kind: ResultConflict, Disposition: DispositionNotRecorded, Current: Current{State: live.State, Labels: live.Labels,
 			Assignees: live.Assignees, Status: domain.BoardStatus(live.State, live.Labels), UpdatedAt: issue.UpdatedAt}}
 	}
-	logins := d.Assignees.Add
-	assignable, err := MapConcurrent(ctx, logins, func(ctx context.Context, login string) (bool, error) {
-		return c.GitHub.IsAssignable(ctx, token, fullName, login)
-	})
-	if err != nil {
-		return c.upstream(ctx, in.UserID, err)
-	}
-	var ineligible []string
-	for i, login := range logins {
-		if !assignable[i] {
-			ineligible = append(ineligible, login)
-		}
-	}
-	if len(ineligible) > 0 {
-		return Result{Kind: ResultUnassignable, Disposition: DispositionNotRecorded, Logins: ineligible}
+	if res, ok := c.checkAssignable(ctx, in.UserID, token, fullName, d.Assignees.Add); !ok {
+		return res
 	}
 
 	ctx = context.WithoutCancel(ctx)
 	opID, reserved, err := c.Store.Reserve(ctx, a.Fence, NewOperation{UserID: in.UserID, RepositoryID: in.RepoID, Key: in.Key, Kind: "update",
 		IssueNumber: in.Number, RequestHash: hash, Draft: draft})
-	switch {
-	case err != nil:
+	if err != nil {
 		return internalResult(DispositionNone, err)
-	case reserved == ReserveRace:
-		if res, ok := c.replay(ctx, in.UserID, in.Key, hash, a.Fence); ok {
-			return res
-		}
-		return internalResult(DispositionNone, errors.New("idempotency key vanished"))
-	case reserved == ReserveAccessMoved:
-		return Result{Kind: ResultSubmitAccessMoved, Disposition: DispositionNotRecorded}
-	case reserved != Reserved:
+	}
+	if res, ok := c.reserved(ctx, in.UserID, in.Key, hash, a.Fence, reserved); !ok {
+		return res
+	}
+	if reserved != Reserved {
 		// An update carries no content hash, so it cannot hit the unresolved-create constraint.
 		return internalResult(DispositionNone, fmt.Errorf("unexpected reserve result %d for an update", reserved))
 	}
-	if sent, err := c.Store.MarkSent(ctx, opID); err != nil {
-		return internalResult(DispositionPossiblyRecorded, fmt.Errorf("mark sent: %w", err))
-	} else if !sent {
-		if err := c.Store.FailStale(ctx, opID); err != nil {
-			return internalResult(DispositionPossiblyRecorded, err)
-		}
-		return c.respond(ctx, in.UserID, opID, a.Fence, false)
+	if res, ok := c.markSent(ctx, in.UserID, opID, a.Fence); !ok {
+		return res
 	}
 	out := c.applySteps(ctx, in.UserID, token, fullName, in.Number, d)
 	var readErr error
