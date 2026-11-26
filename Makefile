@@ -9,8 +9,9 @@ check:
 	cd apps/web && npm run lint && npm run typecheck && npm run build
 test:
 	cd backend && go test ./...
+test-integration: DATABASE_URL ?= postgres://repoorbit:repoorbit@localhost:54329/repoorbit?sslmode=disable
 test-integration:
-	cd backend && DATABASE_URL=postgres://repoorbit:repoorbit@localhost:54329/repoorbit?sslmode=disable go test -tags=integration ./...
+	cd backend && DATABASE_URL='$(DATABASE_URL)' go test -tags=integration ./...
 test-e2e-auth:
 	./scripts/e2e-auth.sh
 test-e2e:
