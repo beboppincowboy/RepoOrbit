@@ -264,6 +264,38 @@ test('a failed card stays in its confirmed column naming its target, and an unkn
   await expect(drawer.getByRole('button', { name: 'Discard' })).toBeDisabled();
 });
 
+test('Discard removes an expired unknown card with no operation id without sending a write', async ({ page }) => {
+  const { posts } = await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  await page.evaluate(() => {
+    localStorage.setItem('repoorbit:issue-draft:real:ada:1:board:3', JSON.stringify({
+      version: 1, number: 3, phase: 'unknown', operationId: null,
+      attemptedAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+      snapshot: { state: 'open', labels: ['status:todo'], assignees: ['alex'], status: 'todo', updatedAt: '2026-11-20T10:00:00Z' },
+      target: { status: 'in_progress', assigneesAdd: [], assigneesRemove: [] },
+      request: { draft: { labels: { add: ['status:in-progress'], remove: ['status:todo'] } }, idempotencyKey: 'expired-key' },
+    }));
+  });
+  await page.reload();
+
+  await expect(card(page, 3)).toContainText('Unknown · from Todo');
+  await expect(card(page, 3)).toHaveAttribute('draggable', 'false');
+  const drawer = await openDrawer(page, 3);
+  await expect(drawer).toContainText('This change may already be on GitHub. Check GitHub first, then discard.');
+  await expect(drawer.getByRole('link', { name: 'Write history' })).toBeVisible();
+  await expect(drawer.getByRole('radio', { name: 'Done' })).toBeDisabled();
+  await expect(drawer.getByRole('button', { name: 'Stage again' })).toHaveCount(0);
+  await expect(saveButton(page)).toBeDisabled();
+  const discard = drawer.getByRole('button', { name: 'Discard' });
+  await expect(discard).toBeEnabled();
+  await discard.click();
+
+  await expect(drawer.getByRole('region', { name: 'Staged change' })).toHaveCount(0);
+  await expect(column(page, 'Todo').locator('[data-issue-card="3"]')).toHaveAttribute('draggable', 'true');
+  expect(await storedCard(page, 3)).toBeNull();
+  expect(posts).toEqual([]);
+});
+
 test('issue=12 in the URL opens the drawer for #12 and includes it in the Board read', async ({ page }) => {
   const { boardIncludes } = await setup(page);
   await page.goto('/workspace/1?tab=board&issue=12');
@@ -399,7 +431,8 @@ test('the modal review contains focus and Escape leaves the task drawer open', a
   await page.goto('/workspace/1?tab=board');
   const drawer = await openDrawer(page, 3);
   await drawer.getByRole('radio', { name: 'In Progress' }).check();
-  await saveButton(page).click();
+  await saveButton(page).focus();
+  await page.keyboard.press('Enter');
   const dialog = review(page);
   await expect(dialog).toBeVisible();
   expect(await dialog.evaluate(el => el.matches('dialog:modal'))).toBe(true);

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { IssueWriteError, type BoardIssue, type BoardSnapshot, type WriteOperation } from '../src/lib/api';
 import { applySaveResult, deriveChange, isChangedOnGitHub, loadBoardCards, saveBoardCard, stageAssignees, type BoardCard, type BoardCardPhase, type BoardTarget } from '../src/lib/board';
+import { mockWindowStorage } from './mocks';
 
 
 const ada = { login: 'ada', assignable: true };
@@ -270,19 +271,7 @@ test.describe('applySaveResult', () => {
 
 test.describe('saveBoardCard', () => {
   test('persists a pending card as unknown while keeping other fields intact', () => {
-    const originalWindow = globalThis.window;
-    const localStorage = Object.create({
-      getItem(this: Record<string, string>, key: string): string | null {
-        return Object.prototype.hasOwnProperty.call(this, key) ? this[key] : null;
-      },
-      setItem(this: Record<string, string>, key: string, value: string): void {
-        this[key] = String(value);
-      },
-      removeItem(this: Record<string, string>, key: string): void {
-        delete this[key];
-      },
-    }) as Storage;
-    globalThis.window = { localStorage } as unknown as Window & typeof globalThis;
+    const { restore } = mockWindowStorage();
     try {
       const snapshot = snap({ status: 'todo', labels: ['status:todo'], assignees: ['sam'] });
       const target = to('in_progress', ['ada']);
@@ -314,11 +303,7 @@ test.describe('saveBoardCard', () => {
         stagedCard,
       ]);
     } finally {
-      if (originalWindow === undefined) {
-        Reflect.deleteProperty(globalThis, 'window');
-      } else {
-        globalThis.window = originalWindow;
-      }
+      restore();
     }
   });
 });

@@ -18,6 +18,7 @@ let saving = false;
 const unchangedSinceReview = (card: BoardCard, reviewed: BoardCard) =>
   JSON.stringify([card.snapshot, card.target]) === JSON.stringify([reviewed.snapshot, reviewed.target]);
 
+// Waits for the viewer and repository's Board write lock, then runs work. Runs unlocked if navigator.locks is absent.
 export async function withBoardLock<T>(viewerKey: string, repositoryId: string, work: () => Promise<T>): Promise<T> {
   const locks = globalThis.navigator?.locks;
   return locks ? await locks.request(boardDraftPrefix(viewerKey, repositoryId), work) : work();

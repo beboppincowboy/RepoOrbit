@@ -1,4 +1,4 @@
-import { canReplayWithSameKey, recheckWriteOperation, submitIssueUpdate } from "./api";
+import { canReplayWithSameKey, recheckWriteOperation, submitIssueUpdate, WRITE_RECOVERY_WINDOW_MS } from "./api";
 import { applySaveResult, type BoardCard, type BoardSaveOutcome } from "./board";
 
 // "recheck" asks GitHub's operation record about a send that has an operation id. "resend" sends the stored request again
@@ -25,6 +25,15 @@ export function recoveryAction(card: BoardCard, now: number = Date.now()): Board
   if (card.phase !== "unknown") return "none";
   if (card.operationId !== null) return "recheck";
   return card.request && canReplayWithSameKey(card.attemptedAt, now) ? "resend" : "none";
+}
+
+// Whether the user may delete this card. A pending card may not. An unknown card may only when it has no operation id and
+// its attemptedAt is older than the replay window, so nothing can check it any more.
+export function canDiscardBoardCard(card: BoardCard, now: number = Date.now()): boolean {
+  if (card.phase === "pending") return false;
+  if (card.phase !== "unknown") return true;
+  if (card.operationId !== null || typeof card.attemptedAt !== "string") return false;
+  return now - Date.parse(card.attemptedAt) > WRITE_RECOVERY_WINDOW_MS;
 }
 
 // Runs the action the card offers now. Resolves null, calling nothing, when it offers none. Storing the outcome is the

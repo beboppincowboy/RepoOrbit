@@ -439,7 +439,7 @@ export class IssueWriteError extends Error {
 
 const SERVER_WRITE_RETENTION_DAYS = 30;
 const CLOCK_SKEW_MARGIN_DAYS = 1;
-const WRITE_RECOVERY_WINDOW_MS = (SERVER_WRITE_RETENTION_DAYS - CLOCK_SKEW_MARGIN_DAYS) * 24 * 60 * 60 * 1000;
+export const WRITE_RECOVERY_WINDOW_MS = (SERVER_WRITE_RETENTION_DAYS - CLOCK_SKEW_MARGIN_DAYS) * 24 * 60 * 60 * 1000;
 const WRITE_RECOVERY_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 export function generateIdempotencyKey(): string {
