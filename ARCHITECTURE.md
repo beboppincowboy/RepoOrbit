@@ -83,13 +83,13 @@ The properties every change must keep are listed in the safety properties table 
 
 | Command | What it runs | Ports |
 |---|---|---|
-| `(cd apps/web && npm ci)` | Installs web dependencies | none |
+| `(cd apps/web && bun install --frozen-lockfile)` | Installs web dependencies | none |
 | `make check` | gofmt, `go vet`, generated-code drift check, web lint, typecheck and build | none |
 | `make test` | Go unit tests | none |
 | `make test-race` | Go unit tests with the race detector | none |
 | `docker compose up -d --build --wait` | Builds and starts db, api, worker and web | 54329 (db), 8080 (api), 3000 (web); worker health 8081 inside its container only |
 | `make test-integration` | Go integration tests (`-tags=integration`) | Uses `DATABASE_URL`, default `postgres://repoorbit:repoorbit@localhost:54329/repoorbit?sslmode=disable` |
-| `(cd apps/web && npx playwright install --with-deps chromium)` | Installs the Playwright browser | none |
+| `(cd apps/web && ./node_modules/.bin/playwright install --with-deps chromium)` | Installs the Playwright browser | none |
 | `make test-e2e` | Playwright suite against the compose web (`BASE_URL`, default `http://127.0.0.1:3000`). `demo.spec.ts` runs SQL through `docker compose exec db` | 3000 |
 | `make test-e2e-auth` | Sign-in and repository-access tests against a fake GitHub with the API in real-auth mode (`scripts/e2e-auth.sh`) | 9090 (fake GitHub), 8090 (api), 3100 (web); db via `E2E_DB_HOST`, default `localhost:54329` |
 

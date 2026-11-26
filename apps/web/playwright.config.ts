@@ -11,7 +11,7 @@ export default defineConfig({
   webServer: process.env.BASE_URL
     ? undefined
     : {
-        command: 'npm run build && npm start',
+        command: 'bun run build && bun run start',
         url: baseURL,
         reuseExistingServer: true,
         env: { PORT: String(port), HOST: '127.0.0.1', API_ORIGIN: process.env.API_ORIGIN ?? 'http://127.0.0.1:8080' },
