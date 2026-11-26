@@ -8,7 +8,7 @@ import { StatusSourceSetup } from "@/components/status-source-setup";
 import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
 import { BOARD_STATUSES, deriveChange, loadBoardCard, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
-import { runRecovery } from "@/lib/board-recovery";
+import { canDiscardBoardCard, runRecovery } from "@/lib/board-recovery";
 import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from "@/lib/board-review";
 import { saveBoardChanges, withBoardLock } from "@/lib/board-save";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type BoardStatus, type IssueCapabilities, type ViewerSession } from "@/lib/api";
@@ -218,6 +218,14 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     setCards(loadBoardCards(viewerKey, repositoryId));
   }
 
+  function discard(issueNumber: number) {
+    const card = loadBoardCard(viewerKey, repositoryId, issueNumber);
+    if (!card || !canDiscardBoardCard(card)) return;
+    setSaveNotice(null);
+    removeBoardCard(viewerKey, repositoryId, issueNumber);
+    setCards(loadBoardCards(viewerKey, repositoryId));
+  }
+
   function closeDrawer() {
     onOpenIssue(undefined);
     document.querySelector<HTMLElement>(`[data-issue-card="${openIssue}"] button`)?.focus();
@@ -404,7 +412,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
           busy={saving}
           onRecover={() => recover(openIssue)}
           onStage={target => openRow && stage(openRow, target)}
-          onDiscard={() => { setSaveNotice(null); removeBoardCard(viewerKey, repositoryId, openIssue); setCards(loadBoardCards(viewerKey, repositoryId)); }}
+          onDiscard={() => discard(openIssue)}
           onClose={closeDrawer}
         />
       )}
