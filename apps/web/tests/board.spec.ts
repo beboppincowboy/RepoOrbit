@@ -31,7 +31,7 @@ const boardIssues = [
 async function setup(page: Page, opts: { session?: typeof signedIn | typeof demo; statusLabels?: boolean; canManageIssues?: boolean } = {}) {
   const session = opts.session ?? signedIn;
   const labelsOn = opts.statusLabels ?? true;
-  const issues = labelsOn ? boardIssues : boardIssues.map(i => ({ ...i, status: null, multipleStatus: false }));
+  const issues = boardIssues.map(i => labelsOn ? { ...i } : { ...i, status: null, multipleStatus: false });
   const boardIncludes: number[][] = [];
   const posts: string[] = [];
   page.on('request', request => {
@@ -54,7 +54,7 @@ async function setup(page: Page, opts: { session?: typeof signedIn | typeof demo
     await page.route('**/api/repositories/1/assignees', route => route.fulfill({ json: { assignees: ['ada', 'alex', 'sam'] } }));
     await page.route('**/api/repositories/1/status-labels', route => route.fulfill({ json: { enabled: labelsOn, canChange: false } }));
   }
-  return { boardIncludes, posts };
+  return { boardIncludes, issues, posts };
 }
 
 const column = (page: Page, name: string) => page.getByRole('list', { name, exact: true });
@@ -264,6 +264,38 @@ test('a failed card stays in its confirmed column naming its target, and an unkn
   await expect(drawer.getByRole('button', { name: 'Discard' })).toBeDisabled();
 });
 
+test('Discard removes an expired unknown card with no operation id without sending a write', async ({ page }) => {
+  const { posts } = await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  await page.evaluate(() => {
+    localStorage.setItem('repoorbit:issue-draft:real:ada:1:board:3', JSON.stringify({
+      version: 1, number: 3, phase: 'unknown', operationId: null,
+      attemptedAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+      snapshot: { state: 'open', labels: ['status:todo'], assignees: ['alex'], status: 'todo', updatedAt: '2026-11-20T10:00:00Z' },
+      target: { status: 'in_progress', assigneesAdd: [], assigneesRemove: [] },
+      request: { draft: { labels: { add: ['status:in-progress'], remove: ['status:todo'] } }, idempotencyKey: 'expired-key' },
+    }));
+  });
+  await page.reload();
+
+  await expect(card(page, 3)).toContainText('Unknown · from Todo');
+  await expect(card(page, 3)).toHaveAttribute('draggable', 'false');
+  const drawer = await openDrawer(page, 3);
+  await expect(drawer).toContainText('This change may already be on GitHub. Check GitHub first, then discard.');
+  await expect(drawer.getByRole('link', { name: 'Write history' })).toBeVisible();
+  await expect(drawer.getByRole('radio', { name: 'Done' })).toBeDisabled();
+  await expect(drawer.getByRole('button', { name: 'Stage again' })).toHaveCount(0);
+  await expect(saveButton(page)).toBeDisabled();
+  const discard = drawer.getByRole('button', { name: 'Discard' });
+  await expect(discard).toBeEnabled();
+  await discard.click();
+
+  await expect(drawer.getByRole('region', { name: 'Staged change' })).toHaveCount(0);
+  await expect(column(page, 'Todo').locator('[data-issue-card="3"]')).toHaveAttribute('draggable', 'true');
+  expect(await storedCard(page, 3)).toBeNull();
+  expect(posts).toEqual([]);
+});
+
 test('issue=12 in the URL opens the drawer for #12 and includes it in the Board read', async ({ page }) => {
   const { boardIncludes } = await setup(page);
   await page.goto('/workspace/1?tab=board&issue=12');
@@ -389,18 +421,40 @@ test('the review lists each staged card with its title, from-to change and side 
 
   await review(page).getByRole('button', { name: 'Cancel' }).click();
   await expect(review(page)).toHaveCount(0);
+  await expect(saveButton(page)).toBeFocused();
   await expect(page.getByText('2 staged changes')).toBeVisible();
   expect(posts).toEqual([]);
 });
 
+test('the modal review contains focus and Escape leaves the task drawer open', async ({ page }) => {
+  await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  const drawer = await openDrawer(page, 3);
+  await drawer.getByRole('radio', { name: 'In Progress' }).check();
+  await saveButton(page).focus();
+  await page.keyboard.press('Enter');
+  const dialog = review(page);
+  await expect(dialog).toBeVisible();
+  expect(await dialog.evaluate(el => el.matches('dialog:modal'))).toBe(true);
+  await page.keyboard.press('Tab');
+  expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(drawer).toBeVisible();
+  await expect(saveButton(page)).toBeFocused();
+});
+
 test('confirming two staged cards sends one update each in issue-number order and clears the staged count (R3, R4)', async ({ page }) => {
-  const { posts } = await setup(page);
+  const { issues, posts } = await setup(page);
   const finished: string[] = [];
   const sent = await mockUpdates(page, async (route, update) => {
     finished.push(`request ${update.number}`);
     // Holds the first answer back, so a second send that did not wait for it would be recorded before it.
     if (update.number === 3) await new Promise(resolve => setTimeout(resolve, 300));
     finished.push(`answer ${update.number}`);
+    const row = issues.find(row => row.number === update.number)!;
+    if (update.number === 3) Object.assign(row, { status: 'in_progress', labels: ['status:in-progress'] });
+    else Object.assign(row, { status: 'todo', labels: [...row.labels, 'status:todo'] });
     await route.fulfill({ status: 201, json: operation(update.number, 'succeeded') });
   });
   await page.goto('/workspace/1?tab=board');
@@ -412,6 +466,8 @@ test('confirming two staged cards sends one update each in issue-number order an
   await expect(page.getByText('0 staged changes')).toBeVisible();
   await expect(review(page)).toHaveCount(0);
   await expect(saveButton(page)).toBeDisabled();
+  await expect(column(page, 'In Progress').locator('[data-issue-card="3"]')).toBeVisible();
+  await expect(column(page, 'Todo').locator('[data-issue-card="12"]')).toBeVisible();
   expect(finished).toEqual(['request 3', 'answer 3', 'request 12', 'answer 12']);
   expect(sent.map(update => update.body)).toEqual([
     { labels: { add: ['status:in-progress'], remove: ['status:todo'] }, expect: { status: 'todo', assignees: ['alex'], statusLabels: ['status:todo'] } },
@@ -449,6 +505,10 @@ test('a changed_on_github response marks the card Changed on GitHub, with no Boa
   expect(sent).toHaveLength(1);
   expect(await storedCard(page, 3)).toMatchObject({ phase: 'changed', request: null, snapshot: { status: 'in_review', assignees: ['sam'] }, target: { status: 'in_progress' } });
   await expect(saveButton(page)).toBeDisabled();
+  const drawer = await openDrawer(page, 3);
+  await expect(drawer).toContainText('This issue changed on GitHub. Stage your change again to save it, or discard it.');
+  await drawer.getByRole('button', { name: 'Stage again' }).click();
+  expect(await storedCard(page, 3)).toMatchObject({ phase: 'staged', snapshot: { status: 'in_review' }, target: { status: 'in_progress' } });
 });
 
 test('a not-recorded response leaves the card Failed, and saving it again sends a new Idempotency-Key (R6)', async ({ page }) => {
@@ -467,6 +527,11 @@ test('a not-recorded response leaves the card Failed, and saving it again sends 
   expect(sent).toHaveLength(1);
 
   // A failed card is saved again by staging it again.
+  const drawer = await openDrawer(page, 3);
+  await expect(drawer).toContainText('The save failed. Stage your change again to retry, or discard it.');
+  await drawer.getByRole('button', { name: 'Stage again' }).click();
+  expect(await storedCard(page, 3)).toMatchObject({ phase: 'staged', target: { status: 'in_progress' } });
+  await drawer.getByRole('button', { name: 'Close task drawer' }).click();
   await card(page, 3).dragTo(column(page, 'In Review'), { steps: 15 });
   await expect(card(page, 3)).toContainText('Staged · from Todo');
   await confirmSave(page);
@@ -497,6 +562,7 @@ test('an unknown card with an operation id is locked and Recheck calls the reche
   await expect(drawer.getByRole('radio', { name: 'Done' })).toBeDisabled();
   await expect(drawer.getByRole('button', { name: 'Discard' })).toBeDisabled();
   await expect(drawer.getByRole('button', { name: 'Check recorded status' })).toHaveCount(0);
+  await expect(drawer.getByRole('link', { name: 'Write history' })).toBeVisible();
   expect(rechecks).toEqual([]);
   await drawer.getByRole('button', { name: 'Recheck' }).click();
 
@@ -529,6 +595,7 @@ test('an unknown card with no operation id is locked and Check recorded status r
   await expect(drawer.getByRole('radio', { name: 'Done' })).toBeDisabled();
   await expect(drawer.getByRole('button', { name: 'Discard' })).toBeDisabled();
   await expect(drawer.getByRole('button', { name: 'Recheck' })).toHaveCount(0);
+  await expect(drawer.getByRole('link', { name: 'Write history' })).toBeVisible();
   expect(sent).toHaveLength(1);
   await drawer.getByRole('button', { name: 'Check recorded status' }).click();
 
@@ -537,6 +604,80 @@ test('an unknown card with no operation id is locked and Check recorded status r
   expect(sent[1].key).toBe(sent[0].key);
   expect(sent[1].body).toEqual(sent[0].body);
   expect(await boardKeys(page)).toEqual([]);
+});
+
+for (const replacementId of [null, 78]) {
+  test(`recovery preserves storage when the card is ${replacementId === null ? 'cleared' : 'given another operation id'} in flight`, async ({ page }) => {
+    await page.addInitScript(() => Object.defineProperty(navigator, 'locks', { value: undefined }));
+    await setup(page);
+    await mockUpdates(page, route => route.fulfill({ status: 202, json: operation(3, 'unknown', 77) }));
+    let pending: Route | undefined;
+    await page.route('**/api/write-operations/77/recheck', route => { pending = route; });
+    await page.goto('/workspace/1?tab=board');
+    await stageStatus(page, 3, 'In Progress');
+    await confirmSave(page);
+    const drawer = await openDrawer(page, 3);
+    await drawer.getByRole('button', { name: 'Recheck' }).click();
+    await expect.poll(() => Boolean(pending)).toBe(true);
+    await expect(drawer.getByRole('button', { name: 'Rechecking…' })).toBeVisible();
+
+    await page.evaluate(id => {
+      const key = 'repoorbit:issue-draft:real:ada:1:board:3';
+      if (id === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key)!), operationId: id }));
+    }, replacementId);
+    const latest = await storedCard(page, 3);
+    await pending!.fulfill({ json: operation(3, 'unknown', 77) });
+    await expect(drawer.getByRole('button', { name: 'Rechecking…' })).toHaveCount(0);
+    expect(await storedCard(page, 3)).toEqual(latest);
+    if (replacementId === null) await expect(drawer.getByRole('region', { name: 'Staged change' })).toHaveCount(0);
+  });
+}
+
+test('another tab waits for the save lock, rereads the card, and refreshes the Board on removal', async ({ page, context }) => {
+  const { issues } = await setup(page);
+  const other = await context.newPage();
+  const { issues: otherIssues, boardIncludes } = await setup(other);
+  let pending: Route | undefined;
+  const sent = await mockUpdates(page, async route => { pending = route; });
+  const replays = await mockUpdates(other);
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  await confirmSave(page);
+  await expect.poll(() => Boolean(pending)).toBe(true);
+  const lockName = 'repoorbit:issue-draft:real:ada:1:board:';
+  expect((await page.evaluate(() => navigator.locks.query())).held).toEqual([expect.objectContaining({ name: lockName, mode: 'exclusive' })]);
+
+  await other.goto('/workspace/1?tab=board');
+  const drawer = await openDrawer(other, 3);
+  await drawer.getByRole('button', { name: 'Check recorded status' }).click();
+  await expect.poll(async () => (await other.evaluate(() => navigator.locks.query())).pending?.map(lock => lock.name)).toEqual([lockName]);
+  const readsBeforeRemoval = boardIncludes.length;
+  for (const rows of [issues, otherIssues]) Object.assign(rows.find(row => row.number === 3)!, { status: 'in_progress', labels: ['status:in-progress'] });
+  await pending!.fulfill({ json: operation(3, 'succeeded') });
+
+  await expect(review(page)).toHaveCount(0);
+  await expect(drawer.getByRole('region', { name: 'Staged change' })).toHaveCount(0);
+  await expect(column(other, 'In Progress').locator('[data-issue-card="3"]')).toBeVisible();
+  expect(boardIncludes).toHaveLength(readsBeforeRemoval + 1);
+  expect(sent).toHaveLength(1);
+  expect(replays).toEqual([]);
+});
+
+test('a transport failure names the reviewed cards that remain staged and the next save clears the notice', async ({ page }) => {
+  await setup(page);
+  const sent = await mockUpdates(page, route => route.abort());
+  await page.goto('/workspace/1?tab=board');
+  for (const n of [1, 3, 5]) await stageStatus(page, n, 'In Review');
+  await confirmSave(page);
+
+  await expect(review(page)).toHaveCount(0);
+  expect(sent.map(update => update.number)).toEqual([1]);
+  const notice = page.getByRole('status').filter({ hasText: '#3, #5 were not sent and are still staged.' });
+  await expect(notice).toHaveCount(1);
+  await saveButton(page).click();
+  await review(page).getByRole('button', { name: 'Cancel' }).click();
+  await expect(notice).toHaveCount(0);
 });
 
 for (const [change, alter] of [
@@ -567,6 +708,10 @@ for (const [change, alter] of [
     } else {
       await expect(page.getByText('1 staged change')).toBeVisible();
       expect(await storedCard(page, 3)).toMatchObject({ phase: 'staged', target: alter, request: null });
+      const notice = page.getByRole('status').filter({ hasText: '#3 was not sent and is still staged.' });
+      await expect(notice).toBeVisible();
+      await stageStatus(page, 3, 'In Review');
+      await expect(notice).toHaveCount(0);
     }
   });
 }

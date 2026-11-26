@@ -57,8 +57,17 @@ test.describe('board save review', () => {
     expect(reviewableCards([card(9), card(2, 'failed'), card(4)]).map(c => c.number)).toEqual([4, 9]);
   });
 
-  test('an assignee-only change is named as one, and a card missing from the Board keeps its number', () => {
-    const reviewed = [card(3, 'staged', { status: 'in_review', assigneesAdd: ['alex'] })];
-    expect(reviewItems(reviewed, [], ada, names)).toEqual([{ number: 3, title: 'Issue not on the Board', change: 'In Review · assignee change', sideEffects: [] }]);
+  test('an assignee-only change names the added and removed logins, and a card missing from the Board keeps its number', () => {
+    const reviewed = [card(3, 'staged', { status: 'in_review', assigneesAdd: ['alex'], assigneesRemove: ['sam'] })];
+    expect(reviewItems(reviewed, [], ada, names)).toEqual([{ number: 3, title: 'Issue not on the Board', change: 'In Review · +@alex · -@sam', sideEffects: [] }]);
+  });
+
+  test('a move lists explicit assignee edits and keeps auto-assignment only in the side effects', () => {
+    const autoAssigned = card(4, 'staged', { status: 'in_progress' });
+    autoAssigned.snapshot.assignees = [];
+    const reviewed = [card(3, 'staged', { assigneesAdd: ['alex'], assigneesRemove: ['sam'] }), autoAssigned];
+    const items = reviewItems(reviewed, [row(3, 'Ship the Board'), row(4, 'Start the next task')], ada, names);
+    expect(items.map(item => item.change)).toEqual(['In Review → Done · +@alex · -@sam', 'In Review → In Progress']);
+    expect(items[1].sideEffects).toContain('Assigns you (ada)');
   });
 });

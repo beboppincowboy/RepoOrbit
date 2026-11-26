@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { IssueWriteError, type BoardIssue, type BoardSnapshot, type WriteOperation } from '../src/lib/api';
 import { applySaveResult, deriveChange, isChangedOnGitHub, loadBoardCards, saveBoardCard, stageAssignees, type BoardCard, type BoardCardPhase, type BoardTarget } from '../src/lib/board';
+import { mockWindowStorage } from './mocks';
 
 
 const ada = { login: 'ada', assignable: true };
@@ -200,6 +201,13 @@ test.describe('applySaveResult', () => {
     expect(applySaveResult(sent(), { error })).toEqual(cleared('changed', { snapshot: current }));
   });
 
+  test('an assignee-only edit keeps a teammate’s closed status when staged again', () => {
+    const current = snap({ state: 'closed', status: 'done', assignees: ['sam'], updatedAt: t1 });
+    const error = new IssueWriteError('changed', { status: 409, kind: 'changed_on_github', current });
+    const target = to('todo', ['alex'], ['sam']);
+    expect(applySaveResult(sent({ target }), { error })).toEqual(cleared('changed', { snapshot: current, target: { ...target, status: 'done' } }));
+  });
+
   test('a not_recorded failure maps to failed and clears the request and key', () => {
     const error = new IssueWriteError('refused', { status: 422, kind: 'unprocessable', disposition: 'not-recorded' });
     expect(applySaveResult(sent(), { error })).toEqual(cleared('failed'));
@@ -250,7 +258,7 @@ test.describe('applySaveResult', () => {
     expect(applySaveResult(sent(), { error })).toEqual(lockedUnknown(null));
   });
 
-  // Contract for the save loop (a later unit): cards already unknown or pending are skipped, never re-sent or mapped.
+  // Contract for the save loop: cards already unknown or pending are skipped, never re-sent or mapped.
   test('contract: the save loop only maps staged, changed or failed cards, and never mutates the card it passes', () => {
     for (const phase of ['staged', 'changed', 'failed'] as const) {
       const card = sent({ phase });
@@ -263,19 +271,7 @@ test.describe('applySaveResult', () => {
 
 test.describe('saveBoardCard', () => {
   test('persists a pending card as unknown while keeping other fields intact', () => {
-    const originalWindow = globalThis.window;
-    const localStorage = Object.create({
-      getItem(this: Record<string, string>, key: string): string | null {
-        return Object.prototype.hasOwnProperty.call(this, key) ? this[key] : null;
-      },
-      setItem(this: Record<string, string>, key: string, value: string): void {
-        this[key] = String(value);
-      },
-      removeItem(this: Record<string, string>, key: string): void {
-        delete this[key];
-      },
-    }) as Storage;
-    globalThis.window = { localStorage } as unknown as Window & typeof globalThis;
+    const { restore } = mockWindowStorage();
     try {
       const snapshot = snap({ status: 'todo', labels: ['status:todo'], assignees: ['sam'] });
       const target = to('in_progress', ['ada']);
@@ -307,11 +303,7 @@ test.describe('saveBoardCard', () => {
         stagedCard,
       ]);
     } finally {
-      if (originalWindow === undefined) {
-        Reflect.deleteProperty(globalThis, 'window');
-      } else {
-        globalThis.window = originalWindow;
-      }
+      restore();
     }
   });
 });

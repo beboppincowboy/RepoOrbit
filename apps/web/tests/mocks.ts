@@ -1,5 +1,30 @@
 import type { Page } from '@playwright/test';
 
+export function mockWindowStorage(options: { refuseWrites?: boolean; dropWrites?: boolean } = {}) {
+  const originalWindow = globalThis.window;
+  // Stored entries are own properties, as in the browser, so Object.keys lists them.
+  const storage = Object.create({
+    getItem(this: Record<string, string>, key: string): string | null {
+      return Object.hasOwn(this, key) ? this[key] : null;
+    },
+    setItem(this: Record<string, string>, key: string, value: string): void {
+      if (options.refuseWrites) throw new Error('QuotaExceededError');
+      if (!options.dropWrites) this[key] = String(value);
+    },
+    removeItem(this: Record<string, string>, key: string): void {
+      delete this[key];
+    },
+  }) as Storage;
+  globalThis.window = { localStorage: storage } as unknown as Window & typeof globalThis;
+  return {
+    storage,
+    restore() {
+      if (originalWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
+      else globalThis.window = originalWindow;
+    },
+  };
+}
+
 // Shared API fixtures for browser tests that run without the Go API.
 export type Session = { mode: 'demo' | 'real'; user: { login: string; demo: boolean } | null; csrfToken: string | null };
 export const signedIn: Session = { mode: 'real', user: { login: 'ada', demo: false }, csrfToken: 't' };

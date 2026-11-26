@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { BOARD_STATUSES, stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
-import { recoveryAction } from "@/lib/board-recovery";
+import { canDiscardBoardCard, recoveryAction } from "@/lib/board-recovery";
 import { confirmDisabled } from "@/lib/board-review";
 import type { BoardIssue, BoardStatus } from "@/lib/api";
 
@@ -17,7 +17,7 @@ const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const has = (list: string[], value: string) => list.some(item => same(item, value));
 
 // Each recovery action's button, idle and while it runs.
-const recoveryNames = { recheck: ["Recheck", "Rechecking…"], "check-recorded-status": ["Check recorded status", "Checking…"] } as const;
+const recoveryNames = { recheck: ["Recheck", "Rechecking…"], "resend": ["Check recorded status", "Checking…"] } as const;
 
 type TaskDrawerProps = {
   repositoryId: string;
@@ -64,6 +64,7 @@ export function TaskDrawer({ repositoryId, issueNumber, issue, card, github, ass
   const [recovering, setRecovering] = useState(false);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
   const action = card ? recoveryAction(card) : "none";
+  const canDiscard = card ? canDiscardBoardCard(card) : false;
 
   async function recover() {
     setRecovering(true);
@@ -132,20 +133,27 @@ export function TaskDrawer({ repositoryId, issueNumber, issue, card, github, ass
           <section aria-label="Staged change" className="flex flex-col gap-1.5 rounded-[10px] border border-primary-soft bg-primary-soft px-3 py-2">
             <strong>{card.target.status === card.snapshot.status ? "Staged assignee change" : `Staged: ${STATUS_NAMES[card.snapshot.status]} → ${STATUS_NAMES[card.target.status]}`}</strong>
             {sideEffects.length > 0 && <ul className="m-0 list-disc pl-4">{sideEffects.map(line => <li key={line}>{line}</li>)}</ul>}
-            {card.phase !== "unknown" ? <span className="text-xs text-muted-foreground">Nothing is sent to GitHub until you save.</span> : action === "none" ? <>
-              <span className="text-xs text-muted-foreground">This change may already be on GitHub, and it can't be checked from here. The card stays locked.</span>
-              <Link to="/workspace/$repositoryId" params={{ repositoryId }} search={prev => ({ days: prev.days ?? 30, tab: "issues" })} className="self-start text-primary underline">Write history</Link>
-            </> : <>
+            {card.phase === "unknown" ? <>
               <span className="text-xs text-muted-foreground">{action === "recheck"
                 ? "This change may already be on GitHub. Recheck reads the issue again to confirm it."
-                : "This change may already be on GitHub. Checking resends the same request under the same key, so GitHub is not asked to apply it twice."}</span>
-              {recoveryBlocked && <p role="status" className="m-0">{recoveryBlocked}</p>}
-              <Button size="sm" className="self-start" disabled={confirmDisabled({ blocked: recoveryBlocked, saving: busy })} aria-busy={recovering} onClick={() => void recover()}>
-                {recoveryNames[action][recovering ? 1 : 0]}
-              </Button>
-            </>}
+                : action === "resend"
+                  ? "This change may already be on GitHub. Checking resends the same request under the same key, so GitHub is not asked to apply it twice."
+                  : canDiscard
+                    ? "This change may already be on GitHub. Check GitHub first, then discard."
+                    : "This change may already be on GitHub, and it can't be checked from here. The card stays locked."}</span>
+              {action !== "none" && <>
+                {recoveryBlocked && <p role="status" className="m-0">{recoveryBlocked}</p>}
+                <Button size="sm" className="self-start" disabled={confirmDisabled({ blocked: recoveryBlocked, saving: busy })} aria-busy={recovering} onClick={() => void recover()}>
+                  {recoveryNames[action][recovering ? 1 : 0]}
+                </Button>
+              </>}
+              <Link to="/workspace/$repositoryId" params={{ repositoryId }} search={prev => ({ days: prev.days ?? 30, tab: "issues" })} className="self-start text-primary underline">Write history</Link>
+            </> : card.phase === "changed" || card.phase === "failed" ? <>
+              <span className="text-xs text-muted-foreground">{card.phase === "changed" ? "This issue changed on GitHub. Stage your change again to save it, or discard it." : "The save failed. Stage your change again to retry, or discard it."}</span>
+              <Button variant="outline" size="sm" className="self-start" disabled={disabled || !issue?.status} onClick={() => onStage(card.target)}>Stage again</Button>
+            </> : <span className="text-xs text-muted-foreground">Nothing is sent to GitHub until you save.</span>}
             {recoveryError && card.phase !== "staged" && <p role="alert" className="m-0 rounded-[10px] border border-destructive bg-destructive-soft px-3 py-2">{recoveryError}</p>}
-            <Button variant="outline" size="sm" className="self-start" disabled={card.phase === "pending" || card.phase === "unknown"} onClick={onDiscard}>Discard</Button>
+            <Button variant="outline" size="sm" className="self-start" disabled={!canDiscard} onClick={onDiscard}>Discard</Button>
           </section>
         )}
       </div>

@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test';
-import { IssueWriteError, type IssueUpdateDraft, type WriteOperation } from '../src/lib/api';
+import { IssueWriteError, recheckWriteOperation, submitIssueUpdate, type IssueUpdateDraft, type WriteOperation } from '../src/lib/api';
 import { loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard } from '../src/lib/board';
 import { saveBoardChanges, type BoardSaveOptions } from '../src/lib/board-save';
+import { mockWindowStorage } from './mocks';
 
 const viewer = 'user:ada';
 const repo = 'repo-1';
@@ -43,33 +44,16 @@ const save = (reviewed: BoardCard[], submit: BoardSaveOptions['submit'], onChang
   saveBoardChanges({ viewerKey: viewer, repositoryId: repo, reviewed, saver: ada, onChange, submit });
 
 test.describe('saveBoardChanges', () => {
-  const originalWindow = globalThis.window;
-  let refuseWrites = false;
-  let dropWrites = false;
+  let restoreWindow: () => void;
+  const storageOptions = { refuseWrites: false, dropWrites: false };
 
   test.beforeEach(() => {
-    refuseWrites = false;
-    dropWrites = false;
-    // Stored entries are own properties, as in the browser, so Object.keys lists them.
-    const localStorage = Object.create({
-      getItem(this: Record<string, string>, key: string): string | null {
-        return Object.prototype.hasOwnProperty.call(this, key) ? this[key] : null;
-      },
-      setItem(this: Record<string, string>, key: string, value: string): void {
-        if (refuseWrites) throw new Error('QuotaExceededError');
-        if (!dropWrites) this[key] = String(value);
-      },
-      removeItem(this: Record<string, string>, key: string): void {
-        delete this[key];
-      },
-    }) as Storage;
-    globalThis.window = { localStorage } as unknown as Window & typeof globalThis;
+    storageOptions.refuseWrites = false;
+    storageOptions.dropWrites = false;
+    restoreWindow = mockWindowStorage(storageOptions).restore;
   });
 
-  test.afterEach(() => {
-    if (originalWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
-    else globalThis.window = originalWindow;
-  });
+  test.afterEach(() => restoreWindow());
 
   test('happy path: two staged cards are sent one at a time in issue-number order and both leave the staged list', async () => {
     const reviewed = review(12, 3).reverse();
@@ -104,9 +88,36 @@ test.describe('saveBoardChanges', () => {
 
   test('error path: a send with no reliable answer leaves the card unknown with its request, key and attemptedAt', async () => {
     const { sends, submit } = fakeSubmit(() => { throw new IssueWriteError('timeout', { status: 504, kind: 'transport' }); });
-    await save(review(3), submit);
+    expect(await save(review(3, 12), submit)).toBe(true);
+    expect(sends.map(send => send.number)).toEqual([3]);
     expect(stored(3)).toMatchObject({ phase: 'unknown', request: { draft: sends[0].draft, idempotencyKey: sends[0].key } });
     expect(Number.isFinite(Date.parse(stored(3)!.attemptedAt!))).toBe(true);
+    expect(stored(12)).toEqual(staged(12));
+  });
+
+  for (const [name, error, phase] of [
+    ['an expired session', new IssueWriteError('Sign in again', { status: 401, kind: 'unauthenticated' }), 'failed'],
+    ['an unexpected exception', new Error('Unexpected failure'), 'unknown'],
+  ] as const) {
+    test(`the batch stops after storing the outcome of ${name}`, async () => {
+      const { sends, submit } = fakeSubmit(() => { throw error; });
+      expect(await save(review(3, 12), submit)).toBe(true);
+      expect(sends.map(send => send.number)).toEqual([3]);
+      expect(stored(3)).toMatchObject({ phase });
+      expect(stored(12)).toEqual(staged(12));
+    });
+  }
+
+  test('a thrown send error preserves the operation id already saved by recovery', async () => {
+    let recovered: BoardCard | undefined;
+    const { submit } = fakeSubmit(number => {
+      recovered = { ...stored(number)!, operationId: 43 };
+      saveBoardCard(viewer, repo, recovered);
+      throw new IssueWriteError('timeout', { status: 504, kind: 'transport' });
+    });
+    await save(review(3), submit);
+    expect(stored(3)).toEqual(recovered);
+    expect(stored(3)?.operationId).toBe(43);
   });
 
   test('edge: a card that became unknown in storage after the review opened is skipped and not sent', async () => {
@@ -117,6 +128,36 @@ test.describe('saveBoardChanges', () => {
     await save(reviewed, submit);
     expect(sends.map(send => send.number)).toEqual([12]);
     expect(loadBoardCards(viewer, repo)).toEqual([locked]);
+  });
+
+  test('the repository lock covers the reread, send and outcome writes for the batch', async () => {
+    const reviewed = review(3, 12);
+    const locked: BoardCard = { ...staged(3), phase: 'unknown', operationId: 77 };
+    const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    let lockName: string | undefined;
+    let held = false;
+    const changesWhileHeld: boolean[] = [];
+    const locks = {
+      request: async (name: string, work: () => Promise<boolean>) => {
+        lockName = name;
+        saveBoardCard(viewer, repo, locked);
+        held = true;
+        try { return await work(); }
+        finally { held = false; }
+      },
+    };
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks } });
+    try {
+      const { sends, submit } = fakeSubmit();
+      expect(await save(reviewed, submit, () => changesWhileHeld.push(held))).toBe(true);
+      expect(lockName).toBe('repoorbit:issue-draft:user:ada:repo-1:board:');
+      expect(sends.map(send => send.number)).toEqual([12]);
+      expect(loadBoardCards(viewer, repo)).toEqual([locked]);
+      expect(changesWhileHeld).toEqual([true, true]);
+    } finally {
+      if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+      else Reflect.deleteProperty(globalThis, 'navigator');
+    }
   });
 
   test('edge: a card whose stored snapshot or target was replaced since review, or which was discarded, is not sent', async () => {
@@ -142,7 +183,10 @@ test.describe('saveBoardChanges', () => {
       return operation(number, 'succeeded');
     });
     const before = Date.now();
-    await save(review(3), submit, () => { changes++; });
+    await save(review(3), (...args) => {
+      expect(args[4]).toBeInstanceOf(AbortSignal);
+      return submit(...args);
+    }, () => { changes++; });
     expect(seen[0]).toMatchObject({ phase: 'unknown', request: { draft: sends[0].draft, idempotencyKey: sends[0].key } });
     expect(sends[0].key).toMatch(/^ro-/);
     expect(Date.parse(seen[0]!.attemptedAt!)).toBeGreaterThanOrEqual(before);
@@ -154,7 +198,7 @@ test.describe('saveBoardChanges', () => {
 
   test('edge: a card whose request cannot be stored is not sent and stays staged', async () => {
     const reviewed = review(3);
-    refuseWrites = true;
+    storageOptions.refuseWrites = true;
     const { sends, submit } = fakeSubmit();
     await save(reviewed, submit);
     expect(sends).toEqual([]);
@@ -163,7 +207,7 @@ test.describe('saveBoardChanges', () => {
 
   test('edge: a card whose storage write is silently dropped is not sent and stays staged', async () => {
     const reviewed = review(3);
-    dropWrites = true;
+    storageOptions.dropWrites = true;
     const { sends, submit } = fakeSubmit();
     await save(reviewed, submit);
     expect(sends).toEqual([]);
@@ -195,4 +239,29 @@ test.describe('saveBoardChanges', () => {
     expect(await save(review(20), second.submit)).toBe(true);
     expect(second.sends.map(send => send.number)).toEqual([20]);
   });
+});
+
+test('an aborted update or recheck fetch is reported as an issue write transport error', async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const signals: (AbortSignal | null | undefined)[] = [];
+  globalThis.fetch = async (_input, init) => {
+    signals.push(init?.signal);
+    controller.abort();
+    controller.signal.throwIfAborted();
+    throw new Error('Expected the fetch to abort');
+  };
+  try {
+    for (const send of [
+      () => submitIssueUpdate(repo, 3, 'ro-key', {}, controller.signal),
+      () => recheckWriteOperation(43, 3, controller.signal),
+    ]) {
+      const result = send();
+      await expect(result).rejects.toBeInstanceOf(IssueWriteError);
+      await expect(result).rejects.toMatchObject({ kind: 'transport', status: 0 });
+    }
+    expect(signals).toEqual([controller.signal, controller.signal]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

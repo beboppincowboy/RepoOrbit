@@ -7,11 +7,12 @@ import { BoardSaveReview } from "@/components/board-save-review";
 import { StatusSourceSetup } from "@/components/status-source-setup";
 import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
-import { BOARD_STATUSES, deriveChange, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardSaver, type BoardTarget } from "@/lib/board";
-import { runRecovery } from "@/lib/board-recovery";
+import { BOARD_STATUSES, deriveChange, loadBoardCard, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
+import { canDiscardBoardCard, runRecovery } from "@/lib/board-recovery";
 import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from "@/lib/board-review";
-import { saveBoardChanges } from "@/lib/board-save";
+import { saveBoardChanges, withBoardLock } from "@/lib/board-save";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type BoardStatus, type IssueCapabilities, type ViewerSession } from "@/lib/api";
+import { boardDraftPrefix } from "@/lib/drafts";
 import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/lib/selected-repositories";
 
 const panel = "rounded-xl border border-border bg-card min-w-0 min-h-0";
@@ -38,14 +39,6 @@ const locked = (card?: BoardCard) => card?.phase === "pending" || card?.phase ==
 // The storage event only reaches other tabs. This one tells a mounted Board in this tab that a save or a recovery changed
 // the cards, including a Board mounted again while an earlier one's is still running.
 const CARDS_SAVED = "repoorbit:board-cards-saved";
-
-// Saves the cards the review showed, then reads the Board again.
-export function useBoardSave(viewerKey: string, repositoryId: string, saver: BoardSaver, refetchBoard: () => Promise<unknown>) {
-  return async (reviewed: BoardCard[]) => {
-    const ran = await saveBoardChanges({ viewerKey, repositoryId, reviewed, saver, onChange: () => window.dispatchEvent(new Event(CARDS_SAVED)) });
-    if (ran) await refetchBoard();
-  };
-}
 
 // Whether a save or a recovery started in this tab is still running. It outlives the Board, so one mounted again
 // meanwhile stays busy.
@@ -86,16 +79,8 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   const [text, setText] = useState("");
   // The staged cards as they were when the review opened; null while it is closed.
   const [reviewed, setReviewed] = useState<BoardCard[] | null>(null);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const saving = useSyncExternalStore(subscribeSaveRunning, () => saveRunning, () => false);
-  useEffect(() => {
-    const reload = () => setCards(loadBoardCards(viewerKey, repositoryId));
-    window.addEventListener("storage", reload);
-    window.addEventListener(CARDS_SAVED, reload);
-    return () => {
-      window.removeEventListener("storage", reload);
-      window.removeEventListener(CARDS_SAVED, reload);
-    };
-  }, [viewerKey, repositoryId]);
 
   const query = useQuery({
     queryKey: ["repositoryBoard", viewerKey, repositoryId],
@@ -132,6 +117,19 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   const boardLabels = board?.statusLabels;
   const refetchBoard = query.refetch;
   useEffect(() => {
+    const reload = () => setCards(loadBoardCards(viewerKey, repositoryId));
+    const onStorage = (event: StorageEvent) => {
+      reload();
+      if (event.newValue === null && event.key?.startsWith(boardDraftPrefix(viewerKey, repositoryId))) void refetchBoard();
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(CARDS_SAVED, reload);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(CARDS_SAVED, reload);
+    };
+  }, [viewerKey, repositoryId, refetchBoard]);
+  useEffect(() => {
     if (labelsSetting !== undefined && boardLabels !== undefined && labelsSetting !== boardLabels) void refetchBoard();
   }, [labelsSetting, boardLabels, refetchBoard]);
 
@@ -157,7 +155,6 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     return null;
   }
   const blocked = getBlockedReason();
-  const save = useBoardSave(viewerKey, repositoryId, saver, refetchBoard);
   // A Board that stops showing its columns takes the review with it.
   if (reviewed && !board?.statusLabels) setReviewed(null);
 
@@ -165,7 +162,16 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     if (!reviewed || saveRunning || blocked) return;
     setSaveRunning(true);
     try {
-      await save(reviewed);
+      const ran = await saveBoardChanges({ viewerKey, repositoryId, reviewed, saver, onChange: () => window.dispatchEvent(new Event(CARDS_SAVED)) });
+      if (ran) {
+        await refetchBoard();
+        const current = loadBoardCards(viewerKey, repositoryId);
+        setCards(current);
+        const unsent = current.filter(card => card.phase === "staged" && reviewed.some(seen => seen.number === card.number));
+        if (unsent.length) {
+          setSaveNotice(`${unsent.map(card => `#${card.number}`).join(", ")} ${unsent.length === 1 ? "was not sent and is" : "were not sent and are"} still staged.`);
+        }
+      }
     } finally {
       setSaveRunning(false);
       setReviewed(null);
@@ -174,20 +180,26 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
 
   // Resolves an unknown card, one send at a time with the save. Resolves the failure to show, or null.
   async function recover(issueNumber: number): Promise<string | null> {
-    const stored = () => loadBoardCards(viewerKey, repositoryId).find(card => card.number === issueNumber);
-    const card = stored();
-    if (!card || saveRunning || blocked) return null;
+    if (saveRunning || blocked) return null;
     setSaveRunning(true);
     try {
-      const recovery = await runRecovery(card, { repositoryId });
-      const current = stored();
-      // Signing out, losing access or another tab may settle the card meanwhile; this result must not bring it back.
-      if (!recovery || current?.phase !== "unknown" || current.request?.idempotencyKey !== card.request?.idempotencyKey) return null;
-      if (recovery.outcome.kind === "removed") removeBoardCard(viewerKey, repositoryId, issueNumber);
-      else saveBoardCard(viewerKey, repositoryId, recovery.outcome.card);
-      window.dispatchEvent(new Event(CARDS_SAVED));
+      const result = await withBoardLock(viewerKey, repositoryId, async () => {
+        const stored = () => loadBoardCard(viewerKey, repositoryId, issueNumber);
+        const card = stored();
+        if (!card) return null;
+        const recovery = await runRecovery(card, { repositoryId });
+        const current = stored();
+        // Signing out, losing access or another tab may settle the card meanwhile.
+        if (!recovery || current?.phase !== "unknown" || current.operationId !== card.operationId
+          || current.request?.idempotencyKey !== card.request?.idempotencyKey) return null;
+        if (recovery.outcome.kind === "removed") removeBoardCard(viewerKey, repositoryId, issueNumber);
+        else if (recovery.outcome.card !== card) saveBoardCard(viewerKey, repositoryId, recovery.outcome.card);
+        window.dispatchEvent(new Event(CARDS_SAVED));
+        return recovery;
+      });
+      if (!result) return null;
       await refetchBoard();
-      return recovery.error;
+      return result.error;
     } finally {
       setSaveRunning(false);
       // Also redraws a card whose action was no longer offered when it was pressed.
@@ -198,9 +210,18 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   function stage(row: BoardIssue, target: BoardTarget) {
     const card = cardOf(row.number);
     if (blocked || !row.status || locked(card)) return;
+    setSaveNotice(null);
     const snapshot = card?.snapshot ?? { state: row.state, labels: row.labels, assignees: row.assignees, status: row.status, updatedAt: row.updatedAt };
     if (deriveChange(snapshot, target, saver)) saveBoardCard(viewerKey, repositoryId, { version: 1, number: row.number, snapshot, target, phase: "staged", request: null, operationId: null });
     else removeBoardCard(viewerKey, repositoryId, row.number);
+    setCards(loadBoardCards(viewerKey, repositoryId));
+  }
+
+  function discard(issueNumber: number) {
+    const card = loadBoardCard(viewerKey, repositoryId, issueNumber);
+    if (!card || !canDiscardBoardCard(card)) return;
+    setSaveNotice(null);
+    removeBoardCard(viewerKey, repositoryId, issueNumber);
     setCards(loadBoardCards(viewerKey, repositoryId));
   }
 
@@ -357,10 +378,11 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
         {board?.statusLabels && (
           <div className="ml-auto flex items-center gap-2 text-xs">
             <span className={muted}>{staged === 1 ? "1 staged change" : `${staged} staged changes`} · nothing is sent to GitHub until you save</span>
-            <Button size="sm" {...saveButtonState({ staged, blocked, saving })} aria-busy={saving} onClick={() => setReviewed(stagedCards)}>{saving ? "Saving…" : "Save…"}</Button>
+            <Button size="sm" {...saveButtonState({ staged, blocked, saving })} aria-busy={saving} onClick={() => { setSaveNotice(null); setReviewed(stagedCards); }}>{saving ? "Saving…" : "Save…"}</Button>
           </div>
         )}
       </section>
+      {saveNotice && <p role="status" className={`${panel} m-0 flex-none px-4 py-2 text-[13px]`}>{saveNotice}</p>}
       {demo && (
         <div role="status" className="flex-none rounded-[10px] border border-demo bg-demo-soft px-3 py-2 text-[13px] text-demo">
           <strong>Demo mode</strong> — remote GitHub writes are disabled, so Board changes cannot be staged.
@@ -387,7 +409,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
           busy={saving}
           onRecover={() => recover(openIssue)}
           onStage={target => openRow && stage(openRow, target)}
-          onDiscard={() => { removeBoardCard(viewerKey, repositoryId, openIssue); setCards(loadBoardCards(viewerKey, repositoryId)); }}
+          onDiscard={() => discard(openIssue)}
           onClose={closeDrawer}
         />
       )}
