@@ -568,26 +568,33 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 	s.respond(sw, ctx, http.StatusCreated, userID, opID, snap)
 }
 
+// classify maps a GitHub client error onto a domain error kind and returns domain.Classify's state and reason.
 func classify(err error) (string, string) {
 	if errors.Is(err, githubapp.ErrNotSent) {
 		return domain.Classify(domain.NotSent, 0)
 	}
 	var api *githubapp.APIError
-	if errors.As(err, &api) {
-		return domain.Classify(domain.HTTPError, api.Status)
+	switch {
+	case !errors.As(err, &api):
+		return domain.Classify(domain.OtherError, 0)
+	case api.Unauthorized():
+		return domain.Classify(domain.Unauthorized, api.Status)
+	case api.NotFound():
+		return domain.Classify(domain.NotFound, api.Status)
 	}
-	return domain.Classify(domain.OtherError, 0)
+	return domain.Classify(domain.HTTPError, api.Status)
 }
 
 func viewIssue(issue githubapp.Issue) *issueView {
-	v := &issueView{Number: issue.Number, URL: issue.HTMLURL, Title: issue.Title, State: issue.State, Labels: []string{}, Assignees: []string{}}
-	for _, l := range issue.Labels {
-		v.Labels = append(v.Labels, l.Name)
+	labels := make([]string, len(issue.Labels))
+	for i, l := range issue.Labels {
+		labels[i] = l.Name
 	}
-	for _, a := range issue.Assignees {
-		v.Assignees = append(v.Assignees, a.Login)
+	assignees := make([]string, len(issue.Assignees))
+	for i, a := range issue.Assignees {
+		assignees[i] = a.Login
 	}
-	return v
+	return domain.NewIssueView(issue.Number, issue.HTMLURL, issue.Title, issue.State, labels, assignees)
 }
 
 func (s *Service) sendCreate(ctx context.Context, userID int64, token, fullName string, d *createDraft) (string, outcome, *githubapp.Issue) {

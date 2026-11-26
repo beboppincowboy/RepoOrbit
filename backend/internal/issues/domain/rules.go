@@ -73,6 +73,13 @@ type IssueView struct {
 	Assignees []string `json:"assignees"`
 }
 
+// NewIssueView builds the confirmed issue as clients see it. Labels and assignees are never nil, so they encode as []
+// rather than null.
+func NewIssueView(number int64, url, title, state string, labels, assignees []string) *IssueView {
+	nonNil := func(v []string) []string { return append([]string{}, v...) }
+	return &IssueView{Number: number, URL: url, Title: title, State: state, Labels: nonNil(labels), Assignees: nonNil(assignees)}
+}
+
 // Outcome is what GitHub actually did. Unapplied lists requested changes the confirmed issue does not show, each as
 // "add label X", "remove label X", "add assignee X", "remove assignee X" or "state open|closed" (or one fixed
 // sentence when a wiped create's labels and assignees cannot be verified); for a status_labels operation, "create
