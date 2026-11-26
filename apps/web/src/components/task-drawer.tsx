@@ -23,7 +23,7 @@ const checkTone = (check: DeliveryCheck) => isFailed(check) ? "border-destructiv
   : "border-border bg-muted text-muted-foreground";
 
 // Each recovery action's button, idle and while it runs.
-const recoveryNames = { recheck: ["Recheck", "Rechecking…"], "check-recorded-status": ["Check recorded status", "Checking…"] } as const;
+const recoveryNames = { recheck: ["Recheck", "Rechecking…"], "resend": ["Check recorded status", "Checking…"] } as const;
 
 type TaskDrawerProps = {
   issueNumber: number;
