@@ -128,7 +128,7 @@ func (s *Service) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"operations": out})
 }
 
-func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request, settleStale bool) (int64, db.GetWriteOperationRow, repositories.Decision, accessfence.Snapshot, bool) {
+func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request) (int64, db.GetWriteOperationRow, repositories.Decision, accessfence.Snapshot, bool) {
 	userID, ok := auth.SignedInUserID(r.Context())
 	opID, idOK := pathID(r, "id")
 	if !ok || !idOK {
@@ -148,12 +148,6 @@ func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request, settleSt
 	if !ok {
 		return 0, db.GetWriteOperationRow{}, d, snap, false
 	}
-	if settleStale && scope.StalePending.Bool {
-		if err := s.Queries.FailStalePendingOperationByID(r.Context(), opID); err != nil {
-			s.internal(w, err)
-			return 0, db.GetWriteOperationRow{}, d, snap, false
-		}
-	}
 	row, err := s.Queries.GetWriteOperation(r.Context(), db.GetWriteOperationParams{ID: opID, UserID: userID})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -170,7 +164,7 @@ func (s *Service) loadOperation(w http.ResponseWriter, r *http.Request, settleSt
 }
 
 func (s *Service) get(w http.ResponseWriter, r *http.Request) {
-	if _, row, _, _, ok := s.loadOperation(w, r, false); ok {
+	if _, row, _, _, ok := s.loadOperation(w, r); ok {
 		writeJSON(w, http.StatusOK, s.view(toOperation(row)))
 	}
 }

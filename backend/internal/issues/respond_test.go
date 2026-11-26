@@ -64,6 +64,14 @@ func TestWriteResultMapsStatusBodyAndDisposition(t *testing.T) {
 		{"internal cleared", application.Result{Kind: application.ResultInternal, Disposition: none, Err: errors.New("boom")}, 500, "temporarily unavailable\n", ""},
 		{"internal not recorded", application.Result{Kind: application.ResultInternal, Disposition: nr, Err: errors.New("boom")}, 500, "temporarily unavailable\n", ""},
 		{"internal possibly recorded", application.Result{Kind: application.ResultInternal, Disposition: pr, Err: errors.New("boom")}, 500, "temporarily unavailable\n", "possibly-recorded"},
+		// Recheck answers outside respond carry no disposition, so they get no header.
+		{"recheck not found", application.Result{Kind: application.ResultNotFound}, 404, "not found\n", ""},
+		{"recheck access unverified", application.Result{Kind: application.ResultAccessUnverified}, 503, "access could not be verified; retry later\n", ""},
+		{"recheck access check moved", application.Result{Kind: application.ResultAccessCheckMoved}, 503, "access changed while it was being checked; retry\n", ""},
+		{"recheck forbidden", application.Result{Kind: application.ResultForbidden}, 403, "your current GitHub permission does not allow this action\n", ""},
+		{"recheck sign in required", application.Result{Kind: application.ResultSignInRequired}, 401, "sign in required\n", ""},
+		{"recheck credential unavailable", application.Result{Kind: application.ResultCredentialUnavailable}, 503, "GitHub credential unavailable; retry later\n", ""},
+		{"recheck upstream", application.Result{Kind: application.ResultUpstream}, 503, "GitHub could not be reached; nothing was sent\n", ""},
 	} {
 		rec := httptest.NewRecorder()
 		(&Service{GitHubURL: "https://github.com"}).writeResult(rec, tc.res)

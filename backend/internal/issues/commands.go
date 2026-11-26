@@ -475,28 +475,8 @@ func (s *Service) submit(sw *submitWriter, r *http.Request, c command) {
 	s.respond(sw, ctx, http.StatusCreated, userID, opID, snap)
 }
 
-var errAlreadyLinked = application.ErrAlreadyLinked
-
-var errMismatch = errors.New("not confirmed")
-
-// finish settles an operation under the issue lock through the store (see application.OperationStore.SettleUnderLock).
-func (s *Service) finish(ctx context.Context, opID, repoID int64, snap accessfence.Snapshot, lock int64, link bool, read func() (string, outcome, *githubapp.Issue, error)) error {
-	return operationStore{s}.SettleUnderLock(ctx, application.Settle{OperationID: opID, RepositoryID: repoID, Fence: snap, LockNumber: lock, Link: link},
-		func() (application.Settlement, error) {
-			state, out, confirmed, err := read()
-			if err != nil {
-				return application.Settlement{}, err
-			}
-			res := application.Settlement{State: state, Outcome: out}
-			if confirmed != nil {
-				res.Confirmed = *confirmed
-			}
-			return res, nil
-		})
-}
-
-const sendSkew = 5 * time.Second
-
+// recheck answers POST /api/write-operations/{id}/recheck: it decodes the body strictly before loading anything, runs
+// application.RecheckOperation and maps its result.
 func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		IssueNumber int64 `json:"issueNumber"`
@@ -505,90 +485,11 @@ func (s *Service) recheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	userID, row, d, snap, ok := s.loadOperation(w, r, true)
-	if !ok {
+	userID, ok := auth.SignedInUserID(r.Context())
+	opID, idOK := pathID(r, "id")
+	if !ok || !idOK {
+		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	if row.State != "unknown" {
-		writeJSON(w, http.StatusOK, s.view(toOperation(row)))
-		return
-	}
-	if row.Kind == "status_labels" {
-		s.recheckStatusLabels(w, r, userID, row, d, snap)
-		return
-	}
-	number := row.IssueNumber.Int64
-	if row.Kind == "create" {
-		if in.IssueNumber <= 0 {
-			http.Error(w, "issueNumber is required to recheck a create", http.StatusBadRequest)
-			return
-		}
-		number = in.IssueNumber
-	}
-	ctx := r.Context()
-	token, ok := s.token(w, ctx, userID)
-	if !ok {
-		return
-	}
-	mismatch := func() {
-		if s.fenceHolds(w, ctx, snap) {
-			writeJSON(w, http.StatusConflict, s.view(toOperation(row)))
-		}
-	}
-	var fetchErr error
-	err := s.finish(context.WithoutCancel(ctx), row.ID, row.RepositoryID, snap, number, row.Kind == "create", func() (string, outcome, *githubapp.Issue, error) {
-		issue, err := s.GitHub.FetchIssue(ctx, token, d.Repo.FullName, number)
-		var api *githubapp.APIError
-		switch {
-		case errors.As(err, &api) && api.NotFound():
-			return "", outcome{}, nil, errMismatch
-		case err != nil:
-			fetchErr = err
-			return "", outcome{}, nil, err
-		}
-		var out outcome
-		out.Issue = viewIssue(issue)
-		if row.Kind == "create" {
-			if issue.PullRequest != nil || issue.User == nil || issue.User.ID != row.ActorGithubID ||
-				!strings.EqualFold(issue.RepoURL, s.GitHub.APIURL+"/repos/"+d.Repo.FullName) ||
-				!bytes.Equal(domain.ContentHash(issue.Title, issue.Body), row.ContentHash) ||
-				!row.SentAt.Valid || issue.CreatedAt.Before(row.SentAt.Time.Add(-sendSkew)) {
-				return "", outcome{}, nil, errMismatch
-			}
-			var draft createDraft
-			switch {
-			case row.Draft != nil:
-				if err := json.Unmarshal(row.Draft, &draft); err != nil {
-					return "", outcome{}, nil, err
-				}
-				out.Unapplied = domain.Unapplied(out.Issue, delta{Add: draft.Labels}, delta{Add: draft.Assignees}, "")
-			case row.HasRequestedMetadata:
-				out.Unapplied = []string{"requested labels or assignees (unverifiable: the draft was removed)"}
-			}
-		} else {
-			var draft updateDraft
-			var sent outcome
-			if row.Draft == nil || json.Unmarshal(row.Draft, &draft) != nil || json.Unmarshal(row.Outcome, &sent) != nil {
-				return "", outcome{}, nil, errMismatch
-			}
-			out.Unapplied = domain.Unapplied(out.Issue, draft.Labels, draft.Assignees, draft.State)
-			if len(out.Unapplied) > 0 && !sent.AllStepsAnswered {
-				return "", outcome{}, nil, errMismatch
-			}
-			out.Error, out.AllStepsAnswered = sent.Error, sent.AllStepsAnswered
-		}
-		return domain.Resolved(out), out, &issue, nil
-	})
-	switch {
-	case fetchErr != nil:
-		s.upstream(w, ctx, userID, fetchErr)
-		return
-	case errors.Is(err, errMismatch), errors.Is(err, errAlreadyLinked):
-		mismatch()
-		return
-	case err != nil:
-		s.internal(w, err)
-		return
-	}
-	s.respond(w, ctx, http.StatusOK, userID, row.ID, snap)
+	s.writeResult(w, s.commands().RecheckOperation(r.Context(), application.RecheckOperationInput{UserID: userID, OperationID: opID, IssueNumber: in.IssueNumber}))
 }

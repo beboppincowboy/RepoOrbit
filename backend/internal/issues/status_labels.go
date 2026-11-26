@@ -2,19 +2,13 @@ package issues
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
-	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
-	"github.com/repoorbit/repoorbit/backend/internal/issues/application"
 	"github.com/repoorbit/repoorbit/backend/internal/issues/domain"
-	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
 var statusLabels = domain.StatusLabels
@@ -22,8 +16,6 @@ var statusLabels = domain.StatusLabels
 type statusLabelsDraft struct {
 	Labels []string `json:"labels"`
 }
-
-const recheckGrace = 2 * time.Minute
 
 func canChangeStatusLabels(r githubapp.Repo) bool {
 	return domain.CanChangeStatusLabels(domainRepo(r))
@@ -96,61 +88,13 @@ func (s *Service) ensureStatusLabels(ctx context.Context, userID int64, token, f
 			break
 		}
 	}
-	state, out := s.readStatusLabels(ctx, token, fullName, out)
+	state, out := s.commands().ReadStatusLabels(ctx, token, fullName, out)
 	if state == "failed" && !answered {
 		state = "unknown"
 	}
 	return state, out
 }
 
-func (s *Service) readStatusLabels(ctx context.Context, token, fullName string, out outcome) (string, outcome) {
-	out.Unapplied = nil
-	exists, err := application.MapConcurrent(ctx, statusLabels, func(ctx context.Context, l domain.StatusLabel) (bool, error) {
-		return s.GitHub.LabelExists(ctx, token, fullName, l.Name)
-	})
-	if err != nil {
-		_, msg := classify(err)
-		out.Error = strings.TrimSpace(out.Error + " Reading the labels back failed: " + msg)
-		return "unknown", out
-	}
-	for i, l := range statusLabels {
-		if !exists[i] {
-			out.Unapplied = append(out.Unapplied, "create label "+l.Name)
-		}
-	}
-	return domain.Resolved(out), out
-}
-
 func (s *Service) finishStatusLabels(ctx context.Context, opID, repoID int64, snap accessfence.Snapshot, state string, out outcome) error {
 	return operationStore{s}.SettleStatusLabels(ctx, opID, repoID, snap, state, out)
-}
-
-func (s *Service) recheckStatusLabels(w http.ResponseWriter, r *http.Request, userID int64, row db.GetWriteOperationRow, d repositories.Decision, snap accessfence.Snapshot) {
-	ctx := r.Context()
-	if !canChangeStatusLabels(d.Repo) {
-		http.Error(w, "your current GitHub permission does not allow this action", http.StatusForbidden)
-		return
-	}
-	token, ok := s.token(w, ctx, userID)
-	if !ok {
-		return
-	}
-	var sent outcome
-	_ = json.Unmarshal(row.Outcome, &sent)
-	state, out := s.readStatusLabels(ctx, token, d.Repo.FullName, outcome{Created: sent.Created})
-	if state == "unknown" {
-		s.upstream(w, ctx, userID, errors.New("label read failed"))
-		return
-	}
-	if state == "failed" && row.SentAt.Valid && time.Since(row.SentAt.Time) < recheckGrace {
-		if s.fenceHolds(w, ctx, snap) {
-			writeJSON(w, http.StatusConflict, s.view(toOperation(row)))
-		}
-		return
-	}
-	if err := s.finishStatusLabels(context.WithoutCancel(ctx), row.ID, row.RepositoryID, snap, state, out); err != nil {
-		s.internal(w, err)
-		return
-	}
-	s.respond(w, ctx, http.StatusOK, userID, row.ID, snap)
 }

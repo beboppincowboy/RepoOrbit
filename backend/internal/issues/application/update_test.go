@@ -51,6 +51,17 @@ type fakes struct {
 	latest     *int64 // FindLatestCreate's id; nil when none
 	lookupErr  error  // FindUnresolvedCreate's error
 	latestErr  error
+
+	scopeRepo    int64 // Scope's answer; scopeMissing means not found
+	scopeStale   bool
+	scopeMissing bool
+	scopeErr     error
+	fenceErr     error
+	getMissing   bool
+	settleErr    error           // SettleUnderLock returns it when read succeeded
+	missing      map[string]bool // LabelExists answers false for these names
+	labelErr     error
+	statusSettle *Settlement // what SettleStatusLabels was called with; nil when not called
 }
 
 func (f *fakes) record(c string) {
@@ -77,7 +88,7 @@ func (a fakeAccess) CheckedAccess(context.Context, int64, int64) (Access, error)
 }
 func (a fakeAccess) FenceCurrent(context.Context, Fence) (bool, error) {
 	a.f.record("Access.FenceCurrent")
-	return !a.f.notCurrent, nil
+	return !a.f.notCurrent, a.f.fenceErr
 }
 func (a fakeAccess) Token(context.Context, int64) (string, error) {
 	a.f.record("Access.Token")
@@ -131,9 +142,12 @@ func (g fakeGitHub) IsAssignable(ctx context.Context, _, _, login string) (bool,
 func (g fakeGitHub) CreateLabel(context.Context, string, string, string, string) error {
 	return g.step("CreateLabel")
 }
-func (g fakeGitHub) LabelExists(context.Context, string, string, string) (bool, error) {
+func (g fakeGitHub) LabelExists(_ context.Context, _, _, name string) (bool, error) {
 	g.f.record("GitHub.LabelExists")
-	return true, nil
+	if g.f.labelErr != nil {
+		return false, g.f.labelErr
+	}
+	return !g.f.missing[name], nil
 }
 
 type fakeStore struct{ f *fakes }
@@ -185,7 +199,8 @@ func (s fakeStore) FailStale(context.Context, int64) error {
 	return s.f.failErr
 }
 func (s fakeStore) Scope(context.Context, int64, int64) (int64, bool, bool, error) {
-	return 0, false, false, nil
+	s.f.record("Store.Scope")
+	return s.f.scopeRepo, s.f.scopeStale, !s.f.scopeMissing, s.f.scopeErr
 }
 func (s fakeStore) Get(_ context.Context, id, _ int64) (Operation, bool, error) {
 	s.f.record("Store.Get")
@@ -194,7 +209,7 @@ func (s fakeStore) Get(_ context.Context, id, _ int64) (Operation, bool, error) 
 	if s.f.settled.State != "" {
 		op.State = s.f.settled.State
 	}
-	return op, true, nil
+	return op, !s.f.getMissing, nil
 }
 func (s fakeStore) ActorGithubID(context.Context, int64) (int64, error) {
 	s.f.record("Store.ActorGithubID")
@@ -204,10 +219,19 @@ func (s fakeStore) SettleUnderLock(_ context.Context, st Settle, read func() (Se
 	s.f.record("Store.SettleUnderLock")
 	s.f.settle = st
 	res, err := read()
+	if err != nil {
+		return err
+	}
+	if s.f.settleErr != nil {
+		return s.f.settleErr
+	}
 	s.f.settled = res
-	return err
+	return nil
 }
-func (s fakeStore) SettleStatusLabels(context.Context, int64, int64, Fence, string, domain.Outcome) error {
+func (s fakeStore) SettleStatusLabels(_ context.Context, _, _ int64, _ Fence, state string, out domain.Outcome) error {
+	s.f.record("Store.SettleStatusLabels")
+	s.f.statusSettle = &Settlement{State: state, Outcome: out}
+	s.f.settled = Settlement{State: state, Outcome: out}
 	return nil
 }
 func (s fakeStore) DisableStatusLabels(context.Context, int64, Fence) (bool, error) {
