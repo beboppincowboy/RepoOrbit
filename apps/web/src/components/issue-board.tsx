@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { StatusSourceSetup } from "@/components/status-source-setup";
 import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
-import { BOARD_STATUSES, deriveChange, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
+import { BOARD_STATUSES, deriveChange, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardSaver, type BoardTarget } from "@/lib/board";
+import { saveBoardChanges } from "@/lib/board-save";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type BoardStatus, type IssueCapabilities, type ViewerSession } from "@/lib/api";
 import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/lib/selected-repositories";
 
@@ -31,6 +32,17 @@ const noRows: BoardIssue[] = [];
 const OPEN_CAP = 500;
 const CLOSED_CAP = 50;
 const locked = (card?: BoardCard) => card?.phase === "pending" || card?.phase === "unknown";
+// The storage event only reaches other tabs. This one tells a mounted Board in this tab that a save changed the cards,
+// including a Board mounted again while an earlier one's save is still running.
+const CARDS_SAVED = "repoorbit:board-cards-saved";
+
+// Saves the cards the review showed, then reads the Board again.
+export function useBoardSave(viewerKey: string, repositoryId: string, saver: BoardSaver, refetchBoard: () => Promise<unknown>) {
+  return async (reviewed: BoardCard[]) => {
+    const ran = await saveBoardChanges({ viewerKey, repositoryId, reviewed, saver, onChange: () => window.dispatchEvent(new Event(CARDS_SAVED)) });
+    if (ran) await refetchBoard();
+  };
+}
 
 type IssueBoardProps = {
   session: ViewerSession;
@@ -59,7 +71,11 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   useEffect(() => {
     const reload = () => setCards(loadBoardCards(viewerKey, repositoryId));
     window.addEventListener("storage", reload);
-    return () => window.removeEventListener("storage", reload);
+    window.addEventListener(CARDS_SAVED, reload);
+    return () => {
+      window.removeEventListener("storage", reload);
+      window.removeEventListener(CARDS_SAVED, reload);
+    };
   }, [viewerKey, repositoryId]);
 
   const query = useQuery({
