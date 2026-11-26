@@ -22,6 +22,8 @@ function forward(req, res, { pathname, search }) {
   const upstream = requestAPI(api, { path: pathname + search, method: req.method, headers }, response => {
     const headers = { ...response.headers };
     delete headers.connection;
+    // The runtime frames the reply for this client. Copying "chunked" makes Bun send an HTTP/1.0 client an unchunked body.
+    delete headers["transfer-encoding"];
     res.writeHead(response.statusCode, headers);
     response.on("error", error => res.destroy(error));
     response.pipe(res);
