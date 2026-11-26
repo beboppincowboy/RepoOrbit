@@ -80,3 +80,32 @@ func TestMapConcurrentCapsInFlightCalls(t *testing.T) {
 		t.Fatalf("peak %d, err %v; want peak %d", peak, err, maxConcurrentCalls)
 	}
 }
+
+// A free slot wins over cancellation: every item that fits in maxConcurrentCalls is started even when the batch is
+// already cancelled, so a 401 among them is still seen and wins. A sibling's failure cancels the same ctx, but the
+// loop usually reaches the next item before that happens; a cancelled parent puts the loop in that state every time.
+// Without the fast path each slot is a coin flip against ctx.Done(), so the rounds make a pass by luck vanishingly rare.
+func TestMapConcurrentFreeSlotWinsOverCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for round := range 20 {
+		var mu sync.Mutex
+		var started []int
+		_, err := MapConcurrent(ctx, []int{0, 1, 2}, func(_ context.Context, n int) (int, error) {
+			mu.Lock()
+			started = append(started, n)
+			mu.Unlock()
+			switch n {
+			case 0:
+				return 0, errors.New("upstream 502")
+			case 2:
+				return 0, rawUnauthorized{}
+			}
+			return 0, nil
+		})
+		slices.Sort(started)
+		if !slices.Equal(started, []int{0, 1, 2}) || !unauthorized(err) {
+			t.Fatalf("round %d: started %v, err %v; want all of [0 1 2] started and the Unauthorized error", round, started, err)
+		}
+	}
+}
