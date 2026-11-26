@@ -607,29 +607,22 @@ func (s *Service) sendCreate(ctx context.Context, userID int64, token, fullName 
 // first step and a close the last, so a change that reopens or closes an issue never adds a label while it is still
 // closed, where the app's status label cleanup could strip it; a rejected reopen applies nothing.
 func (s *Service) applyUpdate(ctx context.Context, userID int64, token, fullName string, number int64, d *updateDraft) outcome {
-	steps := []func() error{}
-	setState := func() error { return s.GitHub.SetIssueState(ctx, token, fullName, number, d.State) }
-	if d.State == "open" {
-		steps = append(steps, setState)
-	}
-	if len(d.Labels.Add) > 0 {
-		steps = append(steps, func() error { return s.GitHub.AddLabels(ctx, token, fullName, number, d.Labels.Add) })
-	}
-	for _, l := range d.Labels.Remove {
-		steps = append(steps, func() error { return s.GitHub.RemoveLabel(ctx, token, fullName, number, l) })
-	}
-	if len(d.Assignees.Remove) > 0 {
-		steps = append(steps, func() error { return s.GitHub.RemoveAssignees(ctx, token, fullName, number, d.Assignees.Remove) })
-	}
-	if len(d.Assignees.Add) > 0 {
-		steps = append(steps, func() error { return s.GitHub.AddAssignees(ctx, token, fullName, number, d.Assignees.Add) })
-	}
-	if d.State == "closed" {
-		steps = append(steps, setState)
-	}
 	out := outcome{AllStepsAnswered: true}
-	for _, step := range steps {
-		if err := step(); err != nil {
+	for _, step := range domain.PlanUpdate(*d) {
+		var err error
+		switch step.Kind {
+		case domain.Reopen, domain.Close:
+			err = s.GitHub.SetIssueState(ctx, token, fullName, number, d.State)
+		case domain.AddLabels:
+			err = s.GitHub.AddLabels(ctx, token, fullName, number, step.Names)
+		case domain.RemoveLabel:
+			err = s.GitHub.RemoveLabel(ctx, token, fullName, number, step.Names[0])
+		case domain.RemoveAssignees:
+			err = s.GitHub.RemoveAssignees(ctx, token, fullName, number, step.Names)
+		case domain.AddAssignees:
+			err = s.GitHub.AddAssignees(ctx, token, fullName, number, step.Names)
+		}
+		if err != nil {
 			s.revokeIfUnauthorized(ctx, userID, err)
 			var state string
 			state, out.Error = classify(err)

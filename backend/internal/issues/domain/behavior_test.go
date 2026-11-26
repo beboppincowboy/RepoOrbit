@@ -3,6 +3,7 @@ package domain
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -74,6 +75,25 @@ func TestOutcomeJSON(t *testing.T) {
 		t.Fatalf("wire format: %s", b)
 	}
 }
+func TestPlanUpdate(t *testing.T) {
+	d := UpdateDraft{State: "open", Labels: Delta{Add: []string{"a"}, Remove: []string{"b", "c"}}, Assignees: Delta{Remove: []string{"d"}, Add: []string{"e"}}}
+	got := PlanUpdate(d)
+	want := []Step{{Kind: Reopen}, {Kind: AddLabels, Names: []string{"a"}}, {Kind: RemoveLabel, Names: []string{"b"}}, {Kind: RemoveLabel, Names: []string{"c"}}, {Kind: RemoveAssignees, Names: []string{"d"}}, {Kind: AddAssignees, Names: []string{"e"}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v want %#v", got, want)
+	}
+	d.State = "closed"
+	got = PlanUpdate(d)
+	if got[len(got)-1].Kind != Close {
+		t.Fatalf("close must be last: %#v", got)
+	}
+	// Only requested steps: no state change means no reopen or close.
+	got = PlanUpdate(UpdateDraft{Assignees: Delta{Add: []string{"e"}}})
+	if want := []Step{{Kind: AddAssignees, Names: []string{"e"}}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v want %#v", got, want)
+	}
+}
+
 func TestClassify(t *testing.T) {
 	for _, tc := range []struct {
 		kind          ErrorKind
