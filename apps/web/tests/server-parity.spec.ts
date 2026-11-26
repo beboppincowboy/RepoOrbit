@@ -201,6 +201,14 @@ for (const runtime of ['node', 'bun']) {
       expect(decoded).toBe('part0;part1;part2;part3;end');
     });
 
+    test('HTTP/1.0 client gets a chunked upstream response as a plain body', async () => {
+      stub.handler = (_req, res) => { res.write('part0;'); res.end('end'); };
+      const res = await rawRequest(web.port, 'GET /api/stream HTTP/1.0\r\nHost: x\r\n\r\n');
+      expect(res.status).toBe(200);
+      expect(res.head.toLowerCase()).not.toContain('transfer-encoding');
+      expect(res.body.toString()).toBe('part0;end');
+    });
+
     test('rejects ambiguous request framing before it reaches upstream', async () => {
       const both = await rawRequest(web.port, 'POST /api/x HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n');
       expect(both.status).toBe(400);
