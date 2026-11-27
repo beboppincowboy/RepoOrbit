@@ -257,11 +257,18 @@ function RepositoryWorkspace() {
   function handleWriteRecorded(op: WriteOperation) {
     setDraftRevision(v => v + 1);
     void queryClient.invalidateQueries({ queryKey: writeOperationsQueryKey(viewerKey, repositoryId) });
-    if (op.state === "succeeded" || op.issueNumber) {
-      void queryClient.invalidateQueries({ queryKey: ["workspaceIssues", repositoryId, viewerKey] });
-      void queryClient.invalidateQueries({ queryKey: ["repositoryOverview", session.mode, session.user?.login, repositoryId] });
-      void queryClient.invalidateQueries({ queryKey: crossRepositoryOverviewKey(session) });
-    }
+    if (op.state === "succeeded" || op.issueNumber) refreshIssueReads();
+  }
+
+  function refreshIssueReads() {
+    void queryClient.invalidateQueries({ queryKey: ["workspaceIssues", repositoryId, viewerKey] });
+    void queryClient.invalidateQueries({ queryKey: ["repositoryOverview", session.mode, session.user?.login, repositoryId] });
+    void queryClient.invalidateQueries({ queryKey: crossRepositoryOverviewKey(session) });
+  }
+
+  function handleBoardWrite() {
+    void queryClient.invalidateQueries({ queryKey: writeOperationsQueryKey(viewerKey, repositoryId) });
+    refreshIssueReads();
   }
 
   function switchToEditIssue(issueNumber: number, confirmed?: WriteOperationIssue) {
@@ -373,6 +380,7 @@ function RepositoryWorkspace() {
         openIssue={search.issue}
         onOpenIssue={issue => void navigate({ search: prev => ({ ...prev, issue }), replace: true })}
         onOpenRun={selectRun}
+        onGitHubWrite={handleBoardWrite}
       />
     ))}
     {search.tab === "pulls" && (snapshot ? <p className={`${card} p-4`}>The pull request list needs a live connection. Saved PR counts are available on Overview.</p> : <PullRequests key={repositoryId} id={repositoryId} viewer={viewerKey} github={github} />)}
