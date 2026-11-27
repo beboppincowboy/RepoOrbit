@@ -6,7 +6,8 @@ import { Button } from "@/shared/ui/button";
 import { BOARD_STATUSES, stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
 import { canDiscardBoardCard, recoveryAction } from "@/lib/board-recovery";
 import { confirmDisabled } from "@/lib/board-review";
-import { fetchIssueDelivery, type BoardIssue, type BoardStatus, type DeliveryCheck, type IssueDelivery } from "@/lib/api";
+import type { BoardIssue } from "@/features/board/api";
+import { fetchIssueDelivery, type BoardStatus, type DeliveryCheck, type IssueDelivery } from "@/features/issues/api";
 import { deploymentUnavailableNote, githubHref, isFailedConclusion, isGitHubUrl, reviewLabels, workflowStatusLabel } from "@/lib/delivery";
 
 // Each Board column's name.

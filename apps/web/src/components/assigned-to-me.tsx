@@ -3,7 +3,8 @@ import { emptyListClass, listRowClass, pillClass } from "@/components/needs-atte
 import { ChevronIcon } from "@/shared/ui/icons";
 import { STATUS_NAMES } from "@/components/task-drawer";
 import { BOARD_STATUSES } from "@/lib/board";
-import type { AssignedIssue, MetricWindow } from "@/lib/api";
+import type { AssignedIssue } from "@/features/analytics/api";
+import type { MetricWindow } from "@/shared/api/transport";
 
 // Body of the "Assigned to me" panel: open issues assigned to the viewer, grouped by Board status (prototype D2 `.grp`). Each row opens its Board with the task drawer.
 export function AssignedToMeList({ issues, days }: { issues: AssignedIssue[]; days: MetricWindow }) {

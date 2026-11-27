@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { IssueWriteError, recheckWriteOperation, submitIssueUpdate, type IssueUpdateDraft, type WriteOperation } from '../src/lib/api';
+import { recheckWriteOperation, submitIssueUpdate, type IssueUpdateDraft, type WriteOperation } from '../src/features/issues/api';
+import { IssueWriteError } from '../src/features/issues/write-errors';
 import { loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard } from '../src/lib/board';
 import { saveBoardChanges, type BoardSaveOptions } from '../src/lib/board-save';
 import { clearAllIssueDrafts, clearRepositoryIssueDrafts, issueDraftStorageKey, withDraftStorageLock } from '../src/lib/drafts';

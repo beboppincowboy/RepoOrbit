@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { QueryClient } from '@tanstack/react-query';
-import { logout, type ViewerSession } from '../src/lib/api';
+import { logout, sessionQuery, type ViewerSession } from '../src/features/auth/api';
 import { issueDraftStorageKey } from '../src/lib/drafts';
-import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified } from '../src/lib/selected-repositories';
+import { repositorySnapshotKey } from '../src/lib/repository-snapshots';
+import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, resetViewerSelection, selectedRepositoriesKey } from '../src/lib/selected-repositories';
 import { mockWindowStorage } from './mocks';
 
 const session: ViewerSession = { mode: 'real', user: { login: 'ada', demo: false }, csrfToken: null };
@@ -37,17 +38,49 @@ test.describe('access outcome ordering', () => {
   }));
 });
 
+test('resetting a viewer selection forgets their access outcomes and cached data but keeps another viewer\'s', () => withWindow(() => {
+  const qc = new QueryClient();
+  const resetting: ViewerSession = { mode: 'real', user: { login: 'grace', demo: false }, csrfToken: null };
+  const other: ViewerSession = { mode: 'real', user: { login: 'linus', demo: false }, csrfToken: null };
+  const keys = (viewer: ViewerSession) => [
+    selectedRepositoriesKey(viewer),
+    [...selectedRepositoriesKey(viewer), 'metadata'],
+    repositorySnapshotKey(viewer, 'r-open', 7),
+    repositorySnapshotKey(viewer, 'r-open', 30),
+  ];
+  const startedBeforeDenial = currentAccessSeq();
+  recordAccessDenied(qc, resetting, 'r-reset');
+  recordAccessDenied(qc, other, 'r-reset');
+  expect(recordAccessVerified(resetting, 'r-reset', startedBeforeDenial)).toBe(false);
+  for (const key of [...keys(resetting), ...keys(other)]) qc.setQueryData(key, { cached: true });
+
+  resetViewerSelection(qc, resetting);
+
+  expect(recordAccessVerified(resetting, 'r-reset', startedBeforeDenial)).toBe(true);
+  expect(recordAccessVerified(other, 'r-reset', startedBeforeDenial)).toBe(false);
+  for (const key of keys(resetting)) expect(qc.getQueryData(key)).toBeUndefined();
+  for (const key of keys(other)) expect(qc.getQueryData(key)).toEqual({ cached: true });
+}));
+
 test('logout removes every saved issue draft and keeps unrelated storage', () => withWindow(async storage => {
   storage.setItem(issueDraftStorageKey('real:ada', '1', 'create'), '{}');
   storage.setItem(issueDraftStorageKey('real:ada', '2', { board: 7 }), '{}');
   storage.setItem('unrelated', 'keep');
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(null, { status: 204 })) as typeof fetch;
+  const requests: { url: string; init: RequestInit | undefined }[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({ url: String(input), init });
+    if (String(input) === '/auth/me') return Response.json({ ...session, csrfToken: 'session-token' });
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
   try {
+    await sessionQuery.queryFn();
     await logout();
   } finally {
     globalThis.fetch = originalFetch;
   }
+  expect(requests.map(request => request.url)).toEqual(['/auth/me', '/auth/logout']);
+  expect(requests[1].init).toEqual({ method: 'POST', headers: { 'X-CSRF-Token': 'session-token' } });
   expect(Object.keys(storage)).toEqual(['unrelated']);
   expect(storage.getItem('unrelated')).toBe('keep');
 }));

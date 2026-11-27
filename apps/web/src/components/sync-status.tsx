@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { refreshActivity, type ActivityResourceStatus, type ActivityStatus, type ChildResourceStatus, type MetadataStatus, type SyncState } from "@/lib/api";
+import { refreshActivity, type ActivityResourceStatus, type ActivityStatus, type ChildResourceStatus, type MetadataStatus, type SyncState } from "@/features/repositories/api";
 import { Button } from "@/shared/ui/button";
 
 const when = (iso: string) => new Date(iso).toLocaleString();

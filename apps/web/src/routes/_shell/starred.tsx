@@ -6,7 +6,7 @@ import { SyncStatus } from "@/components/sync-status";
 import { RepositoryCell, RepositoriesHeading, SourceTabs, ToolsRow, noteClass, searchBoxClass, tableCardClass, tdClass, thClass, warnNoteClass } from "@/components/repository-list";
 import { matchesListSearch, validateListSearch } from "@/lib/list-search";
 import { recordRepositoryRemoved } from "@/lib/selected-repositories";
-import { setFollowed, starredRepositories, type ListedRepo, type StarredPage } from "@/lib/api";
+import { setFollowed, starredRepositories, type ListedRepo, type StarredPage } from "@/features/repositories/api";
 
 export const Route = createFileRoute("/_shell/starred")({
   validateSearch: validateListSearch,

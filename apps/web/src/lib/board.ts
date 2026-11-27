@@ -1,4 +1,6 @@
-import { classifyWriteFailure, type BoardIssue, type BoardSnapshot, type BoardStatus, type IssueUpdateDraft, type WriteOperation } from "./api";
+import type { BoardIssue } from "@/features/board/api";
+import type { BoardStatus, IssueUpdateDraft, WriteOperation } from "@/features/issues/api";
+import { classifyWriteFailure, type BoardSnapshot } from "@/features/issues/write-errors";
 import { readStorageByPrefix, removeStorage, writeStorage } from "@/shared/utils/storage";
 import { boardDraftPrefix, issueDraftStorageKey } from "./drafts";
 

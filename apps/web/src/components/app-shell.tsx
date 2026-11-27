@@ -2,7 +2,9 @@ import { repositorySnapshotsKey } from "@/lib/repository-snapshots";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { logout, GraphQLUnavailableError, type ViewerSession, type MetricWindow } from "@/lib/api";
+import { logout, type ViewerSession } from "@/features/auth/api";
+import { GraphQLUnavailableError } from "@/shared/api/errors";
+import type { MetricWindow } from "@/shared/api/transport";
 import {
   cancelDetailRetries,
   resetViewerSelection,

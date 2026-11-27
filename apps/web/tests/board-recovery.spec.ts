@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { IssueWriteError, type IssueUpdateDraft } from '../src/lib/api';
+import type { IssueUpdateDraft } from '../src/features/issues/api';
+import { IssueWriteError } from '../src/features/issues/write-errors';
 import type { BoardCard } from '../src/lib/board';
 import { canDiscardBoardCard, recoveryAction, runRecovery } from '../src/lib/board-recovery';
 

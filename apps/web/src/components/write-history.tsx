@@ -2,7 +2,6 @@ import { useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/shared/ui/button";
 import {
-  IssueWriteError,
   fetchWriteOperations,
   recheckWriteOperation,
   type CleanupDraft,
@@ -11,7 +10,8 @@ import {
   type StatusLabelsDraft,
   type WriteOperation,
   type WriteOperationIssue,
-} from "@/lib/api";
+} from "@/features/issues/api";
+import { IssueWriteError } from "@/features/issues/write-errors";
 
 const stamp = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" });
 const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });

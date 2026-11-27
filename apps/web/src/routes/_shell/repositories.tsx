@@ -6,7 +6,7 @@ import { SyncStatus } from "@/components/sync-status";
 import { RepositoryCell, RepositoriesHeading, SourceTabs, ToolsRow, noteClass, searchBoxClass, segGroupClass, segItemClass, tableCardClass, tdClass, thClass, warnNoteClass } from "@/components/repository-list";
 import { matchesListSearch, validateListSearch } from "@/lib/list-search";
 import { flattenSelectedRepositoryRows, recordRepositoriesRemoved, useSelectedRepositories } from "@/lib/selected-repositories";
-import { ownedRepositories, setSelected, type ListedRepo, type OwnedPage } from "@/lib/api";
+import { ownedRepositories, setSelected, type ListedRepo, type OwnedPage } from "@/features/repositories/api";
 
 export const Route = createFileRoute("/_shell/repositories")({
   validateSearch: validateListSearch,

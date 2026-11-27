@@ -11,7 +11,10 @@ import { BOARD_STATUSES, deriveChange, loadBoardCard, loadBoardCards, removeBoar
 import { canDiscardBoardCard, runRecovery, recoveryAction } from "@/lib/board-recovery";
 import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from "@/lib/board-review";
 import { saveBoardChanges, withBoardLock } from "@/lib/board-save";
-import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type BoardStatus, type IssueCapabilities, type ViewerSession } from "@/lib/api";
+import type { ViewerSession } from "@/features/auth/api";
+import { fetchRepositoryBoard, type BoardIssue } from "@/features/board/api";
+import { fetchStatusLabels, type BoardStatus, type IssueCapabilities } from "@/features/issues/api";
+import { GraphQLUnavailableError, RepositoryAccessUnverifiedError } from "@/shared/api/errors";
 import { boardDraftPrefix, withDraftStorageLock } from "@/lib/drafts";
 import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/lib/selected-repositories";
 

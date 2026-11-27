@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
-import type { AttentionItem, AttentionKind, MetricWindow } from "@/lib/api";
+import type { AttentionItem, AttentionKind } from "@/features/analytics/api";
+import type { MetricWindow } from "@/shared/api/transport";
 import { ChevronIcon, IssueIcon, PullRequestIcon, WorkflowIcon } from "@/shared/ui/icons";
 
 // Row styles shared by the overview lists (prototype D2 `.lrow`, `.mini`).

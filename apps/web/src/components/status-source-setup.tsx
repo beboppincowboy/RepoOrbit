@@ -4,7 +4,8 @@ import { Button } from "@/shared/ui/button";
 import { STATUS_NAMES } from "@/components/task-drawer";
 import { statusLabelsQueryKey, writeOperationsQueryKey } from "@/components/write-history";
 import { STATUS_LABELS } from "@/lib/board";
-import { canReplayWithSameKey, disableStatusLabels, enableStatusLabels, fetchStatusLabels, generateIdempotencyKey, mayHaveBeenRecorded, type BoardStatus, type WriteOperation } from "@/lib/api";
+import { disableStatusLabels, enableStatusLabels, fetchStatusLabels, type BoardStatus, type WriteOperation } from "@/features/issues/api";
+import { canReplayWithSameKey, generateIdempotencyKey, mayHaveBeenRecorded } from "@/features/issues/write-errors";
 
 const columns: Record<string, string> = Object.fromEntries(
   (Object.entries(STATUS_LABELS) as [BoardStatus, string | undefined][])
