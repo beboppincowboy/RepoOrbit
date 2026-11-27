@@ -598,6 +598,8 @@ test('an open workspace stops showing a verified repository once a complete sele
   let dropped = false;
   let releaseOverview!: () => void;
   const heldOverview = new Promise<void>(resolve => { releaseOverview = resolve; });
+  let releaseDetails!: () => void;
+  const heldDetails = new Promise<void>(resolve => { releaseDetails = resolve; });
 
   await page.route('**/graphql', async route => {
     const { query, variables } = route.request().postDataJSON();
@@ -606,8 +608,9 @@ test('an open workspace stops showing a verified repository once a complete sele
       return route.fulfill({ json: { data: { selectedRepositories: { nodes, endCursor: String(nodes.length), hasNextPage: false, withheld: 0, retryAt: null } } } });
     }
     if (String(query).startsWith('query RepositoryDetails')) {
+      if (dropped) await heldDetails;
       const ids = Object.values(variables as Record<string, string>);
-      return route.fulfill({ json: { data: Object.fromEntries(ids.flatMap((id, i) => [[`a${i}`, { activity: fullActivity }], [`r${i}`, issuePage(id)]])) } });
+      return route.fulfill({ json: { data: Object.fromEntries(ids.flatMap((id, i) => [[`a${i}`, { activity: fullActivity }], [`r${i}`, issuePage(id)]])) } }).catch(() => {});
     }
     if (String(query).startsWith('query RepositoryOverview')) {
       if (dropped) await heldOverview;
@@ -637,6 +640,7 @@ test('an open workspace stops showing a verified repository once a complete sele
     await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => localStorage.getItem('repoorbit:issue-draft:real:ada:2:create'))).not.toBeNull();
   } finally {
+    releaseDetails();
     releaseOverview();
   }
 });
