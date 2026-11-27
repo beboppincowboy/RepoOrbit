@@ -76,36 +76,56 @@ func TestActivityEventsSignalCaughtUpStreamsOnce(t *testing.T) {
 	}
 }
 
-func TestDeliveryWebhookSchedulesOnlySelectedRepositories(t *testing.T) {
-	for _, event := range []string{"workflow_run", "workflow_job", "deployment_status"} {
-		t.Run(event, func(t *testing.T) {
+func TestDeliveryWebhookSchedulesOnlyItsStream(t *testing.T) {
+	for _, tc := range []struct{ event, resource string }{
+		{"workflow_run", "actions"},
+		{"workflow_job", "actions"},
+		{"deployment_status", "deployments"},
+	} {
+		t.Run(tc.event, func(t *testing.T) {
 			_, pool := testutil.Database(t)
 			ctx := context.Background()
 			selectedRepo(t, pool, 42)
 			h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
-			if w := post(h, testSecret, event, event+"-selected", `{"repository":{"id":42}}`, ""); w.Code != 200 {
-				t.Fatalf("selected status %d", w.Code)
+			deliver := func(id string, repoID int) {
+				t.Helper()
+				if w := post(h, testSecret, tc.event, id, fmt.Sprintf(`{"repository":{"id":%d}}`, repoID), ""); w.Code != 200 {
+					t.Fatalf("%s status %d", id, w.Code)
+				}
 			}
-			if w := post(h, testSecret, event, event+"-unselected", `{"repository":{"id":99}}`, ""); w.Code != 200 {
-				t.Fatalf("unselected status %d", w.Code)
+			onlyJob := fmt.Sprintf("jobs WHERE key='repo:42' AND kind='activity_%s'", tc.resource)
+			// A repository with no streams yet gets only this one.
+			deliver("first", 42)
+			deliver("unselected", 99)
+			if all, one := count(t, pool, "jobs"), count(t, pool, onlyJob); all != 1 || one != 1 {
+				t.Fatalf("jobs = %d (matching %d), want only activity_%s", all, one, tc.resource)
 			}
-			if n := count(t, pool, "jobs WHERE key='repo:42' AND kind IN ('activity_actions','activity_deployments')"); n != 2 {
-				t.Fatalf("selected delivery jobs = %d, want 2", n)
+			if n := count(t, pool, "activity_resources"); n != 1 {
+				t.Fatalf("resources = %d, want 1", n)
 			}
-			if n := count(t, pool, "jobs WHERE kind='repo_metadata_refresh'"); n != 0 {
-				t.Fatalf("metadata refreshes = %d, want 0", n)
-			}
-			if n := count(t, pool, "activity_resources WHERE repository_id=99"); n != 0 {
-				t.Fatalf("unselected resources = %d, want 0", n)
-			}
-			if _, err := pool.Exec(ctx, `UPDATE activity_resources SET phase='current' WHERE repository_id=42`); err != nil {
+			// With every stream caught up, only the matching one reopens.
+			tx, err := pool.Begin(ctx)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if w := post(h, testSecret, event, event+"-reopen", `{"repository":{"id":42}}`, ""); w.Code != 200 {
-				t.Fatalf("reopen status %d", w.Code)
+			if err := RequestActivity(ctx, tx, 42, time.Now()); err != nil {
+				t.Fatal(err)
 			}
-			if n := count(t, pool, "activity_resources WHERE repository_id=42 AND resource IN ('actions','deployments') AND phase='catchup'"); n != 2 {
-				t.Fatalf("reopened delivery streams = %d, want 2", n)
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, `UPDATE activity_resources SET phase='current'; DELETE FROM jobs`); err != nil {
+				t.Fatal(err)
+			}
+			deliver("reopen", 42)
+			if all, one := count(t, pool, "jobs"), count(t, pool, onlyJob); all != 1 || one != 1 {
+				t.Fatalf("reopen jobs = %d (matching %d), want only activity_%s", all, one, tc.resource)
+			}
+			if n := count(t, pool, fmt.Sprintf("activity_resources WHERE phase='catchup' AND resource='%s'", tc.resource)); n != 1 {
+				t.Fatalf("matching stream not reopened")
+			}
+			if n := count(t, pool, "activity_resources WHERE phase='current'"); n != 6 {
+				t.Fatalf("untouched streams = %d, want 6", n)
 			}
 		})
 	}

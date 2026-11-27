@@ -34,6 +34,8 @@ func TestRepositoryActionsMetricsAndAcceptanceExamples(t *testing.T) {
 		 (101, 'pull_requests', '2026-08-01 00:00Z', 'current', '2026-11-17 11:00Z', ''),
 		 (101, 'actions', '2026-08-01 00:00Z', 'current', '2026-11-17 11:00Z', ''),
 		 (101, 'deployments', '2026-08-01 00:00Z', 'current', '2026-11-17 11:00Z', ''),
+		 (102, 'issues', '2026-08-01 00:00Z', 'current', '2026-11-17 11:00Z', ''),
+		 (102, 'pull_requests', '2026-08-01 00:00Z', 'current', '2026-11-17 11:00Z', ''),
 		 (102, 'actions', '2026-08-01 00:00Z', 'current', NULL, 'permission_denied'),
 		 (102, 'deployments', '2026-08-01 00:00Z', 'current', '2026-11-17 11:00Z', '')`,
 		`INSERT INTO workflows (repository_id, source_id, name, path, state, html_url, updated_at) VALUES
@@ -174,5 +176,26 @@ func TestRepositoryActionsMetricsAndAcceptanceExamples(t *testing.T) {
 	}
 	if !foundFailedRun {
 		t.Fatalf("expected failed_workflow_run 1004 in NeedsAttention, got %+v", cross.NeedsAttention)
+	}
+
+	// A denied repository is left out of the CI tiles instead of blanking them, whichever comes first.
+	for _, ids := range [][]int64{{100, 102}, {102, 100}} {
+		mixed, err := LoadCrossRepositoryOverview(ctx, pool, ids, 1, 7, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mixed.RepositoriesCounted != 2 || !mixed.FailingWorkflows.Coverage.Covered || *mixed.FailingWorkflows.Value != 1 ||
+			!mixed.BuildSuccessRate.Coverage.Covered || *mixed.BuildSuccessRate.Numerator != 3 || *mixed.BuildSuccessRate.Denominator != 4 {
+			t.Fatalf("mixed %v: counted=%d failing=%+v rate=%+v", ids, mixed.RepositoriesCounted, mixed.FailingWorkflows, mixed.BuildSuccessRate)
+		}
+	}
+	onlyDenied, err := LoadCrossRepositoryOverview(ctx, pool, []int64{102}, 1, 7, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []Coverage{onlyDenied.FailingWorkflows.Coverage, onlyDenied.BuildSuccessRate.Coverage} {
+		if c.Covered || c.Reason == nil || *c.Reason != ReasonPermissionDenied {
+			t.Fatalf("only denied: want permission_denied, got %+v", c)
+		}
 	}
 }

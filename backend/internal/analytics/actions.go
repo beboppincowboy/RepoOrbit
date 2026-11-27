@@ -27,7 +27,8 @@ type ActionsDailyPoint struct {
 	Other     *int64
 }
 
-// WorkflowFailureSummary summarizes one workflow with at least one failed run in the active window.
+// WorkflowFailureSummary summarizes one workflow with at least one failed run in the active window. The Latest*
+// fields and HTMLURL describe its latest failed run, even when a newer run passed.
 type WorkflowFailureSummary struct {
 	WorkflowID       int64
 	WorkflowName     string

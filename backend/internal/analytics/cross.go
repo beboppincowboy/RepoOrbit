@@ -59,11 +59,14 @@ type CrossOverview struct {
 	OpenIssues    Count
 	ReviewBacklog Count
 	// FailingWorkflows and BuildSuccessRate aggregate the fixed 30-day window across counted repositories whose
-	// actions stream is covered (docs/metrics-definitions.md 10).
+	// actions stream is covered, with Through the oldest of those; other repositories are left out. Not covered only when
+	// there is none: permission_denied if any counted repository was denied, else not_synchronized
+	// (docs/metrics-definitions.md 10).
 	FailingWorkflows Count
 	BuildSuccessRate Rate
-	// NeedsAttention holds up to 25 items, oldest Since first, one row per item: PR rows from counted repositories whose
-	// UnreviewedOpenPullRequests is covered, issue rows from those whose UnansweredOpenIssues is covered.
+	// NeedsAttention holds up to 25 items: first the 5 most recently updated failed workflow runs of the repositories
+	// behind FailingWorkflows, newest first, then oldest Since first, one row per item: PR rows from counted repositories
+	// whose UnreviewedOpenPullRequests is covered, issue rows from those whose UnansweredOpenIssues is covered.
 	NeedsAttention []AttentionItem
 	// AssignedToMe holds up to 25 open issues, most recently updated first, from repositories whose issue stream is
 	// covered (counted or not).
@@ -142,17 +145,19 @@ func LoadCrossRepositoryOverview(ctx context.Context, pool *pgxpool.Pool, reposi
 		for _, r := range covRows {
 			covByRepo[r.RepositoryID] = r
 		}
-		for i, id := range counted {
+		denied := false
+		for _, id := range counted {
 			row := covByRepo[id]
-			repoActCov := actionsStreamCoverage(row.Watermark, row.Boundary, row.ErrorCode, w30.start)
-			if repoActCov.Covered {
+			c := actionsStreamCoverage(row.Watermark, row.Boundary, row.ErrorCode, w30.start)
+			if c.Covered {
 				actionsRows = append(actionsRows, id)
-				if len(actionsRows) == i+1 {
-					actionsCov = oldest(actionsCov, repoActCov)
-				}
-			} else {
-				actionsCov = repoActCov
+				actionsCov = oldest(actionsCov, c)
+			} else if *c.Reason == ReasonPermissionDenied {
+				denied = true
 			}
+		}
+		if denied && len(actionsRows) == 0 {
+			actionsCov = uncovered(ReasonPermissionDenied)
 		}
 	}
 	if len(actionsRows) > 0 {

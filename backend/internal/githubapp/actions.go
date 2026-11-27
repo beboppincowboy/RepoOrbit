@@ -21,22 +21,43 @@ type Workflow struct {
 }
 
 type WorkflowRun struct {
-	ID           int64      `json:"id"`
-	WorkflowID   int64      `json:"workflow_id"`
-	Name         string     `json:"name"`
-	RunNumber    int64      `json:"run_number"`
-	Event        string     `json:"event"`
-	Status       string     `json:"status"`
-	Conclusion   string     `json:"conclusion"`
-	HeadBranch   string     `json:"head_branch"`
-	HeadSHA      string     `json:"head_sha"`
-	HTMLURL      string     `json:"html_url"`
-	CreatedAt    time.Time  `json:"created_at"`
-	RunStartedAt *time.Time `json:"run_started_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	PullRequests []struct {
-		Number int64 `json:"number"`
-	} `json:"pull_requests"`
+	ID           int64                    `json:"id"`
+	WorkflowID   int64                    `json:"workflow_id"`
+	Name         string                   `json:"name"`
+	RunNumber    int64                    `json:"run_number"`
+	Event        string                   `json:"event"`
+	Status       string                   `json:"status"`
+	Conclusion   string                   `json:"conclusion"`
+	HeadBranch   string                   `json:"head_branch"`
+	HeadSHA      string                   `json:"head_sha"`
+	HTMLURL      string                   `json:"html_url"`
+	CreatedAt    time.Time                `json:"created_at"`
+	RunStartedAt *time.Time               `json:"run_started_at"`
+	UpdatedAt    time.Time                `json:"updated_at"`
+	PullRequests []WorkflowRunPullRequest `json:"pull_requests"`
+}
+
+// WorkflowRunPullRequest is a pull request GitHub associates with a run. Its base may be another repository (a
+// fork's run lists the upstream pull request), where Number means something else.
+type WorkflowRunPullRequest struct {
+	Number int64 `json:"number"`
+	Base   struct {
+		Repo struct {
+			ID int64 `json:"id"`
+		} `json:"repo"`
+	} `json:"base"`
+}
+
+// PullRequestNumbers returns the run's pull request numbers belonging to repoID, dropping those whose base is another
+// repository. An entry without a base repository ID, or any entry when repoID is 0, is kept.
+func (r WorkflowRun) PullRequestNumbers(repoID int64) []int64 {
+	numbers := make([]int64, 0, len(r.PullRequests))
+	for _, p := range r.PullRequests {
+		if repoID == 0 || p.Base.Repo.ID == 0 || p.Base.Repo.ID == repoID {
+			numbers = append(numbers, p.Number)
+		}
+	}
+	return numbers
 }
 
 type WorkflowJob struct {

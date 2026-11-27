@@ -272,13 +272,12 @@ func commitWorkflowRuns(ctx context.Context, tx pgx.Tx, repoID int64, boundary t
 			continue
 		}
 		ids = append(ids, v.ID)
-		numbers := make([]int64, 0, len(v.PullRequests))
 		for _, pr := range v.PullRequests {
 			if pr.Number <= 0 {
 				return nil, errors.New("invalid run pull request")
 			}
-			numbers = append(numbers, pr.Number)
 		}
+		numbers := v.PullRequestNumbers(repoID)
 		_, err := tx.Exec(ctx, `INSERT INTO workflow_runs(repository_id,source_id,workflow_id,workflow_name,run_number,event,status,conclusion,head_branch,head_sha,html_url,created_at,run_started_at,updated_at,pull_request_numbers) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT(repository_id,source_id) DO UPDATE SET workflow_id=excluded.workflow_id,workflow_name=excluded.workflow_name,run_number=excluded.run_number,event=excluded.event,status=excluded.status,conclusion=excluded.conclusion,head_branch=excluded.head_branch,head_sha=excluded.head_sha,html_url=excluded.html_url,run_started_at=excluded.run_started_at,updated_at=excluded.updated_at,pull_request_numbers=excluded.pull_request_numbers WHERE workflow_runs.updated_at<=excluded.updated_at`, repoID, v.ID, v.WorkflowID, v.Name, v.RunNumber, v.Event, v.Status, v.Conclusion, v.HeadBranch, v.HeadSHA, v.HTMLURL, v.CreatedAt, v.RunStartedAt, v.UpdatedAt, numbers)
 		if err != nil {
 			return nil, err

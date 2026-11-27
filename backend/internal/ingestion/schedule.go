@@ -129,7 +129,8 @@ var activityParentKinds = []jobs.Kind{jobs.KindActivityIssues, jobs.KindActivity
 
 const CodePermissionDenied = "permission_denied"
 
-// SignalActivity is the single reconciliation entry point for webhooks, polling and the Refresh action. It
+// SignalActivity is the reconciliation entry point for polling, the Refresh action and webhooks other than delivery
+// events (see SignalDeliveryResource). It
 // reopens every caught-up stream for another catch-up scan from the retained boundary (a stream still
 // backfilling or catching up already rescans, so it is left alone) and enqueues the stream jobs. It never
 // revives dead work and never moves a deferred or paused job's run time earlier, so throttling holds.
@@ -158,6 +159,26 @@ func SignalActivity(ctx context.Context, tx pgx.Tx, repoID int64, now time.Time)
 		return ActivityCoalesced, nil
 	}
 	return ActivityAccepted, nil
+}
+
+// SignalDeliveryResource is SignalActivity narrowed to one delivery stream ("actions" or "deployments", with its
+// job kind), so frequent CI events do not rescan issues, pull requests or comments. It creates the stream if absent,
+// enqueues only kind and reopens the stream if caught up, unless its job is dead. A repository without an eligible
+// selection is left alone.
+func SignalDeliveryResource(ctx context.Context, tx pgx.Tx, repoID int64, resource string, kind jobs.Kind, now time.Time) error {
+	ok, err := db.New(tx).HasEligibleSelection(ctx, repoID)
+	if err != nil || !ok {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO activity_resources (repository_id, resource, boundary) VALUES ($1, $2, COALESCE((SELECT boundary FROM activity_resources WHERE repository_id=$1 AND resource='issues'), $3)) ON CONFLICT DO NOTHING`, repoID, resource, now.Add(-90*24*time.Hour)); err != nil {
+		return err
+	}
+	// Job row before checkpoint row, as in SignalActivity.
+	if err := jobs.Enqueue(ctx, tx, kind, repoKey(repoID), now); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE activity_resources SET phase='catchup',page=1,cursor='',scan_started_at=NULL,current_scan='{}',previous_scan=NULL,generation=generation+1 WHERE repository_id=$1 AND resource=$2 AND phase='current' AND NOT EXISTS (SELECT 1 FROM jobs WHERE key=$3 AND kind=$4 AND state='dead')`, repoID, resource, repoKey(repoID), kind)
+	return err
 }
 
 // activityFailureCode maps a job error to the safe code stored in last_error_code. ok is false for a lost claim or an

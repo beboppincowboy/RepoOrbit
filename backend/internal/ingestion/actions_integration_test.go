@@ -26,9 +26,8 @@ func TestDeliveryIngestionFencesAndPermissionRecovery(t *testing.T) {
 	signalActivity(t, e, id, true)
 	now := time.Now().UTC().Truncate(time.Second)
 	run := githubapp.WorkflowRun{ID: 2, WorkflowID: 1, Name: "CI", RunNumber: 1, Event: "push", Status: "completed", Conclusion: "failure", HeadSHA: "abc", CreatedAt: now, UpdatedAt: now}
-	run.PullRequests = append(run.PullRequests, struct {
-		Number int64 `json:"number"`
-	}{Number: 42})
+	run.PullRequests = []githubapp.WorkflowRunPullRequest{{Number: 42}, {Number: 43}}
+	run.PullRequests[1].Base.Repo.ID = id + 1 // another repository's pull request is not stored
 	e.gh.SetWorkflows(id, githubapp.Workflow{ID: 1, Name: "CI", Path: "ci.yml", State: "active", HTMLURL: "url", UpdatedAt: now})
 	e.gh.SetWorkflowRuns(id, run, githubapp.WorkflowRun{ID: 99, WorkflowID: 1, CreatedAt: now.Add(-100 * 24 * time.Hour), UpdatedAt: now})
 	e.gh.SetWorkflowJobs(id, 2, githubapp.WorkflowJob{ID: 3, RunID: 2, Name: "test", Status: "completed", Conclusion: "failure", CreatedAt: now})
@@ -140,6 +139,21 @@ func TestIssueTimelineAndPullRequestHeadAreStored(t *testing.T) {
 	if err := e.pool.QueryRow(ctx, `SELECT p.head_sha,l.pull_request_number FROM activity_pull_requests p JOIN issue_pull_request_links l ON l.repository_id=p.repository_id AND l.pull_request_number=p.number WHERE p.repository_id=$1 AND l.issue_number=2`, id).Scan(&sha, &number); err != nil || sha != "head-sha" || number != 7 {
 		t.Fatalf("sha=%q number=%d err=%v", sha, number, err)
 	}
+	// A timeline that fails for one issue (e.g. deleted) keeps its stored links and does not block the page.
+	e.deps.GitHub = missingTimeline{e.deps.GitHub.(*githubapp.Client)}
+	signalActivity(t, e, id, false)
+	drain(t, func() error { return e.deps.SyncIssues(ctx, job, e.fence()) })
+	var links int
+	var phase string
+	if err := e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM issue_pull_request_links WHERE repository_id=$1 AND issue_number=2),phase FROM activity_resources WHERE repository_id=$1 AND resource='issues'`, id).Scan(&links, &phase); err != nil || links != 1 || phase != "current" {
+		t.Fatalf("links=%d phase=%q err=%v", links, phase, err)
+	}
+}
+
+type missingTimeline struct{ *githubapp.Client }
+
+func (missingTimeline) FetchIssueTimelinePRLinks(context.Context, string, string, int64) ([]githubapp.IssuePRLink, error) {
+	return nil, &githubapp.APIError{Status: 404}
 }
 
 func TestDeliveryPaginationReconcilesDeletedRecords(t *testing.T) {

@@ -344,7 +344,7 @@ WHERE w.repository_id = ANY($1::bigint[])
   AND w.conclusion = 'failure'
   AND w.created_at BETWEEN $2::timestamptz AND $3::timestamptz
 ORDER BY w.updated_at DESC, w.source_id DESC
-LIMIT 25
+LIMIT 5
 `
 
 type ListCrossFailedWorkflowRunsParams struct {
@@ -625,6 +625,7 @@ WITH windowed_runs AS (
     workflow_id, workflow_name, source_id AS latest_run_id, status AS latest_status,
     conclusion AS latest_conclusion, created_at AS latest_at, html_url
   FROM windowed_runs
+  WHERE status = 'completed' AND conclusion = 'failure'
   ORDER BY workflow_id, created_at DESC, source_id DESC
 )
 SELECT

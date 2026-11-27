@@ -3,6 +3,8 @@ package ingestion
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -82,10 +84,16 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 					if issue.PullRequest != nil || issue.Number <= 0 || (issue.State != "open" && issue.CreatedAt.Before(boundary) && issue.UpdatedAt.Before(boundary) && (issue.ClosedAt == nil || issue.ClosedAt.Before(boundary))) {
 						continue
 					}
-					links[issue.Number], err = timeline.FetchIssueTimelinePRLinks(ctx, token, repo.FullName, issue.Number)
-					if err != nil {
-						return nil, err
+					found, linkErr := timeline.FetchIssueTimelinePRLinks(ctx, token, repo.FullName, issue.Number)
+					if linkErr != nil {
+						if failsIssuePage(ctx, linkErr) {
+							return nil, linkErr
+						}
+						// No map entry: the commit keeps the issue's stored links.
+						slog.Warn("issue timeline skipped", "repository", repoID, "issue", issue.Number, "err", linkErr)
+						continue
 					}
+					links[issue.Number] = found
 				}
 			}
 		}
@@ -155,6 +163,13 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 		return err
 	}
 	return &jobs.Defer{RetryAt: now, Reason: "continue"}
+}
+
+// failsIssuePage reports whether a timeline fetch error must fail the whole issue page (cancellation, rate limit,
+// rejected credential or forbidden) rather than skip that one issue's links.
+func failsIssuePage(ctx context.Context, err error) bool {
+	var api *githubapp.APIError
+	return ctx.Err() != nil || errors.As(err, &api) && (api.RateLimited() || api.Unauthorized() || api.Status == http.StatusForbidden)
 }
 
 // ProjectIssue upserts one GitHub issue (from a sync page or a create response) with its labels and assignees into the

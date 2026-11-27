@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,7 @@ func TestActionsPagesAndPermissions(t *testing.T) {
 			w.Header().Set("Link", `</repos/a/b/actions/workflows?per_page=100&page=2>; rel="next"`)
 			_, _ = w.Write([]byte(`{"total_count":1,"workflows":[{"id":1,"name":"CI","path":".github/workflows/ci.yml","state":"active","html_url":"url","updated_at":"2026-01-01T00:00:00Z"}]}`))
 		case strings.HasSuffix(r.URL.Path, "/actions/runs"):
-			_, _ = w.Write([]byte(`{"total_count":1,"workflow_runs":[{"id":2,"workflow_id":1,"name":"CI","run_number":3,"event":"push","status":"completed","conclusion":"success","head_sha":"abc","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","pull_requests":[{"number":42}]}]}`))
+			_, _ = w.Write([]byte(`{"total_count":1,"workflow_runs":[{"id":2,"workflow_id":1,"name":"CI","run_number":3,"event":"push","status":"completed","conclusion":"success","head_sha":"abc","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","pull_requests":[{"number":42,"base":{"repo":{"id":10}}},{"number":43,"base":{"repo":{"id":11}}}]}]}`))
 		case strings.HasSuffix(r.URL.Path, "/jobs"):
 			_, _ = w.Write([]byte(`{"total_count":1,"jobs":[{"id":3,"run_id":2,"name":"test","status":"completed","conclusion":"success","created_at":"2026-01-01T00:00:00Z"}]}`))
 		case strings.HasSuffix(r.URL.Path, "/statuses"):
@@ -42,8 +43,11 @@ func TestActionsPagesAndPermissions(t *testing.T) {
 		t.Fatalf("workflows=%v next=%q err=%v", workflows, next, err)
 	}
 	runs, _, err := c.FetchWorkflowRuns(ctx, "token", "a/b", "")
-	if err != nil || len(runs) != 1 || len(runs[0].PullRequests) != 1 || runs[0].PullRequests[0].Number != 42 {
+	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs=%v err=%v", runs, err)
+	}
+	if got := runs[0].PullRequestNumbers(10); !slices.Equal(got, []int64{42}) {
+		t.Fatalf("pull requests for repository 10 = %v, want the foreign base ignored", got)
 	}
 	jobs, _, err := c.FetchWorkflowJobs(ctx, "token", "a/b", 2, "")
 	if err != nil || len(jobs) != 1 {

@@ -208,9 +208,16 @@ func (d WebhookDeps) accept(ctx context.Context, id, event string, k whKind, p w
 				_, err = d.refresh(ctx, tx, p.Repository.ID)
 			}
 			if err == nil && (signalsActivity(event) || event == "repository") {
-				// Job rows first (SignalActivity), then checkpoint rows (applyDeletion): the order sync commits take them in.
-				if _, err = SignalActivity(ctx, tx, p.Repository.ID, now); err == nil {
-					err = applyDeletion(ctx, tx, p.Repository.ID, event, p.Action, p)
+				switch event {
+				case "workflow_run", "workflow_job":
+					err = SignalDeliveryResource(ctx, tx, p.Repository.ID, "actions", jobs.KindActivityActions, now)
+				case "deployment_status":
+					err = SignalDeliveryResource(ctx, tx, p.Repository.ID, "deployments", jobs.KindActivityDeployments, now)
+				default:
+					// Job rows first (SignalActivity), then checkpoint rows (applyDeletion): the order sync commits take them in.
+					if _, err = SignalActivity(ctx, tx, p.Repository.ID, now); err == nil {
+						err = applyDeletion(ctx, tx, p.Repository.ID, event, p.Action, p)
+					}
 				}
 			}
 		case event == "repository":
