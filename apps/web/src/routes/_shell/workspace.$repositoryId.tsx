@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "re
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
-import { hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/components/issue-editor";
+import { IssueEditor } from "@/features/issues/components/issue-editor";
+import { hasSavedCreateDraft } from "@/features/issues/editor-storage";
+import type { EditableIssue } from "@/features/issues/model";
 import { CicdTab } from "@/components/cicd-tab";
 import { IssueBoard } from "@/components/issue-board";
 import { RunDetailDrawer } from "@/components/run-detail-drawer";
