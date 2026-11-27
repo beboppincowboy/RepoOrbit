@@ -187,7 +187,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     try {
       const result = await withBoardLock(viewerKey, repositoryId, async () => {
         const stored = () => loadBoardCard(viewerKey, repositoryId, issueNumber);
-        const card = stored();
+        const card = await withDraftStorageLock(stored);
         if (!card) return null;
         const recovery = await runRecovery(card, { repositoryId });
         if (!recovery) return null;

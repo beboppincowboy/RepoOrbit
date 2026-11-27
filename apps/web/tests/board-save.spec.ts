@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { IssueWriteError, recheckWriteOperation, submitIssueUpdate, type IssueUpdateDraft, type WriteOperation } from '../src/lib/api';
 import { loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard } from '../src/lib/board';
 import { saveBoardChanges, type BoardSaveOptions } from '../src/lib/board-save';
-import { clearAllIssueDrafts, clearRepositoryIssueDrafts, issueDraftStorageKey } from '../src/lib/drafts';
+import { clearAllIssueDrafts, clearRepositoryIssueDrafts, issueDraftStorageKey, withDraftStorageLock } from '../src/lib/drafts';
 import { mockWindowStorage } from './mocks';
 
 const viewer = 'user:ada';
@@ -43,6 +43,34 @@ function fakeSubmit(respond: (number: number) => WriteOperation | Promise<WriteO
 }
 const save = (reviewed: BoardCard[], submit: BoardSaveOptions['submit'], onChange: () => void = () => {}) =>
   saveBoardChanges({ viewerKey: viewer, repositoryId: repo, reviewed, saver: ada, onChange, submit });
+
+test('draft storage work runs once whether the lock request rejects or the work throws', async () => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  let rejectRequest = true;
+  const locks = {
+    request: async (_name: string, work: () => unknown) => {
+      if (rejectRequest) throw new Error('Lock unavailable');
+      return work();
+    },
+  };
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks } });
+  try {
+    let calls = 0;
+    await expect(withDraftStorageLock(() => ++calls)).resolves.toBe(1);
+    expect(calls).toBe(1);
+
+    rejectRequest = false;
+    const error = new Error('Work failed');
+    await expect(withDraftStorageLock(() => {
+      calls++;
+      throw error;
+    })).rejects.toBe(error);
+    expect(calls).toBe(2);
+  } finally {
+    if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  }
+});
 
 test.describe('saveBoardChanges', () => {
   let restoreWindow: () => void;
@@ -223,6 +251,19 @@ test.describe('saveBoardChanges', () => {
     });
     await save(review(3), submit);
     expect(loadBoardCards(viewer, repo)).toEqual([]);
+  });
+
+  test('clearing drafts during a send stops the batch even if the next card is staged again unchanged', async () => {
+    const { sends, submit } = fakeSubmit(async number => {
+      if (number === 3) {
+        await clearRepositoryIssueDrafts(viewer, repo);
+        saveBoardCard(viewer, repo, staged(12));
+      }
+      return operation(number, 'succeeded');
+    });
+    await save(review(3, 12), submit);
+    expect(sends.map(send => send.number)).toEqual([3]);
+    expect(loadBoardCards(viewer, repo)).toEqual([staged(12)]);
   });
 
   test('save and cleanup only mutate Board storage under the draft lock', async () => {
