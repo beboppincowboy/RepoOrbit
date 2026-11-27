@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-// server.mjs must behave identically under Node and Bun, so every assertion runs against both.
+// Pins the behavior of server.mjs on Bun, the only runtime it ships on.
 const SHELL = '<!doctype html><title>shell</title><div id="root"></div>';
 const SECRET = 'TOP-SECRET-SENTINEL';
 
@@ -35,11 +35,20 @@ async function startStub() {
     req.on('close', () => { entry.closed = true; });
     (stub.handler ?? echo)(req, res);
   });
-  // Raw bytes per upstream socket: node's parser rejects bad framing before the handler, so `seen` alone can't show a forward.
-  server.on('connection', s => s.on('data', d => stub.raw.push(d)));
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
+  // An HTTP parser rejects bad framing before the handler, so `seen` alone can't show a forward. A TCP tee in front
+  // records the raw bytes; Bun's node:http server emits no socket data to listen to.
+  const tee = createTCPServer(client => {
+    const upstream = connect((server.address() as AddressInfo).port, '127.0.0.1');
+    client.on('data', d => stub.raw.push(d));
+    client.pipe(upstream).pipe(client);
+    client.on('error', () => {});
+    upstream.on('error', () => client.destroy());
+    client.on('close', () => upstream.destroy());
+  });
+  await new Promise<void>(r => tee.listen(0, '127.0.0.1', r));
   // No request can arrive before the port is known, so `stub` is always set by the time the handler runs.
-  const stub = { seen: [] as Seen[], raw: [] as Buffer[], handler: undefined as Handler | undefined, server, port: (server.address() as AddressInfo).port };
+  const stub = { seen: [] as Seen[], raw: [] as Buffer[], handler: undefined as Handler | undefined, server, tee, port: (tee.address() as AddressInfo).port };
   return stub;
 }
 
@@ -82,7 +91,7 @@ async function until(check: () => boolean, ms = 5000) {
   while (!check() && Date.now() < end) await sleep(25);
 }
 
-for (const runtime of ['node', 'bun']) {
+for (const runtime of ['bun']) {
   test.describe(`server.mjs under ${runtime}`, () => {
     test.describe.configure({ mode: 'serial' });
     let dir: string;
@@ -108,6 +117,7 @@ for (const runtime of ['node', 'bun']) {
       children.forEach(c => c.kill());
       stub.server.closeAllConnections();
       await new Promise(r => stub.server.close(r));
+      stub.tee.close();
       rmSync(dir, { recursive: true, force: true });
     });
     test.beforeEach(() => { stub.seen.length = 0; stub.raw.length = 0; stub.handler = undefined; });
@@ -159,6 +169,8 @@ for (const runtime of ['node', 'bun']) {
       expect(stub.seen[0].method).toBe('POST');
       expect(stub.seen[0].url).toBe('/graphql?x=1&x=2');
       expect(stub.seen[0].body.toString()).toBe('{"query":"{a}"}');
+      // Positive control for the tests that expect no raw bytes.
+      expect(Buffer.concat(stub.raw).toString()).toContain('POST /graphql?x=1&x=2');
     });
 
     test('keeps two Set-Cookie headers separate', async () => {

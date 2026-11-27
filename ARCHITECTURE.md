@@ -74,7 +74,7 @@ From #28. Every change follows these:
 3. Lightweight CQRS: explicit commands and queries. Existing SQL views and tables are the read models. Reads perform no business writes; the security bookkeeping that already happens on reads is allowed and documented.
 4. Keep the PostgreSQL job queue and its transactional enqueue. No outbox, Kafka, RabbitMQ, SQS or Redis.
 5. No schema migrations and no SQL rewrites. Additive read-only sqlc queries only where an issue says so.
-6. Bun 1.4.5 is pinned in `apps/web/package.json` (`packageManager`), the Docker images and CI. Playwright, ESLint and tsc stay on Node 22.
+6. Bun 1.4.5 is pinned in `apps/web/package.json` (`packageManager`), the Docker images and CI. Playwright, ESLint and tsc also run on Bun (this replaces the original decision in #28 to keep them on Node 22).
 7. Production keeps a separate web process (`apps/web/server.mjs`, running on Bun). Go does not serve the SPA. `/webhooks/github`, `/live` and `/ready` stay reachable only on the API.
 8. Observability uses `log/slog` and the Prometheus Go client, served on internal listeners only.
 9. The architecture is documented in a tracked root `ARCHITECTURE.md`.
@@ -94,7 +94,7 @@ The properties every change must keep are listed in the safety properties table 
 | `make test-race` | Go unit tests with the race detector | none |
 | `docker compose up -d --build --wait` | Builds and starts db, api, worker and web | 54329 (db), 8080 (api), 3000 (web); worker health 8081 inside its container only |
 | `make test-integration` | Go integration tests (`-tags=integration`) | Uses `DATABASE_URL`, default `postgres://repoorbit:repoorbit@localhost:54329/repoorbit?sslmode=disable` |
-| `(cd apps/web && ./node_modules/.bin/playwright install --with-deps chromium)` | Installs the Playwright browser | none |
+| `(cd apps/web && bun run --bun playwright install --with-deps chromium)` | Installs the Playwright browser | none |
 | `make test-e2e` | Playwright suite against the compose web (`BASE_URL`, default `http://127.0.0.1:3000`). `demo.spec.ts` runs SQL through `docker compose exec db` | 3000 |
 | `make test-e2e-auth` | Sign-in and repository-access tests against a fake GitHub with the API in real-auth mode (`scripts/e2e-auth.sh`) | 9090 (fake GitHub), 8090 (api), 3100 (web); db via `E2E_DB_HOST`, default `localhost:54329` |
 
@@ -143,7 +143,7 @@ Reads perform no business writes. The following security and scheduling bookkeep
 
 A separate Bun web process runs `apps/web/server.mjs` on Bun 1.4.5 in `oven/bun:1.4.5-alpine` as user `bun`, with no node_modules at runtime. It serves static files from `dist/client` with an `_shell.html` fallback and proxies `/auth`, `/api` and `/graphql` to the API, streaming bodies so the API enforces its own request limits. Go does not serve the SPA; a separate web process keeps the option of per-route server rendering. `/webhooks/github`, `/live` and `/ready` are reachable only on the API.
 
-Vite builds run on Bun (`bun run --bun vite build`); Playwright, ESLint and tsc stay on Node 22. Node and Bun parity for `server.mjs` is pinned by `apps/web/tests/server-parity.spec.ts`.
+Vite, Playwright, ESLint and tsc run on Bun through `bun run --bun`; without `--bun`, their `node` shebangs pick up a local Node. The behavior of `server.mjs` is pinned on Bun by `apps/web/tests/server-parity.spec.ts`.
 
 ## Observability
 
@@ -151,4 +151,4 @@ _To be written._
 
 ## Rollback
 
-Revert the Bun runtime change (#20) and the package-manager change (#19) to return to npm and Node. No data or schema is involved.
+Revert the Bun-only tooling change, then the Bun runtime change (#20) and the package-manager change (#19), to return to npm and Node. `server.mjs` is no longer tested on Node, so restore the Node half of the parity spec first and run it. No data or schema is involved.
