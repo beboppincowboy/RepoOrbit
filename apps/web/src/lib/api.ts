@@ -195,29 +195,36 @@ export class RepositoryAccessUnverifiedError extends Error {
   }
 }
 
+const coverageFields = "covered reason through";
+const countFields = `value coverage { ${coverageFields} }`;
+const medianFields = `seconds sampleSize coverage { ${coverageFields} }`;
+const rateFields = `rate numerator denominator coverage { ${coverageFields} }`;
+
+async function guardedGraphql<T>(query: string, variables: Record<string, unknown>, fallbackError: string, signal?: AbortSignal): Promise<T> {
+  const { data, errors } = await graphqlQuery<T>(query, variables, signal);
+  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
+  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
+  if (!data || errors?.length) throw new Error(fallbackError);
+  return data;
+}
+
 // Fetches stored repository analytics after server-side access verification. Null means the repo is missing,
 // unselected, or denied. Unverified access and temporary transport failures reject with their typed errors.
 export async function fetchRepositoryOverview(id: string, days: MetricWindow, signal: AbortSignal): Promise<RepositoryOverview | null> {
-  const coverage = "covered reason through";
-  const count = `value coverage { ${coverage} }`;
-  const median = `seconds sampleSize coverage { ${coverage} }`;
-  const { data, errors } = await graphqlQuery<{
+  const data = await guardedGraphql<{
     repositoryOverview: RepositoryOverview | null;
   }>(`query RepositoryOverview($id: ID!, $days: Int!) {
     repositoryOverview(id: $id, days: $days) {
       fullName syncState activity { ${activityFields} archived }
-      openIssues { ${count} } staleOpenIssues { ${count} } pullRequestsMerged { ${count} } openPullRequests { ${count} }
-      firstResponseTime { ${median} } mergeTime { ${median} } issuesWithoutResponse { value }
-      activeBotContributors { ${count} } contributorsCoverage { ${coverage} }
+      openIssues { ${countFields} } staleOpenIssues { ${countFields} } pullRequestsMerged { ${countFields} } openPullRequests { ${countFields} }
+      firstResponseTime { ${medianFields} } mergeTime { ${medianFields} } issuesWithoutResponse { value }
+      activeBotContributors { ${countFields} } contributorsCoverage { ${coverageFields} }
       contributors { login isBot pullRequestsOpened reviewsSubmitted commentsCreated }
       windowStart eventsCoveredFrom
       daily { day issuesOpened pullRequestsMerged }
       timeline { sourceId kind occurredAt title number url actor { login isBot } }
     }
-  }`, { id, days }, signal);
-  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
-  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
-  if (!data || errors?.length) throw new Error("Could not load repository analytics");
+  }`, { id, days }, "Could not load repository analytics", signal);
   return data.repositoryOverview;
 }
 
@@ -265,14 +272,13 @@ export type CrossRepositoryOverview = {
 // Fetches aggregate analytics for the viewer’s selected repositories. Unverified access rejects with
 // RepositoryAccessUnverifiedError. A selection-limit error reports the server’s limit to the caller.
 export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: AbortSignal) {
-  const coverage = "covered reason through";
   const { data, errors } = await graphqlQuery<{ crossRepositoryOverview: CrossRepositoryOverview | null }>(`query CrossRepositoryOverview($days: Int! = 30) {
     crossRepositoryOverview(days: $days) {
       days windowStart now repositoriesCounted repositoriesSyncing withheld retryAt
-      openIssues { value coverage { ${coverage} } }
-      reviewBacklog { value coverage { ${coverage} } }
-      failingWorkflows { value coverage { ${coverage} } }
-      buildSuccessRate { rate numerator denominator coverage { ${coverage} } }
+      openIssues { value coverage { ${coverageFields} } }
+      reviewBacklog { value coverage { ${coverageFields} } }
+      failingWorkflows { value coverage { ${coverageFields} } }
+      buildSuccessRate { rate numerator denominator coverage { ${coverageFields} } }
       needsAttention { kind repositoryId fullName number title url since runId }
       assignedToMe { repositoryId fullName number title url updatedAt status }
       daily { day issuesOpened pullRequestsMerged }
@@ -387,63 +393,49 @@ export type IssueDelivery = {
 };
 
 export async function fetchRepositoryActions(id: string, days: MetricWindow, signal: AbortSignal): Promise<RepositoryActions | null> {
-  const coverage = "covered reason through";
-  const count = `value coverage { ${coverage} }`;
-  const median = `seconds sampleSize coverage { ${coverage} }`;
-  const rate = `rate numerator denominator coverage { ${coverage} }`;
-  const { data, errors } = await graphqlQuery<{ repositoryActions: RepositoryActions | null }>(`query RepositoryActions($id: ID!, $days: Int! = 30) {
+  const data = await guardedGraphql<{ repositoryActions: RepositoryActions | null }>(`query RepositoryActions($id: ID!, $days: Int! = 30) {
     repositoryActions(id: $id, days: $days) {
       days windowStart now deploymentUnavailable
-      actionsCoverage { ${coverage} }
-      deploymentsCoverage { ${coverage} }
-      buildSuccessRate { ${rate} }
-      failedJobs { ${count} }
-      runningJobs { ${count} }
-      durationP50 { ${median} }
-      durationP95 { ${median} }
-      queueWaitP50 { ${median} }
+      actionsCoverage { ${coverageFields} }
+      deploymentsCoverage { ${coverageFields} }
+      buildSuccessRate { ${rateFields} }
+      failedJobs { ${countFields} }
+      runningJobs { ${countFields} }
+      durationP50 { ${medianFields} }
+      durationP95 { ${medianFields} }
+      queueWaitP50 { ${medianFields} }
       daily { day succeeded failed other }
       failuresByWorkflow { workflowId workflowName failedRuns totalRuns latestRunId latestStatus latestConclusion latestAt htmlUrl }
       recentRuns { id workflowId workflowName runNumber event status conclusion headBranch headSha htmlUrl createdAt runStartedAt updatedAt durationSeconds queueSeconds }
       deployments { id environment sha ref state description htmlUrl createdAt updatedAt }
     }
-  }`, { id, days }, signal);
-  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
-  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
-  if (!data || errors?.length) throw new Error("Could not load CI/CD metrics");
+  }`, { id, days }, "Could not load CI/CD metrics", signal);
   return data.repositoryActions;
 }
 
 export async function fetchWorkflowRun(repositoryId: string, runId: string, signal: AbortSignal): Promise<WorkflowRunDetail | null> {
-  const { data, errors } = await graphqlQuery<{ workflowRun: WorkflowRunDetail | null }>(`query WorkflowRun($id: ID!, $runId: ID!) {
+  const data = await guardedGraphql<{ workflowRun: WorkflowRunDetail | null }>(`query WorkflowRun($id: ID!, $runId: ID!) {
     workflowRun(repositoryId: $id, runId: $runId) {
       run { id workflowId workflowName runNumber event status conclusion headBranch headSha htmlUrl createdAt runStartedAt updatedAt durationSeconds queueSeconds }
       jobs { id runId name status conclusion htmlUrl createdAt startedAt completedAt durationSeconds queueSeconds }
     }
-  }`, { id: repositoryId, runId }, signal);
-  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
-  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
-  if (!data || errors?.length) throw new Error("Could not load workflow run details");
+  }`, { id: repositoryId, runId }, "Could not load workflow run details", signal);
   return data.workflowRun;
 }
 
 export async function fetchIssueDelivery(repositoryId: string, issueNumber: number, signal: AbortSignal): Promise<IssueDelivery | null> {
-  const coverage = "covered reason through";
-  const { data, errors } = await graphqlQuery<{ issueDelivery: IssueDelivery | null }>(`query IssueDelivery($id: ID!, $issueNumber: Int!) {
+  const data = await guardedGraphql<{ issueDelivery: IssueDelivery | null }>(`query IssueDelivery($id: ID!, $issueNumber: Int!) {
     issueDelivery(repositoryId: $id, issueNumber: $issueNumber) {
       issueNumber deploymentUnavailable
-      actionsCoverage { ${coverage} }
-      deploymentsCoverage { ${coverage} }
+      actionsCoverage { ${coverageFields} }
+      deploymentsCoverage { ${coverageFields} }
       pullRequests {
         number title state url reviewState headSha
         checks { runId workflowName status conclusion htmlUrl updatedAt failingJobName failingJobUrl }
         deployments { id environment sha ref state description htmlUrl createdAt updatedAt }
       }
     }
-  }`, { id: repositoryId, issueNumber }, signal);
-  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
-  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
-  if (!data || errors?.length) throw new Error("Could not load delivery lifecycle");
+  }`, { id: repositoryId, issueNumber }, "Could not load delivery lifecycle", signal);
   return data.issueDelivery;
 }
 
@@ -459,15 +451,12 @@ export type RepositoryBoard = { statusLabels: boolean; truncated: boolean; issue
 // Null means the repo is missing, unselected, or denied. Unverified access and temporary transport failures reject
 // with their typed errors.
 export async function fetchRepositoryBoard(id: string, include: number[], signal?: AbortSignal): Promise<RepositoryBoard | null> {
-  const { data, errors } = await graphqlQuery<{ repositoryBoard: RepositoryBoard | null }>(`query RepositoryBoard($id: ID!, $include: [Int!]) {
+  const data = await guardedGraphql<{ repositoryBoard: RepositoryBoard | null }>(`query RepositoryBoard($id: ID!, $include: [Int!]) {
     repositoryBoard(id: $id, include: $include) {
       statusLabels truncated
       issues { number title url state updatedAt authorLogin labels assignees status multipleStatus }
     }
-  }`, { id, include }, signal);
-  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
-  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
-  if (!data || errors?.length) throw new Error("Could not load the board");
+  }`, { id, include }, "Could not load the board", signal);
   return data.repositoryBoard;
 }
 

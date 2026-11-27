@@ -164,7 +164,7 @@ func (s *Server) repoComments(id int64, r *http.Request) []CommentFixture {
 	return out
 }
 
-func activityFixturePage[T any](w http.ResponseWriter, r *http.Request, items []T) {
+func paginateFixture[T any](w http.ResponseWriter, r *http.Request, items []T) []T {
 	per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
 	pg, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if per < 1 || per > 100 {
@@ -179,14 +179,18 @@ func activityFixturePage[T any](w http.ResponseWriter, r *http.Request, items []
 		if r.TLS != nil {
 			scheme = "https"
 		}
-		q := r.URL.Query() // carry state, since, sort and direction forward as GitHub does
+		q := r.URL.Query()
 		q.Set("per_page", strconv.Itoa(per))
 		q.Set("page", strconv.Itoa(pg+1))
 		w.Header().Set("Link", fmt.Sprintf(`<%s://%s%s?%s>; rel="next"`, scheme, r.Host, r.URL.Path, q.Encode()))
 	}
 	out := make([]T, hi-lo)
 	copy(out, items[lo:hi])
-	writeJSON(w, out)
+	return out
+}
+
+func activityFixturePage[T any](w http.ResponseWriter, r *http.Request, items []T) {
+	writeJSON(w, paginateFixture(w, r, items))
 }
 
 type TimelineEventFixture struct {

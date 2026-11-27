@@ -41,7 +41,6 @@ type IssueBoardProps = {
   assignable: string[];
   openIssue: number | undefined;
   onOpenIssue: (issueNumber: number | undefined) => void;
-  // Opens a CI/CD workflow run's detail; omitted when the host cannot show it.
   onOpenRun?: (runId: string) => void;
 };
 

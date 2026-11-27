@@ -1,39 +1,28 @@
-import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { SideDrawer } from "@/components/side-drawer";
 import { Button } from "@/components/ui/button";
 import { BOARD_STATUSES, stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
-import { fetchIssueDelivery, type BoardIssue, type BoardStatus, type DeliveryCheck, type IssueDelivery, type ReviewState } from "@/lib/api";
+import { fetchIssueDelivery, type BoardIssue, type BoardStatus, type DeliveryCheck, type IssueDelivery } from "@/lib/api";
+import { githubHref, isGitHubUrl, reviewLabels, workflowStatusLabel } from "@/lib/delivery";
 
 // Each Board column's name.
 export const STATUS_NAMES: Record<BoardStatus, string> = { backlog: "Backlog", todo: "Todo", in_progress: "In Progress", in_review: "In Review", done: "Done" };
 
 const mini = "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-[7px] text-[11px]";
 const option = "inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-0.5 text-xs has-checked:border-primary has-checked:bg-primary-soft has-checked:font-semibold has-checked:text-primary has-disabled:opacity-50";
-// Links come from the API; only GitHub URLs are rendered as links.
-const githubHref = (url: string, fallback: string) => url.startsWith("https://github.com/") ? url : fallback;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const has = (list: string[], value: string) => list.some(item => same(item, value));
 
-const reviewLabels: Record<ReviewState, [string, string]> = {
-  awaiting_review: ["Awaiting review", "border-border text-soft"],
-  commented: ["Commented", "border-border text-soft"],
-  approved: ["Approved", "border-success-soft bg-success-soft text-success-foreground"],
-  changes_requested: ["Changes requested", "border-warning-soft bg-warning-soft text-warning"],
-  merged: ["Merged", "border-primary-soft bg-primary-soft text-primary"],
-  closed: ["Closed", "border-border bg-muted text-muted-foreground"],
-};
 const failedConclusions = ["failure", "timed_out", "startup_failure"];
 const isFailed = (check: DeliveryCheck) => check.status === "completed" && failedConclusions.includes(check.conclusion);
 const checkTone = (check: DeliveryCheck) => isFailed(check) ? "border-destructive/30 bg-destructive/10 text-destructive"
   : check.status === "completed" && check.conclusion === "success" ? "border-success/30 bg-success/10 text-success"
   : "border-border bg-muted text-muted-foreground";
-const checkLabel = (check: DeliveryCheck) => check.status === "completed" ? check.conclusion || "completed" : check.status.replace(/_/g, " ");
 
 type TaskDrawerProps = {
   issueNumber: number;
   repositoryId: string;
   viewerKey: string;
-  // Opens the CI/CD run detail for a check's workflow run.
   onOpenRun?: (runId: string) => void;
   // Undefined when the latest Board read did not return the issue.
   issue: BoardIssue | undefined;
@@ -53,14 +42,6 @@ type TaskDrawerProps = {
 // The Board's side panel for one issue: its details, plus a status menu, an assignee menu and Close or Reopen, each of
 // which only stages a change on the card. It takes focus when it opens, and Escape closes it.
 export function TaskDrawer({ issueNumber, repositoryId, viewerKey, onOpenRun, issue, card, github, assignable, blocked, sideEffects, onStage, onDiscard, onClose }: TaskDrawerProps) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => ref.current?.focus(), []);
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   // A card holds the user's target over its snapshot; an unstaged issue's target is where it is now.
   const target: BoardTarget | null = card?.target ?? (issue?.status ? { status: issue.status, assigneesAdd: [], assigneesRemove: [] } : null);
   const base = card?.snapshot.assignees ?? issue?.assignees ?? [];
@@ -80,69 +61,58 @@ export function TaskDrawer({ issueNumber, repositoryId, viewerKey, onOpenRun, is
   }
 
   return (
-    <div
-      ref={ref}
-      role="dialog"
-      aria-label={`Issue #${issueNumber}`}
-      tabIndex={-1}
-      className="fixed inset-y-3 right-3 z-40 flex w-[min(400px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[0_18px_44px_rgba(15,23,42,.22)] outline-none"
+    <SideDrawer
+      ariaLabel={`Issue #${issueNumber}`}
+      closeLabel="Close task drawer"
+      eyebrow={<>#{issueNumber}{issue && ` · ${issue.state}`}</>}
+      title={issue?.title ?? "Issue not on the Board"}
+      onClose={onClose}
     >
-      <div className="flex flex-none items-start justify-between gap-2 border-b border-border p-4">
-        <div className="min-w-0">
-          <div className="font-mono text-xs text-muted-foreground">#{issueNumber}{issue && ` · ${issue.state}`}</div>
-          <h2 className="m-0 break-words text-base">{issue?.title ?? "Issue not on the Board"}</h2>
+      {!issue ? <p className="m-0 text-muted-foreground">The Board's latest read did not include this issue.</p> : <>
+        <a href={githubHref(issue.url, `${github}/issues/${issueNumber}`)} target="_blank" rel="noreferrer" className="self-start text-primary underline">Open on GitHub ↗</a>
+        <div className="flex flex-wrap gap-1">
+          {issue.labels.length ? issue.labels.map(name => <span key={name} className={`${mini} border-border bg-muted text-soft`}>{name}</span>) : <span className="text-xs text-muted-foreground">No labels</span>}
         </div>
-        <Button variant="outline" size="sm" onClick={onClose} aria-label="Close task drawer">Close</Button>
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 text-[13px]">
-        {!issue ? <p className="m-0 text-muted-foreground">The Board's latest read did not include this issue.</p> : <>
-          <a href={githubHref(issue.url, `${github}/issues/${issueNumber}`)} target="_blank" rel="noreferrer" className="self-start text-primary underline">Open on GitHub ↗</a>
-          <div className="flex flex-wrap gap-1">
-            {issue.labels.length ? issue.labels.map(name => <span key={name} className={`${mini} border-border bg-muted text-soft`}>{name}</span>) : <span className="text-xs text-muted-foreground">No labels</span>}
-          </div>
-          {blocked && <p role="status" className="m-0 rounded-[10px] border border-warning bg-warning-soft px-3 py-2">{blocked}</p>}
-          {target ? <>
-            <fieldset className="m-0 flex flex-col gap-1.5 border-0 p-0">
-              <legend className="mb-1.5 text-xs font-medium text-soft">Status</legend>
-              <div className="flex flex-wrap gap-1.5">
-                {BOARD_STATUSES.map(status => (
-                  <label key={status} className={option}>
-                    <input type="radio" name={`board-status-${issueNumber}`} className="accent-primary" checked={target.status === status} disabled={disabled} onChange={() => onStage({ ...target, status })} />
-                    {STATUS_NAMES[status]}
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset className="m-0 flex flex-col gap-1 border-0 p-0">
-              <legend className="mb-1.5 text-xs font-medium text-soft">Assignees</legend>
-              {people.length ? people.map(login => (
-                <label key={login} className="flex items-center gap-2 has-disabled:opacity-50">
-                  <input type="checkbox" className="accent-primary" checked={has(assigned, login)} disabled={disabled} onChange={e => toggleAssignee(login, e.target.checked)} />
-                  {login}
+        {blocked && <p role="status" className="m-0 rounded-[10px] border border-warning bg-warning-soft px-3 py-2">{blocked}</p>}
+        {target ? <>
+          <fieldset className="m-0 flex flex-col gap-1.5 border-0 p-0">
+            <legend className="mb-1.5 text-xs font-medium text-soft">Status</legend>
+            <div className="flex flex-wrap gap-1.5">
+              {BOARD_STATUSES.map(status => (
+                <label key={status} className={option}>
+                  <input type="radio" name={`board-status-${issueNumber}`} className="accent-primary" checked={target.status === status} disabled={disabled} onChange={() => onStage({ ...target, status })} />
+                  {STATUS_NAMES[status]}
                 </label>
-              )) : <span className="text-xs text-muted-foreground">No assignable users.</span>}
-            </fieldset>
-            <Button variant="outline" size="sm" className="self-start" disabled={disabled} onClick={() => onStage({ ...target, status: target.status === "done" ? "backlog" : "done" })}>
-              {target.status === "done" ? "Reopen issue" : "Close issue"}
-            </Button>
-          </> : <p className="m-0 text-xs text-muted-foreground">Assignees: {issue.assignees.length ? issue.assignees.map(a => `@${a}`).join(", ") : "none"}</p>}
-        </>}
-        <DeliverySection query={delivery} github={github} onOpenRun={onOpenRun} />
-        {card && (
-          <section aria-label="Staged change" className="flex flex-col gap-1.5 rounded-[10px] border border-primary-soft bg-primary-soft px-3 py-2">
-            <strong>{card.target.status === card.snapshot.status ? "Staged assignee change" : `Staged: ${STATUS_NAMES[card.snapshot.status]} → ${STATUS_NAMES[card.target.status]}`}</strong>
-            {sideEffects.length > 0 && <ul className="m-0 list-disc pl-4">{sideEffects.map(line => <li key={line}>{line}</li>)}</ul>}
-            <span className="text-xs text-muted-foreground">Nothing is sent to GitHub until you save.</span>
-            <Button variant="outline" size="sm" className="self-start" disabled={card.phase === "pending" || card.phase === "unknown"} onClick={onDiscard}>Discard</Button>
-          </section>
-        )}
-      </div>
-    </div>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset className="m-0 flex flex-col gap-1 border-0 p-0">
+            <legend className="mb-1.5 text-xs font-medium text-soft">Assignees</legend>
+            {people.length ? people.map(login => (
+              <label key={login} className="flex items-center gap-2 has-disabled:opacity-50">
+                <input type="checkbox" className="accent-primary" checked={has(assigned, login)} disabled={disabled} onChange={e => toggleAssignee(login, e.target.checked)} />
+                {login}
+              </label>
+            )) : <span className="text-xs text-muted-foreground">No assignable users.</span>}
+          </fieldset>
+          <Button variant="outline" size="sm" className="self-start" disabled={disabled} onClick={() => onStage({ ...target, status: target.status === "done" ? "backlog" : "done" })}>
+            {target.status === "done" ? "Reopen issue" : "Close issue"}
+          </Button>
+        </> : <p className="m-0 text-xs text-muted-foreground">Assignees: {issue.assignees.length ? issue.assignees.map(a => `@${a}`).join(", ") : "none"}</p>}
+      </>}
+      <DeliverySection query={delivery} github={github} onOpenRun={onOpenRun} />
+      {card && (
+        <section aria-label="Staged change" className="flex flex-col gap-1.5 rounded-[10px] border border-primary-soft bg-primary-soft px-3 py-2">
+          <strong>{card.target.status === card.snapshot.status ? "Staged assignee change" : `Staged: ${STATUS_NAMES[card.snapshot.status]} → ${STATUS_NAMES[card.target.status]}`}</strong>
+          {sideEffects.length > 0 && <ul className="m-0 list-disc pl-4">{sideEffects.map(line => <li key={line}>{line}</li>)}</ul>}
+          <span className="text-xs text-muted-foreground">Nothing is sent to GitHub until you save.</span>
+          <Button variant="outline" size="sm" className="self-start" disabled={card.phase === "pending" || card.phase === "unknown"} onClick={onDiscard}>Discard</Button>
+        </section>
+      )}
+    </SideDrawer>
   );
 }
 
-// Read-only delivery lifecycle for an issue: confirmed linked pull requests, their CI checks and deployments.
-// It offers links to GitHub and the run detail only, never a re-run or cancel control.
 function DeliverySection({ query, github, onOpenRun }: { query: { isPending: boolean; isError: boolean; data: IssueDelivery | null | undefined }; github: string; onOpenRun?: (runId: string) => void }) {
   const data = query.data;
   const denied = data && !data.actionsCoverage.covered && data.actionsCoverage.reason === "permission_denied";
@@ -172,11 +142,11 @@ function DeliverySection({ query, github, onOpenRun }: { query: { isPending: boo
                     {pr.checks.map(check => <li key={check.runId} className="flex flex-col gap-1 rounded-lg bg-muted px-2.5 py-1.5">
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-medium">{check.workflowName}</span>
-                        <span className={`${mini} ${checkTone(check)}`}>{checkLabel(check)}</span>
+                        <span className={`${mini} ${checkTone(check)}`}>{workflowStatusLabel(check.status, check.conclusion)}</span>
                       </div>
                       {isFailed(check) && check.failingJobName && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                         <span>Failing job: <strong>{check.failingJobName}</strong></span>
-                        {check.failingJobUrl && check.failingJobUrl.startsWith("https://github.com/") && <a href={check.failingJobUrl} target="_blank" rel="noreferrer" className="text-primary underline">View logs on GitHub ↗</a>}
+                        {check.failingJobUrl && isGitHubUrl(check.failingJobUrl) && <a href={check.failingJobUrl} target="_blank" rel="noreferrer" className="text-primary underline">View logs on GitHub ↗</a>}
                         {onOpenRun && <Button variant="outline" size="sm" onClick={() => onOpenRun(check.runId)}>Open run detail</Button>}
                       </div>}
                     </li>)}

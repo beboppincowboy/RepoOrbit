@@ -1,7 +1,6 @@
 package fake
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -96,26 +95,6 @@ func (s *Server) repoDelivery(w http.ResponseWriter, r *http.Request, login stri
 }
 
 func deliveryFixturePage[T any](w http.ResponseWriter, r *http.Request, key string, items []T) {
-	per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
-	pg, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if per < 1 || per > 100 {
-		per = 30
-	}
-	if pg < 1 {
-		pg = 1
-	}
-	lo, hi := min((pg-1)*per, len(items)), min(pg*per, len(items))
-	if hi < len(items) {
-		q := r.URL.Query()
-		q.Set("per_page", strconv.Itoa(per))
-		q.Set("page", strconv.Itoa(pg+1))
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		w.Header().Set("Link", fmt.Sprintf(`<%s://%s%s?%s>; rel="next"`, scheme, r.Host, r.URL.Path, q.Encode()))
-	}
-	page := make([]T, hi-lo)
-	copy(page, items[lo:hi])
+	page := paginateFixture(w, r, items)
 	writeJSON(w, map[string]any{"total_count": len(items), key: page})
 }

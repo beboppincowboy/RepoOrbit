@@ -20,7 +20,6 @@ export function WorkflowIcon() {
 }
 
 const shortDate = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", timeZone: "UTC" });
-// Problem wording per kind; `since` is the opening time, or the last update for stale issues / failed runs.
 const kinds: Record<AttentionKind, { label: (n: number) => string; reason: (since: string) => string; pill: string; tab: "pulls" | "overview" | "cicd" }> = {
   pr_awaiting_review: { label: n => `PR #${n}`, reason: () => "Awaiting first review", pill: "Review", tab: "pulls" },
   issue_no_response: { label: n => `Issue #${n}`, reason: since => `No response since ${shortDate.format(new Date(since))}`, pill: "Issues", tab: "overview" },

@@ -3,25 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { Button } from "@/components/ui/button";
 import { fetchRepositoryActions, type MetricWindow, type RepositoryActions } from "@/lib/api";
+import { formatDurationSeconds, githubHref, utcTimestampFormatter, workflowStatusLabel, workflowStatusTone } from "@/lib/delivery";
 
 const card = "rounded-xl border border-border bg-card min-w-0 min-h-0";
-const githubHref = (url: string, fallback: string) => url.startsWith("https://github.com/") ? url : fallback;
-const stamp = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" });
-
-function formatSeconds(seconds: number | null) {
-  if (seconds === null) return "—";
-  if (seconds < 60) return `${seconds}s`;
-  const mins = Math.floor(seconds / 60);
-  const rem = seconds % 60;
-  return rem ? `${mins}m ${rem}s` : `${mins}m`;
-}
-
-function statusPill(status: string, conclusion: string) {
-  if (status !== "completed") return "border-border bg-muted text-muted-foreground";
-  if (conclusion === "success") return "border-success/30 bg-success/10 text-success";
-  if (conclusion === "failure") return "border-destructive/30 bg-destructive/10 text-destructive";
-  return "border-border bg-muted text-muted-foreground";
-}
 
 type CicdTabProps = {
   repositoryId: string;
@@ -88,12 +72,12 @@ export function CicdTab({ repositoryId, viewerKey, days, github, onSelectRun }: 
         />
         <KpiCard
           label="Duration p50 / p95"
-          value={data.durationP50.coverage.covered ? `${formatSeconds(data.durationP50.seconds)} / ${formatSeconds(data.durationP95.seconds)}` : "—"}
+          value={data.durationP50.coverage.covered ? `${formatDurationSeconds(data.durationP50.seconds)} / ${formatDurationSeconds(data.durationP95.seconds)}` : "—"}
           sub={data.durationP50.coverage.covered ? `${data.durationP50.sampleSize ?? 0} completed runs` : coverageNote(data.durationP50.coverage.reason)}
         />
         <KpiCard
           label="Queue wait p50"
-          value={data.queueWaitP50.coverage.covered ? formatSeconds(data.queueWaitP50.seconds) : "—"}
+          value={data.queueWaitP50.coverage.covered ? formatDurationSeconds(data.queueWaitP50.seconds) : "—"}
           sub={data.queueWaitP50.coverage.covered ? `${data.queueWaitP50.sampleSize ?? 0} started runs` : coverageNote(data.queueWaitP50.coverage.reason)}
         />
       </section>
@@ -153,11 +137,11 @@ export function CicdTab({ repositoryId, viewerKey, days, github, onSelectRun }: 
                     <div className="min-w-0 flex-1">
                       <div className="truncate font-medium">{run.workflowName} <span className="font-mono text-xs text-muted-foreground">#{run.runNumber}</span></div>
                       <div className="truncate text-xs text-muted-foreground">
-                        {run.headBranch} · {run.headSha.slice(0, 7)} · {stamp.format(new Date(run.createdAt))}
+                        {run.headBranch} · {run.headSha.slice(0, 7)} · {utcTimestampFormatter.format(new Date(run.createdAt))}
                       </div>
                     </div>
-                    <span className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusPill(run.status, run.conclusion)}`}>
-                      {run.status === "completed" ? (run.conclusion || "completed") : run.status.replace("_", " ")}
+                    <span className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${workflowStatusTone(run.status, run.conclusion)}`}>
+                      {workflowStatusLabel(run.status, run.conclusion)}
                     </span>
                   </button>
                 </li>
@@ -186,11 +170,11 @@ export function CicdTab({ repositoryId, viewerKey, days, github, onSelectRun }: 
                   <div className="min-w-0 flex-1">
                     <div className="font-medium">{dep.environment} <span className="font-mono text-xs text-muted-foreground">{dep.ref} · {dep.sha.slice(0, 7)}</span></div>
                     <div className="truncate text-xs text-muted-foreground">
-                      {dep.description || "GitHub Deployment"} · {stamp.format(new Date(dep.createdAt))}
+                      {dep.description || "GitHub Deployment"} · {utcTimestampFormatter.format(new Date(dep.createdAt))}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
-                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusPill("completed", dep.state)}`}>
+                    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${workflowStatusTone("completed", dep.state)}`}>
                       {dep.state}
                     </span>
                     <a

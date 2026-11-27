@@ -77,32 +77,37 @@ func TestActivityEventsSignalCaughtUpStreamsOnce(t *testing.T) {
 }
 
 func TestDeliveryWebhookSchedulesOnlySelectedRepositories(t *testing.T) {
-	_, pool := testutil.Database(t)
-	ctx := context.Background()
-	selectedRepo(t, pool, 42)
-	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
 	for _, event := range []string{"workflow_run", "workflow_job", "deployment_status"} {
-		if w := post(h, testSecret, event, event+"-selected", `{"repository":{"id":42}}`, ""); w.Code != 200 {
-			t.Fatalf("%s status %d", event, w.Code)
-		}
-		if w := post(h, testSecret, event, event+"-unselected", `{"repository":{"id":99}}`, ""); w.Code != 200 {
-			t.Fatalf("%s unselected status %d", event, w.Code)
-		}
-	}
-	if n := count(t, pool, "jobs WHERE key='repo:42' AND kind IN ('activity_actions','activity_deployments')"); n != 2 {
-		t.Fatalf("selected delivery jobs = %d", n)
-	}
-	if n := count(t, pool, "activity_resources WHERE repository_id=99"); n != 0 {
-		t.Fatalf("unselected resources = %d", n)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE activity_resources SET phase='current' WHERE repository_id=42`); err != nil {
-		t.Fatal(err)
-	}
-	if w := post(h, testSecret, "workflow_run", "workflow-reopen", `{"repository":{"id":42}}`, ""); w.Code != 200 {
-		t.Fatal(w.Code)
-	}
-	if n := count(t, pool, "activity_resources WHERE repository_id=42 AND resource IN ('actions','deployments') AND phase='catchup'"); n != 2 {
-		t.Fatalf("reopened delivery streams = %d", n)
+		t.Run(event, func(t *testing.T) {
+			_, pool := testutil.Database(t)
+			ctx := context.Background()
+			selectedRepo(t, pool, 42)
+			h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
+			if w := post(h, testSecret, event, event+"-selected", `{"repository":{"id":42}}`, ""); w.Code != 200 {
+				t.Fatalf("selected status %d", w.Code)
+			}
+			if w := post(h, testSecret, event, event+"-unselected", `{"repository":{"id":99}}`, ""); w.Code != 200 {
+				t.Fatalf("unselected status %d", w.Code)
+			}
+			if n := count(t, pool, "jobs WHERE key='repo:42' AND kind IN ('activity_actions','activity_deployments')"); n != 2 {
+				t.Fatalf("selected delivery jobs = %d, want 2", n)
+			}
+			if n := count(t, pool, "jobs WHERE kind='repo_metadata_refresh'"); n != 0 {
+				t.Fatalf("metadata refreshes = %d, want 0", n)
+			}
+			if n := count(t, pool, "activity_resources WHERE repository_id=99"); n != 0 {
+				t.Fatalf("unselected resources = %d, want 0", n)
+			}
+			if _, err := pool.Exec(ctx, `UPDATE activity_resources SET phase='current' WHERE repository_id=42`); err != nil {
+				t.Fatal(err)
+			}
+			if w := post(h, testSecret, event, event+"-reopen", `{"repository":{"id":42}}`, ""); w.Code != 200 {
+				t.Fatalf("reopen status %d", w.Code)
+			}
+			if n := count(t, pool, "activity_resources WHERE repository_id=42 AND resource IN ('actions','deployments') AND phase='catchup'"); n != 2 {
+				t.Fatalf("reopened delivery streams = %d, want 2", n)
+			}
+		})
 	}
 }
 

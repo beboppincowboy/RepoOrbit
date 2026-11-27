@@ -1,4 +1,5 @@
 import { repositorySnapshotKey } from "@/lib/repository-snapshots";
+import { githubHref, reviewLabels, utcTimestampFormatter as stamp } from "@/lib/delivery";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
@@ -37,7 +38,6 @@ import {
   fetchWorkspacePullRequests,
   type ActivityResourceStatus,
   type MetricWindow,
-  type ReviewState,
   type WorkspaceIssue,
   type WorkspacePullRequest,
   type WriteOperation,
@@ -70,7 +70,6 @@ export const Route = createFileRoute("/_shell/workspace/$repositoryId")({
     const editor = parseEditorSearch(search.editor);
     const issue = parseEditorSearch(search.issue);
     const tab: Tab = typeof search.tab === "string" && Object.hasOwn(tabs, search.tab) ? search.tab as Tab : "overview";
-    // The run drawer belongs to the CI/CD tab, so leaving that tab drops the run.
     const run = tab === "cicd" ? parseRunSearch(search.run) : undefined;
     return {
       days: search.days === 7 || search.days === 90 ? search.days : 30,
@@ -106,7 +105,6 @@ const Ico = ({ children, tone = "bg-muted text-muted-foreground" }: { children: 
   <span className={`grid size-7 shrink-0 place-items-center rounded-lg ${tone}`}>{children}</span>;
 
 const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-const stamp = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" });
 const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
 function ago(iso: string) {
   const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
@@ -119,7 +117,6 @@ function duration(seconds: number | null) {
   if (hours < 48) return hours < 10 ? `${hours.toFixed(1)}h` : `${Math.round(hours)}h`;
   return `${(hours / 24).toFixed(1)}d`;
 }
-const githubHref = (url: string, fallback: string) => url.startsWith("https://github.com/") ? url : fallback;
 
 const coverageReasons: Record<string, [string, string]> = {
   not_synchronized: ["Awaiting data", muted],
@@ -312,7 +309,7 @@ function RepositoryWorkspace() {
     ? (selectedEditIssue?.number === search.editor ? selectedEditIssue : restoredIssueQuery.data ?? { number: search.editor })
     : undefined;
   const tabSearch = { days: search.days, tab: search.tab };
-  // Parent routes pass raw search params through, so the run id is checked again here.
+  // TanStack Start SSR can pass raw query strings through useSearch before validateSearch runs.
   const runId = search.tab === "cicd" ? parseRunSearch(search.run) : undefined;
 
   return <div className="flex h-full min-h-0 flex-col gap-3 max-[900px]:overflow-auto">
@@ -573,14 +570,6 @@ function Contributors({ overview: o, days }: { overview: Overview; days: MetricW
   </section>;
 }
 
-const reviewLabels: Record<ReviewState, [string, string]> = {
-  awaiting_review: ["Awaiting review", "border-border text-soft"],
-  commented: ["Commented", "border-border text-soft"],
-  approved: ["Approved", "border-success-soft bg-success-soft text-success-foreground"],
-  changes_requested: ["Changes requested", "border-warning-soft bg-warning-soft text-warning"],
-  merged: ["Merged", "border-primary-soft bg-primary-soft text-primary"],
-  closed: ["Closed", "border-border bg-muted text-muted-foreground"],
-};
 const features = tableFeatures({});
 const column = createColumnHelper<typeof features, WorkspacePullRequest>();
 const noPulls: WorkspacePullRequest[] = [];

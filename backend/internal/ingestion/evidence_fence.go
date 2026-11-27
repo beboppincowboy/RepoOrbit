@@ -12,6 +12,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
+	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
 // withEvidencePage performs remote I/O outside the fenced transaction and rechecks access before committing.
@@ -92,18 +93,26 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 				return fetchErr
 			}
 		}
+		deferIfMoved := func(after repositories.Decision) (bool, error) {
+			if after.Allowed && after.InstallationID == before.InstallationID && after.Repo.Private == before.Repo.Private && after.Repo.FullName == before.Repo.FullName {
+				return false, nil
+			}
+			if !after.Allowed || after.Repo.Private {
+				if err := tighten(); err != nil && !errors.Is(err, errRace) {
+					return true, err
+				}
+			}
+			return true, &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
+		}
 		data, err := fetch(fetchToken, before.Repo)
 		if err != nil && fetchToken != token {
 			var api *githubapp.APIError
 			if errors.As(err, &api) && api.Unauthorized() {
 				after := d.checkActivityAccess(ctx, uid, repoID, token)
-				if !after.Unverified && (!after.Allowed || after.InstallationID != before.InstallationID || after.Repo.Private != before.Repo.Private || after.Repo.FullName != before.Repo.FullName) {
-					if !after.Allowed || after.Repo.Private {
-						if err := tighten(); err != nil && !errors.Is(err, errRace) {
-							return err
-						}
+				if !after.Unverified {
+					if moved, moveErr := deferIfMoved(after); moved {
+						return moveErr
 					}
-					return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
 				}
 			}
 			fetchErr := d.installationFetchError(installation, fetchToken, err)
@@ -139,13 +148,8 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 			}
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeUnverified}
 		}
-		if !after.Allowed || after.InstallationID != before.InstallationID || after.Repo.Private != before.Repo.Private || after.Repo.FullName != before.Repo.FullName {
-			if !after.Allowed || after.Repo.Private {
-				if err := tighten(); err != nil && !errors.Is(err, errRace) {
-					return err
-				}
-			}
-			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
+		if moved, moveErr := deferIfMoved(after); moved {
+			return moveErr
 		}
 		if job.Kind == jobs.KindActivityPullRequests && pullRequestsDisabled(before.Repo) != pullRequestsDisabled(after.Repo) {
 			return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}

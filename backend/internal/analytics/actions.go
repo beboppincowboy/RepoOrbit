@@ -303,9 +303,9 @@ func LoadIssueDelivery(ctx context.Context, pool *pgxpool.Pool, repositoryID, is
 	actCov := actionsStreamCoverage(covRow.ActionsWatermark, covRow.ActionsBoundary, covRow.ActionsErrorCode, time.Time{})
 	depCov := actionsStreamCoverage(covRow.DeploymentsWatermark, covRow.DeploymentsBoundary, covRow.DeploymentsErrorCode, time.Time{})
 
-	repoDeps := []db.Deployment{}
+	hasDep := false
 	if depCov.Covered {
-		repoDeps, err = q.ListDeployments(ctx, repositoryID)
+		hasDep, err = q.HasDeployment(ctx, repositoryID)
 		if err != nil {
 			return nil, err
 		}
@@ -315,7 +315,7 @@ func LoadIssueDelivery(ctx context.Context, pool *pgxpool.Pool, repositoryID, is
 		IssueNumber:           issueNumber,
 		ActionsCoverage:       actCov,
 		DeploymentsCoverage:   depCov,
-		DeploymentUnavailable: !depCov.Covered || len(repoDeps) == 0,
+		DeploymentUnavailable: !depCov.Covered || !hasDep,
 		PullRequests:          []LinkedPullRequestDelivery{},
 	}
 
@@ -326,68 +326,67 @@ func LoadIssueDelivery(ctx context.Context, pool *pgxpool.Pool, repositoryID, is
 		return nil, err
 	}
 	for _, p := range prs {
-		prItem := LinkedPullRequestDelivery{
-			Number:      p.Number,
-			Title:       p.Title,
-			State:       p.State,
-			URL:         p.HtmlUrl,
-			HeadSHA:     p.HeadSha,
-			Checks:      []DeliveryCheck{},
-			Deployments: []DeploymentSummary{},
-		}
-		if p.ReviewState != "" {
-			rs := p.ReviewState
-			prItem.ReviewState = &rs
-		}
-		if actCov.Covered {
-			runs, err := q.ListWorkflowRunsForPullRequest(ctx, db.ListWorkflowRunsForPullRequestParams{
-				RepositoryID: repositoryID, PullRequestNumber: p.Number, HeadSha: p.HeadSha,
-			})
-			if err != nil {
-				return nil, err
-			}
-			for _, run := range runs {
-				chk := DeliveryCheck{
-					RunID:        run.SourceID,
-					WorkflowName: run.WorkflowName,
-					Status:       run.Status,
-					Conclusion:   run.Conclusion,
-					HTMLURL:      run.HtmlUrl,
-					UpdatedAt:    run.UpdatedAt.Time,
-				}
-				if run.Status == "completed" && run.Conclusion == "failure" {
-					jobs, err := q.ListWorkflowJobs(ctx, db.ListWorkflowJobsParams{RepositoryID: repositoryID, RunID: run.SourceID})
-					if err != nil {
-						return nil, err
-					}
-					for _, j := range jobs {
-						if j.Status == "completed" && j.Conclusion == "failure" {
-							name := j.Name
-							url := j.HtmlUrl
-							chk.FailingJobName = &name
-							chk.FailingJobURL = &url
-							break
-						}
-					}
-				}
-				prItem.Checks = append(prItem.Checks, chk)
-			}
-		}
-		if depCov.Covered && p.HeadSha != "" {
-			deps, err := q.ListDeploymentsForSHA(ctx, db.ListDeploymentsForSHAParams{
-				RepositoryID: repositoryID, Sha: p.HeadSha,
-			})
-			if err != nil {
-				return nil, err
-			}
-			for _, d := range deps {
-				prItem.Deployments = append(prItem.Deployments, toDeploymentSummary(d))
-			}
+		prItem, err := loadPullRequestDelivery(ctx, q, repositoryID, p, actCov.Covered, depCov.Covered)
+		if err != nil {
+			return nil, err
 		}
 		out.PullRequests = append(out.PullRequests, prItem)
 	}
 
 	return out, tx.Commit(ctx)
+}
+
+func loadPullRequestDelivery(ctx context.Context, q *db.Queries, repositoryID int64, p db.ListLinkedPullRequestsForIssueRow, actionsCovered, deploymentsCovered bool) (LinkedPullRequestDelivery, error) {
+	prItem := LinkedPullRequestDelivery{
+		Number:      p.Number,
+		Title:       p.Title,
+		State:       p.State,
+		URL:         p.HtmlUrl,
+		HeadSHA:     p.HeadSha,
+		Checks:      []DeliveryCheck{},
+		Deployments: []DeploymentSummary{},
+	}
+	if p.ReviewState != "" {
+		rs := p.ReviewState
+		prItem.ReviewState = &rs
+	}
+	if actionsCovered {
+		runs, err := q.ListWorkflowRunsForPullRequest(ctx, db.ListWorkflowRunsForPullRequestParams{
+			RepositoryID: repositoryID, PullRequestNumber: p.Number, HeadSha: p.HeadSha,
+		})
+		if err != nil {
+			return LinkedPullRequestDelivery{}, err
+		}
+		for _, run := range runs {
+			chk := DeliveryCheck{
+				RunID:        run.SourceID,
+				WorkflowName: run.WorkflowName,
+				Status:       run.Status,
+				Conclusion:   run.Conclusion,
+				HTMLURL:      run.HtmlUrl,
+				UpdatedAt:    run.UpdatedAt.Time,
+			}
+			if run.HasFailingJob {
+				name := run.FailingJobName
+				url := run.FailingJobUrl
+				chk.FailingJobName = &name
+				chk.FailingJobURL = &url
+			}
+			prItem.Checks = append(prItem.Checks, chk)
+		}
+	}
+	if deploymentsCovered && p.HeadSha != "" {
+		deps, err := q.ListDeploymentsForSHA(ctx, db.ListDeploymentsForSHAParams{
+			RepositoryID: repositoryID, Sha: p.HeadSha,
+		})
+		if err != nil {
+			return LinkedPullRequestDelivery{}, err
+		}
+		for _, d := range deps {
+			prItem.Deployments = append(prItem.Deployments, toDeploymentSummary(d))
+		}
+	}
+	return prItem, nil
 }
 
 func actionsStreamCoverage(watermark, boundary pgtype.Timestamptz, errorCode string, start time.Time) Coverage {

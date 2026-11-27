@@ -1,10 +1,3 @@
--- name: ListWorkflows :many
-SELECT * FROM workflows WHERE repository_id = $1 ORDER BY name, source_id;
-
--- name: ListWorkflowRuns :many
-SELECT * FROM workflow_runs WHERE repository_id = $1 AND created_at >= $2 AND created_at <= $3
-ORDER BY created_at DESC, source_id DESC;
-
 -- name: GetWorkflowRun :one
 SELECT * FROM workflow_runs WHERE repository_id = $1 AND source_id = $2;
 
@@ -14,8 +7,8 @@ SELECT * FROM workflow_jobs WHERE repository_id = $1 AND run_id = $2 ORDER BY cr
 -- name: ListDeployments :many
 SELECT * FROM deployments WHERE repository_id = $1 ORDER BY created_at DESC, source_id DESC;
 
--- name: ListIssuePullRequestLinks :many
-SELECT * FROM issue_pull_request_links WHERE repository_id = $1 AND issue_number = $2 ORDER BY pull_request_number;
+-- name: HasDeployment :one
+SELECT EXISTS (SELECT 1 FROM deployments WHERE repository_id = $1)::boolean;
 
 -- name: GetActionsCoverage :one
 SELECT
@@ -190,15 +183,58 @@ CROSS JOIN LATERAL (
 WHERE l.repository_id = sqlc.arg(repository_id) AND l.issue_number = sqlc.arg(issue_number)
 ORDER BY p.number ASC;
 
+-- name: ListActionsCoverageByRepo :many
+SELECT
+  repository_id,
+  boundary,
+  watermark,
+  COALESCE(last_error_code, '')::text AS error_code
+FROM activity_resources
+WHERE repository_id = ANY(sqlc.arg(repository_ids)::bigint[])
+  AND resource = 'actions';
+
+-- name: GetCrossActionsTotals :one
+WITH windowed_runs AS (
+  SELECT wr.repository_id, wr.source_id, wr.workflow_id, wr.status, wr.conclusion, wr.created_at
+  FROM workflow_runs wr
+  WHERE wr.repository_id = ANY(sqlc.arg(repository_ids)::bigint[])
+    AND wr.created_at BETWEEN sqlc.arg(window_start)::timestamptz AND sqlc.arg(now)::timestamptz
+), latest_per_workflow AS (
+  SELECT DISTINCT ON (wr.repository_id, wr.workflow_id) wr.status, wr.conclusion
+  FROM windowed_runs wr
+  ORDER BY wr.repository_id, wr.workflow_id, wr.created_at DESC, wr.source_id DESC
+)
+SELECT
+  count(*) FILTER (WHERE wr.status = 'completed' AND wr.conclusion <> '')::bigint AS completed_runs,
+  count(*) FILTER (WHERE wr.status = 'completed' AND wr.conclusion = 'success')::bigint AS succeeded_runs,
+  (SELECT count(*)::bigint FROM latest_per_workflow lpw WHERE lpw.status = 'completed' AND lpw.conclusion = 'failure') AS failing_workflows
+FROM windowed_runs wr;
+
 -- name: ListWorkflowRunsForPullRequest :many
-SELECT *
-FROM workflow_runs
-WHERE repository_id = sqlc.arg(repository_id)
+SELECT
+  wr.*,
+  COALESCE(fj.name, '')::text AS failing_job_name,
+  COALESCE(fj.html_url, '')::text AS failing_job_url,
+  (fj.name IS NOT NULL)::boolean AS has_failing_job
+FROM workflow_runs wr
+LEFT JOIN LATERAL (
+  SELECT j.name, j.html_url
+  FROM workflow_jobs j
+  WHERE wr.status = 'completed'
+    AND wr.conclusion = 'failure'
+    AND j.repository_id = wr.repository_id
+    AND j.run_id = wr.source_id
+    AND j.status = 'completed'
+    AND j.conclusion = 'failure'
+  ORDER BY j.created_at, j.source_id
+  LIMIT 1
+) fj ON true
+WHERE wr.repository_id = sqlc.arg(repository_id)
   AND (
-    sqlc.arg(pull_request_number)::bigint = ANY(pull_request_numbers)
-    OR (sqlc.arg(head_sha)::text <> '' AND head_sha = sqlc.arg(head_sha)::text)
+    sqlc.arg(pull_request_number)::bigint = ANY(wr.pull_request_numbers)
+    OR (sqlc.arg(head_sha)::text <> '' AND wr.head_sha = sqlc.arg(head_sha)::text)
   )
-ORDER BY created_at DESC, source_id DESC
+ORDER BY wr.created_at DESC, wr.source_id DESC
 LIMIT 20;
 
 -- name: ListDeploymentsForSHA :many

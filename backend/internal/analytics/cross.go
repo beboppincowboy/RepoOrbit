@@ -128,32 +128,43 @@ func LoadCrossRepositoryOverview(ctx context.Context, pool *pgxpool.Pool, reposi
 		if one.UnansweredOpenIssues.Coverage.Covered {
 			issueRows = append(issueRows, id)
 		}
-		actCovRow, err := q.GetActionsCoverage(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		repoActCov := actionsStreamCoverage(actCovRow.ActionsWatermark, actCovRow.ActionsBoundary, actCovRow.ActionsErrorCode, w30.start)
-		if repoActCov.Covered {
-			actionsRows = append(actionsRows, id)
-			am, err := q.GetActionsMetrics(ctx, db.GetActionsMetricsParams{
-				RepositoryID: id, WindowStart: w30.startArg(), Now: w30.nowArg(),
-			})
-			if err != nil {
-				return nil, err
-			}
-			failingWorkflows += am.FailingWorkflows
-			succeededRuns += am.SucceededRuns
-			completedRuns += am.CompletedRuns
-			if len(actionsRows) == len(counted) {
-				actionsCov = oldest(actionsCov, repoActCov)
-			}
-		} else {
-			actionsCov = repoActCov
-		}
 		for i, d := range one.Daily {
 			daily[i].IssuesOpened = add(daily[i].IssuesOpened, *d.IssuesOpened)
 			daily[i].PullRequestsMerged = add(daily[i].PullRequestsMerged, *d.PullRequestsMerged)
 		}
+	}
+	if len(counted) > 0 {
+		covRows, err := q.ListActionsCoverageByRepo(ctx, counted)
+		if err != nil {
+			return nil, err
+		}
+		covByRepo := make(map[int64]db.ListActionsCoverageByRepoRow, len(covRows))
+		for _, r := range covRows {
+			covByRepo[r.RepositoryID] = r
+		}
+		for i, id := range counted {
+			row := covByRepo[id]
+			repoActCov := actionsStreamCoverage(row.Watermark, row.Boundary, row.ErrorCode, w30.start)
+			if repoActCov.Covered {
+				actionsRows = append(actionsRows, id)
+				if len(actionsRows) == i+1 {
+					actionsCov = oldest(actionsCov, repoActCov)
+				}
+			} else {
+				actionsCov = repoActCov
+			}
+		}
+	}
+	if len(actionsRows) > 0 {
+		totals, err := q.GetCrossActionsTotals(ctx, db.GetCrossActionsTotalsParams{
+			RepositoryIds: actionsRows, WindowStart: w30.startArg(), Now: w30.nowArg(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		failingWorkflows = totals.FailingWorkflows
+		succeededRuns = totals.SucceededRuns
+		completedRuns = totals.CompletedRuns
 	}
 	out.RepositoriesCounted = len(counted)
 	out.OpenIssues = count(openIssues, out.OpenIssues.Coverage)
