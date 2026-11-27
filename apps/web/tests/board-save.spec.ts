@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { IssueWriteError, recheckWriteOperation, submitIssueUpdate, type IssueUpdateDraft, type WriteOperation } from '../src/lib/api';
 import { loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard } from '../src/lib/board';
 import { saveBoardChanges, type BoardSaveOptions } from '../src/lib/board-save';
+import { clearAllIssueDrafts, clearRepositoryIssueDrafts, issueDraftStorageKey } from '../src/lib/drafts';
 import { mockWindowStorage } from './mocks';
 
 const viewer = 'user:ada';
@@ -42,6 +43,16 @@ function fakeSubmit(respond: (number: number) => WriteOperation | Promise<WriteO
 }
 const save = (reviewed: BoardCard[], submit: BoardSaveOptions['submit'], onChange: () => void = () => {}) =>
   saveBoardChanges({ viewerKey: viewer, repositoryId: repo, reviewed, saver: ada, onChange, submit });
+
+function beforeCardWrite(number: number, action: () => void) {
+  const storage = window.localStorage;
+  const cardKey = issueDraftStorageKey(viewer, repo, { board: number });
+  const setItem = storage.setItem.bind(storage);
+  Object.defineProperty(storage, 'setItem', { value(key: string, value: string) {
+    if (key === cardKey) action();
+    setItem(key, value);
+  } });
+}
 
 test.describe('saveBoardChanges', () => {
   let restoreWindow: () => void;
@@ -221,6 +232,51 @@ test.describe('saveBoardChanges', () => {
     });
     await save(review(3), submit);
     expect(loadBoardCards(viewer, repo)).toEqual([]);
+  });
+
+  test('cleanup just before the pending write removes the card before any send', async () => {
+    const reviewed = review(3);
+    beforeCardWrite(3, clearAllIssueDrafts);
+    const { sends, submit } = fakeSubmit();
+    await save(reviewed, submit);
+    expect(stored(3)).toBeUndefined();
+    expect(sends).toEqual([]);
+  });
+
+  for (const [name, clear] of [
+    ['sign-out', clearAllIssueDrafts],
+    ['access loss', () => clearRepositoryIssueDrafts(viewer, repo)],
+  ] as const) {
+    test(`${name} just before the result write removes the card and stops the batch`, async () => {
+      const reviewed = review(3, 12);
+      const { sends, submit } = fakeSubmit(number => {
+        if (number === 3) beforeCardWrite(number, () => {
+          clear();
+          // Even a newly staged copy of the next card must wait for a new save.
+          saveBoardCard(viewer, repo, reviewed[1]);
+        });
+        return operation(number, 'unknown');
+      });
+      await save(reviewed, submit);
+      expect(stored(3)).toBeUndefined();
+      expect(sends.map(send => send.number)).toEqual([3]);
+      expect(stored(12)).toEqual(reviewed[1]);
+    });
+  }
+
+  test('clearing drafts for another repository or viewer leaves this batch alone', async () => {
+    saveBoardCard(viewer, 'repo-2', staged(3));
+    saveBoardCard('user:sam', repo, staged(3));
+    const { sends, submit } = fakeSubmit(number => {
+      clearRepositoryIssueDrafts(viewer, 'repo-2');
+      clearRepositoryIssueDrafts('user:sam', repo);
+      return operation(number, 'unknown');
+    });
+    await save(review(3, 12), submit);
+    expect(sends.map(send => send.number)).toEqual([3, 12]);
+    expect(stored(3)).toMatchObject({ phase: 'unknown', operationId: 43 });
+    expect(loadBoardCards(viewer, 'repo-2')).toEqual([]);
+    expect(loadBoardCards('user:sam', repo)).toEqual([]);
   });
 
   test('edge: a second save started while one is running sends nothing', async () => {

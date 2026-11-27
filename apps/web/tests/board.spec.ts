@@ -264,6 +264,46 @@ test('a failed card stays in its confirmed column naming its target, and an unkn
   await expect(drawer.getByRole('button', { name: 'Discard' })).toBeDisabled();
 });
 
+test('staging respects an unknown card written before the Board refreshes', async ({ page }) => {
+  await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  const drawer = await openDrawer(page, 3);
+  await drawer.getByRole('radio', { name: 'In Progress' }).check();
+  const unknown = await page.evaluate(() => {
+    const key = 'repoorbit:issue-draft:real:ada:1:board:3';
+    const updated = { ...JSON.parse(localStorage.getItem(key)!), phase: 'unknown', request: { draft: {}, idempotencyKey: 'other-tab' } };
+    localStorage.setItem(key, JSON.stringify(updated));
+    return updated;
+  });
+
+  const done = drawer.getByRole('radio', { name: 'Done' });
+  await done.click();
+  expect(await storedCard(page, 3)).toEqual(unknown);
+  await expect(done).toBeDisabled();
+});
+
+test('a stale drawer assignee edit preserves a newer stored card', async ({ page }) => {
+  await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  const drawer = await openDrawer(page, 3);
+  await drawer.getByRole('radio', { name: 'In Progress' }).check();
+  const changed = await page.evaluate(() => {
+    const key = 'repoorbit:issue-draft:real:ada:1:board:3';
+    const staged = JSON.parse(localStorage.getItem(key)!);
+    const updated = {
+      ...staged,
+      phase: 'changed',
+      snapshot: { ...staged.snapshot, status: 'in_review', labels: ['status:review'], updatedAt: '2026-11-21T10:00:00Z' },
+    };
+    localStorage.setItem(key, JSON.stringify(updated));
+    return updated;
+  });
+
+  await drawer.getByRole('checkbox', { name: 'sam', exact: true }).click();
+  expect(await storedCard(page, 3)).toEqual(changed);
+  await expect(card(page, 3)).toContainText('Changed on GitHub');
+});
+
 test('Discard removes an expired unknown card with no operation id without sending a write', async ({ page }) => {
   const { posts } = await setup(page);
   await page.goto('/workspace/1?tab=board');
@@ -426,13 +466,13 @@ test('the review lists each staged card with its title, from-to change and side 
   expect(posts).toEqual([]);
 });
 
-test('the modal review contains focus and Escape leaves the task drawer open', async ({ page }) => {
+test('Save is clickable with the task drawer open, and the review contains focus', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 900 });
   await setup(page);
   await page.goto('/workspace/1?tab=board');
   const drawer = await openDrawer(page, 3);
   await drawer.getByRole('radio', { name: 'In Progress' }).check();
-  await saveButton(page).focus();
-  await page.keyboard.press('Enter');
+  await saveButton(page).click();
   const dialog = review(page);
   await expect(dialog).toBeVisible();
   expect(await dialog.evaluate(el => el.matches('dialog:modal'))).toBe(true);
@@ -442,6 +482,10 @@ test('the modal review contains focus and Escape leaves the task drawer open', a
   await expect(dialog).toHaveCount(0);
   await expect(drawer).toBeVisible();
   await expect(saveButton(page)).toBeFocused();
+  expect(await page.evaluate(() => {
+    const root = document.documentElement;
+    return root.scrollWidth <= innerWidth && root.scrollHeight <= innerHeight;
+  })).toBe(true);
 });
 
 test('confirming two staged cards sends one update each in issue-number order and clears the staged count (R3, R4)', async ({ page }) => {

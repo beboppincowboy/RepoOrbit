@@ -1,5 +1,5 @@
 import { classifyWriteFailure, type BoardIssue, type BoardSnapshot, type BoardStatus, type IssueUpdateDraft, type WriteOperation } from "./api";
-import { boardDraftPrefix, issueDraftStorageKey, readStorageByPrefix, removeStorage, writeStorage } from "./drafts";
+import { boardDraftPrefix, issueDraftStorageKey, readStorageByPrefix, removeStorage, watchIssueDraftCleanup, writeStorage } from "./drafts";
 
 export const BOARD_STATUSES: readonly BoardStatus[] = ["backlog", "todo", "in_progress", "in_review", "done"];
 
@@ -60,6 +60,21 @@ export function saveBoardCard(viewerKey: string, repositoryId: string, card: Boa
 
 export function removeBoardCard(viewerKey: string, repositoryId: string, issueNumber: number): void {
   removeStorage(issueDraftStorageKey(viewerKey, repositoryId, { board: issueNumber }));
+}
+
+// A true return from write() only means cleanup was not detected. Callers read the card back to verify persistence.
+export function guardBoardCardWrites(viewerKey: string, repositoryId: string) {
+  const wasCleared = watchIssueDraftCleanup(viewerKey, repositoryId);
+  return {
+    wasCleared,
+    write(card: BoardCard): boolean {
+      const written = saveBoardCard(viewerKey, repositoryId, card);
+      // Cleanup can delete the card between the caller's storage check and this write.
+      if (!wasCleared()) return true;
+      if (written) removeBoardCard(viewerKey, repositoryId, card.number);
+      return false;
+    },
+  };
 }
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
