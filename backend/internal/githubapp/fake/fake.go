@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 )
 
 type Server struct {
@@ -34,22 +36,30 @@ type Server struct {
 	refresh   map[string]string // refresh token -> login (single use, rotated)
 	refreshes atomic.Int64
 
-	repos        map[int64]*repo
-	installs     map[int64]*install
-	stars        map[string]map[int64]bool // login -> starred repository IDs
-	issues       map[int64][]IssueFixture
-	pulls        map[int64][]PullRequestFixture
-	reviews      map[int64]map[int64][]ReviewFixture
-	comments     map[int64]map[int64][]CommentFixture
-	releases     map[int64][]ReleaseFixture
-	issueEvents  map[int64][]IssueEventFixture
-	labels       map[int64][]string          // repository -> label names, in creation order
-	perms        map[int64]map[string]string // repository -> login -> granted level (read, triage, write, maintain, admin)
-	writeFault   IssueWriteFault
-	writeTokens  []string
-	limitedUntil time.Time // API calls fail with a rate limit until this time
-	failing      bool      // API calls fail with 502
-	hits         map[string]int
+	repos              map[int64]*repo
+	installs           map[int64]*install
+	stars              map[string]map[int64]bool // login -> starred repository IDs
+	issues             map[int64][]IssueFixture
+	pulls              map[int64][]PullRequestFixture
+	reviews            map[int64]map[int64][]ReviewFixture
+	comments           map[int64]map[int64][]CommentFixture
+	releases           map[int64][]ReleaseFixture
+	issueEvents        map[int64][]IssueEventFixture
+	workflows          map[int64][]githubapp.Workflow
+	runs               map[int64][]githubapp.WorkflowRun
+	workflowJobs       map[int64]map[int64][]githubapp.WorkflowJob
+	deployments        map[int64][]githubapp.Deployment
+	deploymentStatuses map[int64]map[int64][]githubapp.DeploymentStatus
+	deliveryDenied     map[int64][2]bool
+	deliveryDeniedPath map[int64]map[string]bool
+	timelines          map[int64]map[int64][]TimelineEventFixture
+	labels             map[int64][]string          // repository -> label names, in creation order
+	perms              map[int64]map[string]string // repository -> login -> granted level (read, triage, write, maintain, admin)
+	writeFault         IssueWriteFault
+	writeTokens        []string
+	limitedUntil       time.Time // API calls fail with a rate limit until this time
+	failing            bool      // API calls fail with 502
+	hits               map[string]int
 }
 
 type repo struct {
@@ -97,7 +107,7 @@ type install struct {
 type grant struct{ challenge, login string }
 
 func New(clientID, clientSecret string) *Server {
-	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, stars: map[string]map[int64]bool{}, issues: map[int64][]IssueFixture{}, pulls: map[int64][]PullRequestFixture{}, reviews: map[int64]map[int64][]ReviewFixture{}, comments: map[int64]map[int64][]CommentFixture{}, releases: map[int64][]ReleaseFixture{}, issueEvents: map[int64][]IssueEventFixture{}, labels: map[int64][]string{}, perms: map[int64]map[string]string{}, hits: map[string]int{}}
+	return &Server{ClientID: clientID, ClientSecret: clientSecret, codes: map[string]grant{}, access: map[string]string{}, refresh: map[string]string{}, repos: map[int64]*repo{}, installs: map[int64]*install{}, stars: map[string]map[int64]bool{}, issues: map[int64][]IssueFixture{}, pulls: map[int64][]PullRequestFixture{}, reviews: map[int64]map[int64][]ReviewFixture{}, comments: map[int64]map[int64][]CommentFixture{}, releases: map[int64][]ReleaseFixture{}, issueEvents: map[int64][]IssueEventFixture{}, labels: map[int64][]string{}, perms: map[int64]map[string]string{}, hits: map[string]int{}, workflows: map[int64][]githubapp.Workflow{}, runs: map[int64][]githubapp.WorkflowRun{}, workflowJobs: map[int64]map[int64][]githubapp.WorkflowJob{}, deployments: map[int64][]githubapp.Deployment{}, deploymentStatuses: map[int64]map[int64][]githubapp.DeploymentStatus{}, deliveryDenied: map[int64][2]bool{}, timelines: map[int64]map[int64][]TimelineEventFixture{}}
 }
 
 // Refreshes reports how many refresh-token exchanges were accepted.
@@ -138,6 +148,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/repos/{owner}/{repo}/issues/comments", s.api(s.repoActivity))
 	mux.HandleFunc("/repos/{owner}/{repo}/pulls", s.api(s.repoActivity))
 	mux.HandleFunc("/repos/{owner}/{repo}/pulls/{number}/reviews", s.api(s.repoActivity))
+	mux.HandleFunc("/repos/{owner}/{repo}/issues/{number}/timeline", s.api(s.repoActivity))
+	mux.HandleFunc("/repos/{owner}/{repo}/actions/workflows", s.api(s.repoDelivery))
+	mux.HandleFunc("/repos/{owner}/{repo}/actions/runs", s.api(s.repoDelivery))
+	mux.HandleFunc("/repos/{owner}/{repo}/actions/runs/{run}/jobs", s.api(s.repoDelivery))
+	mux.HandleFunc("/repos/{owner}/{repo}/deployments", s.api(s.repoDelivery))
+	mux.HandleFunc("/repos/{owner}/{repo}/deployments/{deployment}/statuses", s.api(s.repoDelivery))
 	mux.HandleFunc("/apps/{slug}/installations/new", s.installNew)
 	return mux
 }

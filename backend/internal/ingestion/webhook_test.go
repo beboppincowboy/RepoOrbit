@@ -69,3 +69,11 @@ func TestWebhookMethod(t *testing.T) {
 		t.Fatalf("status %d", w.Code)
 	}
 }
+
+func TestDeliveryWebhooksSignalActivity(t *testing.T) {
+	for _, event := range []string{"workflow_run", "workflow_job", "deployment_status"} {
+		if classifyWebhook(event, "completed") != whActivity || !signalsActivity(event) {
+			t.Errorf("%s does not signal activity", event)
+		}
+	}
+}

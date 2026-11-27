@@ -341,7 +341,7 @@ func safeActivityCode(code *string) *string {
 		return nil
 	}
 	switch *code {
-	case "no_credential", "rate_limited", "access_unverified", "access_changed", "upstream_error":
+	case "no_credential", "rate_limited", "access_unverified", "access_changed", "upstream_error", "permission_denied":
 		return code
 	}
 	unknown := "unknown"

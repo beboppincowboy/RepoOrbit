@@ -66,6 +66,7 @@ func applyDeletion(ctx context.Context, tx pgx.Tx, repoID int64, event, action s
 			{`DELETE FROM activity_issue_assignees WHERE issue_id=$1`, []any{id}},
 			{`DELETE FROM activity_issue_events WHERE repository_id=$1 AND issue_id=$2`, []any{repoID, id}},
 			{`DELETE FROM activity_comments WHERE repository_id=$1 AND issue_number=$2`, []any{repoID, p.Issue.Number}},
+			{`DELETE FROM issue_pull_request_links WHERE repository_id=$1 AND issue_number=$2`, []any{repoID, p.Issue.Number}},
 			{`DELETE FROM activity_issues WHERE repository_id=$1 AND source_id=$2`, []any{repoID, id}},
 		} {
 			if err := exec(stmt.sql, stmt.args...); err != nil {

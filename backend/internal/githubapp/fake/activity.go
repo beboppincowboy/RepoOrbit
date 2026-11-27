@@ -11,6 +11,9 @@ import (
 )
 
 type PullRequestFixture struct {
+	Head struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
 	ID        int64      `json:"id"`
 	Number    int64      `json:"number"`
 	Title     string     `json:"title"`
@@ -126,6 +129,8 @@ func (s *Server) repoActivity(w http.ResponseWriter, r *http.Request, login stri
 		activityFixturePage(w, r, s.repoComments(id, r))
 	} else if strings.HasSuffix(r.URL.Path, "/issues/events") {
 		activityFixturePage(w, r, s.issueEvents[id])
+	} else if strings.HasSuffix(r.URL.Path, "/timeline") {
+		activityFixturePage(w, r, s.timelines[id][number])
 	} else if strings.HasSuffix(r.URL.Path, "/pulls") {
 		if r.URL.Query().Get("state") != "all" {
 			http.Error(w, `{"message":"Bad Request"}`, http.StatusBadRequest)
@@ -182,4 +187,25 @@ func activityFixturePage[T any](w http.ResponseWriter, r *http.Request, items []
 	out := make([]T, hi-lo)
 	copy(out, items[lo:hi])
 	writeJSON(w, out)
+}
+
+type TimelineEventFixture struct {
+	Event     string    `json:"event"`
+	CreatedAt time.Time `json:"created_at"`
+	Source    struct {
+		Issue struct {
+			Number      int64     `json:"number"`
+			URL         string    `json:"url"`
+			PullRequest *struct{} `json:"pull_request"`
+		} `json:"issue"`
+	} `json:"source"`
+}
+
+func (s *Server) SetIssueTimeline(id, number int64, items ...TimelineEventFixture) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.timelines[id] == nil {
+		s.timelines[id] = map[int64][]TimelineEventFixture{}
+	}
+	s.timelines[id][number] = append([]TimelineEventFixture{}, items...)
 }

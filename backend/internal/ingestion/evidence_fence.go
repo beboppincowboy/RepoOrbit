@@ -94,6 +94,18 @@ func (d *Deps) withEvidencePage(ctx context.Context, job jobs.Job, fence jobs.Cl
 		}
 		data, err := fetch(fetchToken, before.Repo)
 		if err != nil && fetchToken != token {
+			var api *githubapp.APIError
+			if errors.As(err, &api) && api.Unauthorized() {
+				after := d.checkActivityAccess(ctx, uid, repoID, token)
+				if !after.Unverified && (!after.Allowed || after.InstallationID != before.InstallationID || after.Repo.Private != before.Repo.Private || after.Repo.FullName != before.Repo.FullName) {
+					if !after.Allowed || after.Repo.Private {
+						if err := tighten(); err != nil && !errors.Is(err, errRace) {
+							return err
+						}
+					}
+					return &jobs.Defer{RetryAt: d.Clock.Now().Add(raceRetry), Reason: CodeAccessMoved}
+				}
+			}
 			fetchErr := d.installationFetchError(installation, fetchToken, err)
 			var deferred *jobs.Defer
 			if errors.As(fetchErr, &deferred) {

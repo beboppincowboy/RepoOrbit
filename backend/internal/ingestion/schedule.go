@@ -69,7 +69,7 @@ func RequestActivity(ctx context.Context, tx pgx.Tx, repoID int64, now time.Time
 	if _, err := tx.Exec(ctx, `INSERT INTO activity_resources (repository_id, resource, boundary) SELECT $1, 'pull_requests', boundary FROM activity_resources WHERE repository_id=$1 AND resource='issues' ON CONFLICT DO NOTHING`, repoID); err != nil {
 		return err
 	}
-	for _, resource := range []string{"releases", "issue_events", "comments"} {
+	for _, resource := range []string{"releases", "issue_events", "comments", "actions", "deployments"} {
 		if _, err := tx.Exec(ctx, `INSERT INTO activity_resources (repository_id, resource, boundary) SELECT $1, $2, boundary FROM activity_resources WHERE repository_id=$1 AND resource='issues' ON CONFLICT DO NOTHING`, repoID, resource); err != nil {
 			return err
 		}
@@ -125,7 +125,9 @@ const (
 	ActivityIneligible ActivityOutcome = "ineligible" // no eligible selection: nothing is scheduled
 )
 
-var activityParentKinds = []jobs.Kind{jobs.KindActivityIssues, jobs.KindActivityPullRequests, jobs.KindActivityReleases, jobs.KindActivityIssueEvents, jobs.KindActivityComments}
+var activityParentKinds = []jobs.Kind{jobs.KindActivityIssues, jobs.KindActivityPullRequests, jobs.KindActivityReleases, jobs.KindActivityIssueEvents, jobs.KindActivityComments, jobs.KindActivityActions, jobs.KindActivityDeployments}
+
+const CodePermissionDenied = "permission_denied"
 
 // SignalActivity is the single reconciliation entry point for webhooks, polling and the Refresh action. It
 // reopens every caught-up stream for another catch-up scan from the retained boundary (a stream still
@@ -177,11 +179,11 @@ func activityFailureCode(result error) (code string, ok bool) {
 		code = paused.Reason
 	}
 	switch code {
-	case CodeNoCredential, CodeRateLimited, CodeUnverified, CodeAccessMoved, CodeUpstream:
+	case CodeNoCredential, CodeRateLimited, CodeUnverified, CodeAccessMoved, CodeUpstream, CodePermissionDenied:
 		return code, true
 	}
 	return CodeUpstream, true
 }
 
 // eventStreamKinds are the streams added after issues and pull requests.
-var eventStreamKinds = []jobs.Kind{jobs.KindActivityReleases, jobs.KindActivityIssueEvents, jobs.KindActivityComments}
+var eventStreamKinds = []jobs.Kind{jobs.KindActivityReleases, jobs.KindActivityIssueEvents, jobs.KindActivityComments, jobs.KindActivityActions, jobs.KindActivityDeployments}

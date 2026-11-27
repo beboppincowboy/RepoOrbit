@@ -42,7 +42,7 @@ type WebhookDeps struct {
 // never stored; only a signed deletion adds a tombstone (see applyDeletion).
 func signalsActivity(event string) bool {
 	switch event {
-	case "issues", "issue_comment", "pull_request", "pull_request_review", "pull_request_review_comment", "release":
+	case "issues", "issue_comment", "pull_request", "pull_request_review", "pull_request_review_comment", "release", "workflow_run", "workflow_job", "deployment_status":
 		return true
 	}
 	return false
@@ -169,7 +169,7 @@ func classifyWebhook(event, action string) whKind {
 	switch event {
 	case "push", "issues", "pull_request":
 		return whOrdinary
-	case "issue_comment", "pull_request_review", "pull_request_review_comment", "release":
+	case "issue_comment", "pull_request_review", "pull_request_review_comment", "release", "workflow_run", "workflow_job", "deployment_status":
 		return whActivity
 	case "repository":
 		switch action {

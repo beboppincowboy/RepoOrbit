@@ -15,6 +15,10 @@ type issueFetcher interface {
 	FetchIssuesCursor(context.Context, string, string, string) ([]githubapp.Issue, string, error)
 }
 
+type issueTimelineFetcher interface {
+	FetchIssueTimelinePRLinks(context.Context, string, string, int64) ([]githubapp.IssuePRLink, error)
+}
+
 // SyncIssues imports one page and its checkpoint under the claim, selection and access fences.
 func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFence) (result error) {
 	defer func() {
@@ -64,12 +68,27 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 	}
 	var scanTime, now time.Time
 	var items []githubapp.Issue
+	var links map[int64][]githubapp.IssuePRLink
 	var next string
 	committed := false
 	err = d.withEvidencePage(ctx, job, fence, repoID, func(token string, repo githubapp.Repo) (any, error) {
 		scanTime = d.Clock.Now()
 		var err error
 		items, next, err = fetcher.FetchIssuesCursor(ctx, token, repo.FullName, cursor)
+		if err == nil {
+			if timeline, ok := d.GitHub.(issueTimelineFetcher); ok {
+				links = make(map[int64][]githubapp.IssuePRLink)
+				for _, issue := range items {
+					if issue.PullRequest != nil || issue.Number <= 0 || (issue.State != "open" && issue.CreatedAt.Before(boundary) && issue.UpdatedAt.Before(boundary) && (issue.ClosedAt == nil || issue.ClosedAt.Before(boundary))) {
+						continue
+					}
+					links[issue.Number], err = timeline.FetchIssueTimelinePRLinks(ctx, token, repo.FullName, issue.Number)
+					if err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
 		return nil, err
 	}, func(tx pgx.Tx, _ any) error {
 		committed, now = true, d.Clock.Now()
@@ -105,6 +124,16 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 			}
 			if err := ProjectIssue(ctx, tx, repoID, issue); err != nil {
 				return err
+			}
+			if issueLinks, ok := links[issue.Number]; ok {
+				if _, err := tx.Exec(ctx, `DELETE FROM issue_pull_request_links WHERE repository_id=$1 AND issue_number=$2 AND source IN ('connected','cross-referenced')`, repoID, issue.Number); err != nil {
+					return err
+				}
+				for _, link := range issueLinks {
+					if _, err := tx.Exec(ctx, `INSERT INTO issue_pull_request_links(repository_id,issue_number,pull_request_number,source,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(repository_id,issue_number,pull_request_number) DO UPDATE SET source=EXCLUDED.source,created_at=EXCLUDED.created_at`, repoID, issue.Number, link.Number, link.Source, link.CreatedAt); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		_, err := tx.Exec(ctx, `UPDATE activity_resources SET scan_started_at=COALESCE(scan_started_at,$3), current_scan=ARRAY(SELECT DISTINCT x FROM unnest(current_scan || $4::bigint[]) AS x ORDER BY x), last_error_code=NULL WHERE repository_id=$1 AND resource=$2`, repoID, "issues", scanTime, ids)

@@ -52,8 +52,8 @@ func TestActivityEventsSignalCaughtUpStreamsOnce(t *testing.T) {
 		}
 	}
 	var reopened int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM activity_resources WHERE phase='catchup' AND generation=1`).Scan(&reopened); err != nil || reopened != 5 {
-		t.Fatalf("reopened %d (%v), want 5 streams once", reopened, err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM activity_resources WHERE phase='catchup' AND generation=1`).Scan(&reopened); err != nil || reopened != 7 {
+		t.Fatalf("reopened %d (%v), want 7 streams once", reopened, err)
 	}
 	if n := count(t, pool, "jobs WHERE kind='repo_metadata_refresh'"); n != 0 {
 		t.Fatalf("%d metadata refreshes for an activity-only event", n)
@@ -65,14 +65,44 @@ func TestActivityEventsSignalCaughtUpStreamsOnce(t *testing.T) {
 	if w := post(h, testSecret, "issue_comment", "d-1", body, ""); w.Code != 200 {
 		t.Fatalf("status %d", w.Code)
 	}
-	if n := count(t, pool, "activity_resources WHERE phase='current' AND generation=1"); n != 5 {
-		t.Fatalf("repeated delivery reopened streams (%d still current, want 5)", n)
+	if n := count(t, pool, "activity_resources WHERE phase='current' AND generation=1"); n != 7 {
+		t.Fatalf("repeated delivery reopened streams (%d still current, want 7)", n)
 	}
 	if w := post(h, testSecret, "release", "d-2", `{"action":"published","repository":{"id":99},"release":{"id":1}}`, ""); w.Code != 200 {
 		t.Fatalf("status %d", w.Code)
 	}
 	if n := count(t, pool, "activity_resources WHERE repository_id=99"); n != 0 {
 		t.Fatalf("unselected repository scheduled %d streams", n)
+	}
+}
+
+func TestDeliveryWebhookSchedulesOnlySelectedRepositories(t *testing.T) {
+	_, pool := testutil.Database(t)
+	ctx := context.Background()
+	selectedRepo(t, pool, 42)
+	h := WebhookHandler(WebhookDeps{Pool: pool, Secret: testSecret})
+	for _, event := range []string{"workflow_run", "workflow_job", "deployment_status"} {
+		if w := post(h, testSecret, event, event+"-selected", `{"repository":{"id":42}}`, ""); w.Code != 200 {
+			t.Fatalf("%s status %d", event, w.Code)
+		}
+		if w := post(h, testSecret, event, event+"-unselected", `{"repository":{"id":99}}`, ""); w.Code != 200 {
+			t.Fatalf("%s unselected status %d", event, w.Code)
+		}
+	}
+	if n := count(t, pool, "jobs WHERE key='repo:42' AND kind IN ('activity_actions','activity_deployments')"); n != 2 {
+		t.Fatalf("selected delivery jobs = %d", n)
+	}
+	if n := count(t, pool, "activity_resources WHERE repository_id=99"); n != 0 {
+		t.Fatalf("unselected resources = %d", n)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE activity_resources SET phase='current' WHERE repository_id=42`); err != nil {
+		t.Fatal(err)
+	}
+	if w := post(h, testSecret, "workflow_run", "workflow-reopen", `{"repository":{"id":42}}`, ""); w.Code != 200 {
+		t.Fatal(w.Code)
+	}
+	if n := count(t, pool, "activity_resources WHERE repository_id=42 AND resource IN ('actions','deployments') AND phase='catchup'"); n != 2 {
+		t.Fatalf("reopened delivery streams = %d", n)
 	}
 }
 
@@ -140,6 +170,7 @@ func TestSignedIssueDeletionRemovesDependents(t *testing.T) {
 		`INSERT INTO activity_issues(source_id,repository_id,number,title,state,html_url,created_at,updated_at,author_id,author_login,author_type) VALUES (5,42,3,'t','open','u',now(),now(),1,'a','User')`,
 		`INSERT INTO activity_comments(source_id,repository_id,issue_number,body,html_url,created_at,updated_at) VALUES (6,42,3,'b','u',now(),now())`,
 		`INSERT INTO activity_issue_events(source_id,repository_id,issue_id,issue_number,event,url,created_at,observed_at) VALUES (7,42,5,3,'closed','u',now(),now())`,
+		`INSERT INTO issue_pull_request_links(repository_id,issue_number,pull_request_number,source,created_at) VALUES(42,3,8,'cross-referenced',now())`,
 	} {
 		if _, err := pool.Exec(ctx, q); err != nil {
 			t.Fatal(err)
@@ -149,7 +180,7 @@ func TestSignedIssueDeletionRemovesDependents(t *testing.T) {
 	if w := post(h, testSecret, "issues", "del-i", `{"action":"deleted","repository":{"id":42},"issue":{"id":5,"number":3}}`, ""); w.Code != 200 {
 		t.Fatalf("status %d", w.Code)
 	}
-	for _, table := range []string{"activity_issues", "activity_comments", "activity_issue_events"} {
+	for _, table := range []string{"activity_issues", "activity_comments", "activity_issue_events", "issue_pull_request_links"} {
 		if n := count(t, pool, table); n != 0 {
 			t.Errorf("%s has %d rows", table, n)
 		}
