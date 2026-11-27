@@ -282,6 +282,28 @@ test('staging respects an unknown card written before the Board refreshes', asyn
   await expect(done).toBeDisabled();
 });
 
+test('a stale drawer assignee edit preserves a newer stored card', async ({ page }) => {
+  await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  const drawer = await openDrawer(page, 3);
+  await drawer.getByRole('radio', { name: 'In Progress' }).check();
+  const changed = await page.evaluate(() => {
+    const key = 'repoorbit:issue-draft:real:ada:1:board:3';
+    const staged = JSON.parse(localStorage.getItem(key)!);
+    const updated = {
+      ...staged,
+      phase: 'changed',
+      snapshot: { ...staged.snapshot, status: 'in_review', labels: ['status:review'], updatedAt: '2026-11-21T10:00:00Z' },
+    };
+    localStorage.setItem(key, JSON.stringify(updated));
+    return updated;
+  });
+
+  await drawer.getByRole('checkbox', { name: 'sam', exact: true }).click();
+  expect(await storedCard(page, 3)).toEqual(changed);
+  await expect(card(page, 3)).toContainText('Changed on GitHub');
+});
+
 test('Discard removes an expired unknown card with no operation id without sending a write', async ({ page }) => {
   const { posts } = await setup(page);
   await page.goto('/workspace/1?tab=board');
