@@ -1,5 +1,22 @@
 const DRAFT_PREFIX = "repoorbit:issue-draft:";
 
+// Take the per-repository withBoardLock first when needed. Work here is synchronous and never waits for it or the network.
+// Run unlocked if Web Locks is unavailable or the request fails before work starts. Once work starts, propagate errors.
+export async function withDraftStorageLock<T>(work: () => T): Promise<T> {
+  const locks = globalThis.navigator?.locks;
+  if (!locks) return work();
+  let started = false;
+  try {
+    return await locks.request("repoorbit:issue-draft-storage", () => {
+      started = true;
+      return work();
+    });
+  } catch (error) {
+    if (started) throw error;
+    return work();
+  }
+}
+
 function repositoryDraftPrefix(viewerKey: string, repositoryId: string): string {
   return `${DRAFT_PREFIX}${viewerKey}:${repositoryId}:`;
 }
@@ -25,12 +42,16 @@ function storageKeys(prefix: string): string[] {
   }
 }
 
-export function clearRepositoryIssueDrafts(viewerKey: string, repositoryId: string): void {
-  for (const key of storageKeys(repositoryDraftPrefix(viewerKey, repositoryId))) removeStorage(key);
+export function clearRepositoryIssueDrafts(viewerKey: string, repositoryId: string): Promise<void> {
+  return withDraftStorageLock(() => {
+    for (const key of storageKeys(repositoryDraftPrefix(viewerKey, repositoryId))) removeStorage(key);
+  });
 }
 
-export function clearAllIssueDrafts(): void {
-  for (const key of storageKeys(DRAFT_PREFIX)) removeStorage(key);
+export function clearAllIssueDrafts(): Promise<void> {
+  return withDraftStorageLock(() => {
+    for (const key of storageKeys(DRAFT_PREFIX)) removeStorage(key);
+  });
 }
 
 // The parsed object stored under key, or null when it is missing, not JSON or not an object.

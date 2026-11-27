@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
-import type { BoardIssue, BoardSnapshot } from '../src/lib/api';
-import { deriveChange, isChangedOnGitHub, loadBoardCards, saveBoardCard, stageAssignees, type BoardCard, type BoardCardPhase, type BoardTarget } from '../src/lib/board';
+import { IssueWriteError, type BoardIssue, type BoardSnapshot, type WriteOperation } from '../src/lib/api';
+import { applySaveResult, deriveChange, isChangedOnGitHub, loadBoardCards, saveBoardCard, stageAssignees, type BoardCard, type BoardCardPhase, type BoardTarget } from '../src/lib/board';
+import { mockWindowStorage } from './mocks';
 
 
 const ada = { login: 'ada', assignable: true };
@@ -158,21 +159,119 @@ test.describe('isChangedOnGitHub', () => {
   });
 });
 
+test.describe('applySaveResult', () => {
+  const attemptedAt = '2026-11-21T10:00:00.000Z';
+  const request = {
+    draft: { labels: { add: ['status:in-progress'], remove: ['status:todo'] }, expect: { status: 'todo' as const, assignees: ['sam'], statusLabels: ['status:todo'] } },
+    idempotencyKey: 'idem-key-7',
+  };
+  const snapshot = snap({ status: 'todo', labels: ['status:todo'], assignees: ['sam'] });
+
+  // The card as the save loop holds it: the request, key and attempt time are filled in before the send.
+  function sent(over: Partial<BoardCard> = {}): BoardCard {
+    return { version: 1, number: 7, snapshot, target: to('in_progress'), phase: 'staged', request, operationId: null, attemptedAt, ...over };
+  }
+  function operation(state: WriteOperation['state'], id = 42): WriteOperation {
+    return { id, repositoryId: 1, kind: 'update', state, issueNumber: 7, draft: request.draft, outcome: null, actor: 'ada', createdAt: attemptedAt, updatedAt: attemptedAt };
+  }
+  function cleared(phase: BoardCardPhase, over: Partial<BoardCard> = {}) {
+    return { kind: 'card', card: sent({ phase, request: null, attemptedAt: null, ...over }) };
+  }
+  function lockedUnknown(operationId: number | null) {
+    return { kind: 'card', card: sent({ phase: 'unknown', operationId }) };
+  }
+
+  test('a write that resolves succeeded removes the card', () => {
+    expect(applySaveResult(sent(), { operation: operation('succeeded') })).toEqual({ kind: 'removed' });
+  });
+
+  test('a write that resolves failed maps to failed and clears the request, key and attemptedAt', () => {
+    expect(applySaveResult(sent(), { operation: operation('failed') })).toEqual(cleared('failed', { operationId: 42 }));
+  });
+
+  for (const state of ['unknown', 'pending'] as const) {
+    test(`a write that resolves ${state} maps to a locked unknown card without any thrown error`, () => {
+      expect(applySaveResult(sent(), { operation: operation(state) })).toEqual(lockedUnknown(42));
+    });
+  }
+
+  test('a 409 changed_on_github maps to changed and stores the current snapshot', () => {
+    const current = snap({ status: 'in_review', labels: ['status:review'], assignees: ['bob'], updatedAt: t1 });
+    const error = new IssueWriteError('changed', { status: 409, kind: 'changed_on_github', current });
+    expect(applySaveResult(sent(), { error })).toEqual(cleared('changed', { snapshot: current }));
+  });
+
+  test('an assignee-only edit keeps a teammate’s closed status when staged again', () => {
+    const current = snap({ state: 'closed', status: 'done', assignees: ['sam'], updatedAt: t1 });
+    const error = new IssueWriteError('changed', { status: 409, kind: 'changed_on_github', current });
+    const target = to('todo', ['alex'], ['sam']);
+    expect(applySaveResult(sent({ target }), { error })).toEqual(cleared('changed', { snapshot: current, target: { ...target, status: 'done' } }));
+  });
+
+  test('a not_recorded failure maps to failed and clears the request and key', () => {
+    const error = new IssueWriteError('refused', { status: 422, kind: 'unprocessable', disposition: 'not-recorded' });
+    expect(applySaveResult(sent(), { error })).toEqual(cleared('failed'));
+  });
+
+  test('a re-saved failed card does not keep the earlier operation id when it is not recorded', () => {
+    const error = new IssueWriteError('refused', { status: 403, kind: 'forbidden' });
+    expect(applySaveResult(sent({ phase: 'failed', operationId: 41 }), { error })).toEqual(cleared('failed'));
+  });
+
+  const possiblyRecorded: [string, unknown][] = [
+    ['a gateway timeout', new IssueWriteError('timeout', { status: 504, kind: 'transport' })],
+    ['a possibly-recorded disposition', new IssueWriteError('unverified', { status: 503, kind: 'unverified', disposition: 'possibly-recorded' })],
+    ['a network rejection', new TypeError('Failed to fetch')],
+  ];
+  for (const [name, error] of possiblyRecorded) {
+    test(`possibly_recorded from ${name} maps to a locked unknown card with no operation id`, () => {
+      expect(applySaveResult(sent({ phase: 'failed', operationId: 41 }), { error })).toEqual(lockedUnknown(null));
+    });
+  }
+
+  test('recheck_unresolved maps to a locked unknown card holding the operation id', () => {
+    const error = new IssueWriteError('unresolved', { status: 409, kind: 'recheck_unresolved', operation: operation('unknown') });
+    expect(applySaveResult(sent(), { error })).toEqual(lockedUnknown(42));
+  });
+
+  test('recheck_unresolved without an operation on a new send drops the earlier operation id', () => {
+    const error = new IssueWriteError('unresolved', { status: 409, kind: 'recheck_unresolved' });
+    expect(applySaveResult(sent({ phase: 'failed', operationId: 41 }), { error })).toEqual(lockedUnknown(null));
+  });
+
+  test('a replay of the same key keeps the operation id the card already has', () => {
+    for (const error of [
+      new IssueWriteError('timeout', { status: 504, kind: 'transport' }),
+      new IssueWriteError('unresolved', { status: 409, kind: 'recheck_unresolved' }),
+    ]) {
+      expect(applySaveResult(sent({ phase: 'unknown', operationId: 41 }), { error, isReplay: true })).toEqual(lockedUnknown(41));
+    }
+  });
+
+  test('a refused replay of the same key stays a locked unknown card', () => {
+    const error = new IssueWriteError('refused', { status: 403, kind: 'forbidden', disposition: 'not-recorded' });
+    expect(applySaveResult(sent(), { error, isReplay: true })).toEqual(lockedUnknown(null));
+  });
+
+  test('a duplicate_create refusal, which an update never gets, stays a locked unknown card', () => {
+    const error = new IssueWriteError('duplicate', { status: 409, kind: 'duplicate_create', operationId: 9 });
+    expect(applySaveResult(sent(), { error })).toEqual(lockedUnknown(null));
+  });
+
+  // Contract for the save loop: cards already unknown or pending are skipped, never re-sent or mapped.
+  test('contract: the save loop only maps staged, changed or failed cards, and never mutates the card it passes', () => {
+    for (const phase of ['staged', 'changed', 'failed'] as const) {
+      const card = sent({ phase });
+      const before = structuredClone(card);
+      applySaveResult(card, { operation: operation('failed') });
+      expect(card).toEqual(before);
+    }
+  });
+});
+
 test.describe('saveBoardCard', () => {
   test('persists a pending card as unknown while keeping other fields intact', () => {
-    const originalWindow = globalThis.window;
-    const localStorage = Object.create({
-      getItem(this: Record<string, string>, key: string): string | null {
-        return Object.prototype.hasOwnProperty.call(this, key) ? this[key] : null;
-      },
-      setItem(this: Record<string, string>, key: string, value: string): void {
-        this[key] = String(value);
-      },
-      removeItem(this: Record<string, string>, key: string): void {
-        delete this[key];
-      },
-    }) as Storage;
-    globalThis.window = { localStorage } as unknown as Window & typeof globalThis;
+    const { restore } = mockWindowStorage();
     try {
       const snapshot = snap({ status: 'todo', labels: ['status:todo'], assignees: ['sam'] });
       const target = to('in_progress', ['ada']);
@@ -204,11 +303,7 @@ test.describe('saveBoardCard', () => {
         stagedCard,
       ]);
     } finally {
-      if (originalWindow === undefined) {
-        Reflect.deleteProperty(globalThis, 'window');
-      } else {
-        globalThis.window = originalWindow;
-      }
+      restore();
     }
   });
 });

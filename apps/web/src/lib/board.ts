@@ -1,4 +1,4 @@
-import type { BoardIssue, BoardSnapshot, BoardStatus, IssueUpdateDraft } from "./api";
+import { classifyWriteFailure, type BoardIssue, type BoardSnapshot, type BoardStatus, type IssueUpdateDraft, type WriteOperation } from "./api";
 import { boardDraftPrefix, issueDraftStorageKey, readStorageByPrefix, removeStorage, writeStorage } from "./drafts";
 
 export const BOARD_STATUSES: readonly BoardStatus[] = ["backlog", "todo", "in_progress", "in_review", "done"];
@@ -25,7 +25,17 @@ export type BoardCard = {
   // Stored before the send: the exact body and Idempotency-Key, which Check again resends unchanged. Null while staged.
   request: { draft: IssueUpdateDraft; idempotencyKey: string } | null;
   operationId: number | null;
+  // When the stored request was first sent (ISO 8601), which bounds the same-key replay window. Absent or null when no
+  // request is held.
+  attemptedAt?: string | null;
 };
+
+// What one send came back with: the operation GitHub's write path answered, or the thrown error. isReplay marks a resend
+// of an already-used Idempotency-Key, where a refusal no longer proves the first send went unrecorded.
+export type BoardSaveResult = { operation: WriteOperation } | { error: unknown; isReplay?: boolean };
+
+// Where a card goes after a send or a recovery: "removed" deletes it from storage, "card" stores the card given.
+export type BoardSaveOutcome = { kind: "removed" } | { kind: "card"; card: BoardCard };
 
 export type BoardChange = { draft: IssueUpdateDraft; sideEffects: string[] };
 
@@ -39,10 +49,17 @@ export function loadBoardCards(viewerKey: string, repositoryId: string): BoardCa
     .sort((a, b) => a.number - b.number);
 }
 
+// The stored card for one issue number, read from storage now (undefined when none is staged).
+export function loadBoardCard(viewerKey: string, repositoryId: string, issueNumber: number): BoardCard | undefined {
+  return loadBoardCards(viewerKey, repositoryId).find(card => card.number === issueNumber);
+}
+
+// Callers hold the draft storage lock.
 export function saveBoardCard(viewerKey: string, repositoryId: string, card: BoardCard): boolean {
   return writeStorage(issueDraftStorageKey(viewerKey, repositoryId, { board: card.number }), card.phase === "pending" ? { ...card, phase: "unknown" } : card);
 }
 
+// Callers hold the draft storage lock.
 export function removeBoardCard(viewerKey: string, repositoryId: string, issueNumber: number): void {
   removeStorage(issueDraftStorageKey(viewerKey, repositoryId, { board: issueNumber }));
 }
@@ -100,4 +117,37 @@ export function isChangedOnGitHub(card: BoardCard, row: BoardIssue): boolean {
   return row.status !== snapshot.status
     || !sameSet(row.assignees, snapshot.assignees)
     || (row.state === "open" && !sameSet(row.labels.filter(isStatusLabel), snapshot.labels.filter(isStatusLabel)));
+}
+
+// Where a sent card goes next: by operation state when the send resolved, otherwise by how the error classifies.
+// Contract: the save loop never sends or maps a card that is already unknown or pending.
+// An unknown card keeps its request, key and attemptedAt for recovery; failed and changed cards drop them, so staging
+// and saving again sends a new request under a new key.
+export function applySaveResult(card: BoardCard, result: BoardSaveResult): BoardSaveOutcome {
+  const unknown = (operationId: number | null): BoardSaveOutcome => ({ kind: "card", card: { ...card, phase: "unknown", operationId } });
+  const released = (phase: "failed" | "changed", operationId: number | null, snapshot = card.snapshot, target = card.target): BoardSaveOutcome =>
+    ({ kind: "card", card: { ...card, phase, snapshot, target, request: null, operationId, attemptedAt: null } });
+
+  if ("operation" in result) {
+    const { id, state } = result.operation;
+    if (state === "succeeded") return { kind: "removed" };
+    return state === "failed" ? released("failed", id) : unknown(id);
+  }
+
+  const failure = classifyWriteFailure(result.error, { isReplay: result.isReplay });
+  // The card's earlier operation id belongs to this send only when the same key is being resent.
+  const sameKeyId = result.isReplay ? card.operationId : null;
+  switch (failure.outcome) {
+    case "changed_on_github": {
+      const target = card.target.status === card.snapshot.status ? { ...card.target, status: failure.current.status } : card.target;
+      return released("changed", null, failure.current, target);
+    }
+    case "not_recorded":
+      return released("failed", null);
+    case "recheck_unresolved":
+      return unknown(failure.operation?.id ?? sameKeyId);
+    case "possibly_recorded":
+    case "duplicate_create": // Only a create gets this; stay locked if it ever appears.
+      return unknown(sameKeyId);
+  }
 }
