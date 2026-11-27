@@ -172,6 +172,16 @@ test('selecting a run opens the drawer, keeps it in the URL, and switching tab c
   await expect(page.getByRole('dialog', { name: 'Workflow run detail' })).toHaveCount(0);
 });
 
+test('switching to the 7-day window requests seven days of CI/CD data', async ({ page }) => {
+  await setup(page);
+  await page.goto('/workspace/1?tab=cicd');
+  await expect(page.getByRole('region', { name: 'CI/CD KPIs' })).toBeVisible();
+  const request = page.waitForRequest(r => r.url().endsWith('/graphql') && /^query RepositoryActions\b/.test(r.postDataJSON().query) && r.postDataJSON().variables.days === 7);
+  await page.getByRole('group', { name: 'Time window' }).getByRole('link', { name: '7d' }).click();
+  await request;
+  await expect(page.getByRole('region', { name: 'Runs over time' })).toContainText('last 7 days');
+});
+
 test('AE3: permission denied shows the permission notice on CI/CD while other tabs keep working', async ({ page }) => {
   const unavailable = { covered: false, reason: 'permission_denied', through: null };
   await setup(page, {
@@ -249,7 +259,7 @@ test('AE1: the Board task drawer shows the linked PR, review state, failed check
   await expect(page.getByRole('dialog', { name: 'Workflow run detail' })).toBeVisible();
 });
 
-test('the task drawer lists PR deployments, rejects non-GitHub log links and reports missing Actions permission', async ({ page }) => {
+test('the task drawer lists PR deployments, and rejects non-GitHub log links', async ({ page }) => {
   const pr = {
     checks: [{ runId: '9001', workflowName: 'Integration Tests', status: 'completed', conclusion: 'failure', htmlUrl: 'https://example.com/run', updatedAt: '2026-11-20T10:05:00Z', failingJobName: 'integration (ubuntu)', failingJobUrl: 'https://example.com/job' }],
     deployments: [{ id: '5001', environment: 'staging', sha: 'a1b2c3d4e5f6', ref: 'main', state: 'success', description: '', htmlUrl: 'https://github.com/ada/repo-1/deployments/5001', createdAt: '2026-11-20T11:00:00Z', updatedAt: '2026-11-20T11:05:00Z' }],
@@ -261,6 +271,7 @@ test('the task drawer lists PR deployments, rejects non-GitHub log links and rep
   await expect(lifecycle.getByText('Deployment data unavailable')).toHaveCount(0);
   await expect(lifecycle.getByText('integration (ubuntu)')).toBeVisible();
   await expect(lifecycle.getByRole('link', { name: /View logs on GitHub/ })).toHaveCount(0);
+  await expect(lifecycle.getByRole('link', { name: /View run on GitHub/ })).toHaveAttribute('href', 'https://github.com/ada/repo-1/actions/runs/9001');
 });
 
 test('the task drawer shows the permission notice when Actions read permission is missing', async ({ page }) => {

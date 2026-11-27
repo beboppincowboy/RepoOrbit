@@ -251,7 +251,7 @@ function RepositoryWorkspace() {
   }
 
   function closeRun() {
-    void navigate({ search: prev => ({ days: prev.days, tab: prev.tab }), replace: true });
+    void navigate({ search: prev => ({ ...prev, run: undefined }), replace: true });
   }
 
   function handleWriteRecorded(op: WriteOperation) {

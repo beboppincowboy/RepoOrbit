@@ -36,7 +36,21 @@ func (d *Deps) SyncDeployments(ctx context.Context, job jobs.Job, fence jobs.Cla
 	return d.syncDelivery(ctx, job, fence, "deployments")
 }
 
-func (d *Deps) syncDelivery(ctx context.Context, job jobs.Job, fence jobs.ClaimFence, resource string) error {
+func (d *Deps) syncDelivery(ctx context.Context, job jobs.Job, fence jobs.ClaimFence, resource string) (result error) {
+	defer func() {
+		code, ok := activityFailureCode(result)
+		if !ok {
+			return
+		}
+		repoID, err := parseRepoKey(job.Key)
+		if err != nil {
+			return
+		}
+		_ = fence.Commit(ctx, func(tx pgx.Tx) error {
+			_, err := tx.Exec(ctx, `UPDATE activity_resources SET last_error_code=$3 WHERE repository_id=$1 AND resource=$2`, repoID, resource, code)
+			return err
+		})
+	}()
 	repoID, err := parseRepoKey(job.Key)
 	if err != nil {
 		return jobs.Permanent(err)
@@ -157,12 +171,13 @@ func fetchDeliveryPage(ctx context.Context, fetcher deliveryFetcher, token, full
 		p.workflows, p.next, err = fetcher.FetchWorkflows(ctx, token, fullName, query)
 		return p, err
 	case "runs":
-		if query == "" {
-			query = "per_page=10"
-		}
 		p.runs, p.next, err = fetcher.FetchWorkflowRuns(ctx, token, fullName, query)
 		if err != nil {
 			return p, err
+		}
+		// Newest first: once a page reaches past the boundary, later pages hold nothing to keep.
+		if n := len(p.runs); n > 0 && p.runs[n-1].CreatedAt.Before(boundary) {
+			p.next = ""
 		}
 		p.jobs, err = fetchWorkflowJobsForRuns(ctx, fetcher, token, fullName, p.runs, boundary)
 		return p, err
@@ -170,6 +185,9 @@ func fetchDeliveryPage(ctx context.Context, fetcher deliveryFetcher, token, full
 		p.deployments, p.next, err = fetcher.FetchDeployments(ctx, token, fullName, query)
 		if err != nil {
 			return p, err
+		}
+		if n := len(p.deployments); n > 0 && p.deployments[n-1].CreatedAt.Before(boundary) {
+			p.next = ""
 		}
 		p.statuses, err = fetchDeploymentStatusesForPage(ctx, fetcher, token, fullName, p.deployments, boundary)
 		return p, err

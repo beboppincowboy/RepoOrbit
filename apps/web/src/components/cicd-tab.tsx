@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { Button } from "@/components/ui/button";
 import { fetchRepositoryActions, type MetricWindow, type RepositoryActions } from "@/lib/api";
-import { formatDurationSeconds, githubHref, utcTimestampFormatter, workflowStatusLabel, workflowStatusTone } from "@/lib/delivery";
+import { deploymentUnavailableNote, formatDurationSeconds, githubHref, utcTimestampFormatter, workflowStatusLabel, workflowStatusTone } from "@/lib/delivery";
 
 const card = "rounded-xl border border-border bg-card min-w-0 min-h-0";
 
@@ -39,7 +39,6 @@ export function CicdTab({ repositoryId, viewerKey, days, github, onSelectRun }: 
   if (!data) return <p className={`${card} p-4 text-muted-foreground`}>CI/CD data is not available for this repository.</p>;
 
   const actionsDenied = !data.actionsCoverage.covered && data.actionsCoverage.reason === "permission_denied";
-  const deploymentsDenied = !data.deploymentsCoverage.covered && data.deploymentsCoverage.reason === "permission_denied";
 
   return (
     <div className="flex flex-col gap-3">
@@ -158,9 +157,7 @@ export function CicdTab({ repositoryId, viewerKey, days, github, onSelectRun }: 
             <div className="p-4 text-[13px] text-muted-foreground">
               <p className="m-0 font-medium text-foreground">Deployment data unavailable</p>
               <p className="mt-1 mb-0 text-xs">
-                {deploymentsDenied
-                  ? "Deployments read permission is not granted for this installation."
-                  : "No GitHub Deployment records exist for this repository. Passing workflows are not treated as Deployments."}
+                {deploymentUnavailableNote(data.deploymentsCoverage)}
               </p>
             </div>
           ) : (

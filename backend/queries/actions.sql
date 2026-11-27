@@ -5,7 +5,7 @@ SELECT * FROM workflow_runs WHERE repository_id = $1 AND source_id = $2;
 SELECT * FROM workflow_jobs WHERE repository_id = $1 AND run_id = $2 ORDER BY created_at, source_id;
 
 -- name: ListDeployments :many
-SELECT * FROM deployments WHERE repository_id = $1 ORDER BY created_at DESC, source_id DESC;
+SELECT * FROM deployments WHERE repository_id = $1 ORDER BY created_at DESC, source_id DESC LIMIT 50;
 
 -- name: HasDeployment :one
 SELECT EXISTS (SELECT 1 FROM deployments WHERE repository_id = $1)::boolean;
@@ -56,7 +56,7 @@ WITH windowed_runs AS (
 ), job_stats AS (
   SELECT
     count(*) FILTER (WHERE j.status = 'completed' AND j.conclusion = 'failure')::bigint AS failed_jobs,
-    count(*) FILTER (WHERE j.status IN ('queued', 'in_progress'))::bigint AS running_jobs
+    count(*) FILTER (WHERE j.status <> 'completed')::bigint AS running_jobs
   FROM workflow_jobs j
   JOIN windowed_runs r ON r.repository_id = j.repository_id AND r.source_id = j.run_id
 )

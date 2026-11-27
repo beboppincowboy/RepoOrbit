@@ -3,7 +3,7 @@ import { SideDrawer } from "@/components/side-drawer";
 import { Button } from "@/components/ui/button";
 import { BOARD_STATUSES, stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
 import { fetchIssueDelivery, type BoardIssue, type BoardStatus, type DeliveryCheck, type IssueDelivery } from "@/lib/api";
-import { githubHref, isGitHubUrl, reviewLabels, workflowStatusLabel } from "@/lib/delivery";
+import { deploymentUnavailableNote, githubHref, isFailedConclusion, isGitHubUrl, reviewLabels, workflowStatusLabel } from "@/lib/delivery";
 
 // Each Board column's name.
 export const STATUS_NAMES: Record<BoardStatus, string> = { backlog: "Backlog", todo: "Todo", in_progress: "In Progress", in_review: "In Review", done: "Done" };
@@ -13,8 +13,7 @@ const option = "inline-flex items-center gap-1.5 rounded-full border border-bord
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const has = (list: string[], value: string) => list.some(item => same(item, value));
 
-const failedConclusions = ["failure", "timed_out", "startup_failure"];
-const isFailed = (check: DeliveryCheck) => check.status === "completed" && failedConclusions.includes(check.conclusion);
+const isFailed = (check: DeliveryCheck) => check.status === "completed" && isFailedConclusion(check.conclusion);
 const checkTone = (check: DeliveryCheck) => isFailed(check) ? "border-destructive/30 bg-destructive/10 text-destructive"
   : check.status === "completed" && check.conclusion === "success" ? "border-success/30 bg-success/10 text-success"
   : "border-border bg-muted text-muted-foreground";
@@ -144,9 +143,10 @@ function DeliverySection({ query, github, onOpenRun }: { query: { isPending: boo
                         <span className="font-medium">{check.workflowName}</span>
                         <span className={`${mini} ${checkTone(check)}`}>{workflowStatusLabel(check.status, check.conclusion)}</span>
                       </div>
-                      {isFailed(check) && check.failingJobName && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                        <span>Failing job: <strong>{check.failingJobName}</strong></span>
+                      {isFailed(check) && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                        {check.failingJobName && <span>Failing job: <strong>{check.failingJobName}</strong></span>}
                         {check.failingJobUrl && isGitHubUrl(check.failingJobUrl) && <a href={check.failingJobUrl} target="_blank" rel="noreferrer" className="text-primary underline">View logs on GitHub ↗</a>}
+                        <a href={githubHref(check.htmlUrl, `${github}/actions/runs/${check.runId}`)} target="_blank" rel="noreferrer" className="text-primary underline">View run on GitHub ↗</a>
                         {onOpenRun && <Button variant="outline" size="sm" onClick={() => onOpenRun(check.runId)}>Open run detail</Button>}
                       </div>}
                     </li>)}
@@ -162,7 +162,7 @@ function DeliverySection({ query, github, onOpenRun }: { query: { isPending: boo
             })}
           </ul>}
         {data.deploymentUnavailable
-          ? <p className="m-0 text-xs text-muted-foreground"><strong className="font-medium text-foreground">Deployment data unavailable</strong> — no GitHub Deployment records exist; passing workflows are not treated as deployments.</p>
+          ? <p className="m-0 text-xs text-muted-foreground"><strong className="font-medium text-foreground">Deployment data unavailable</strong> — {deploymentUnavailableNote(data.deploymentsCoverage)}</p>
           : data.pullRequests.every(pr => pr.deployments.length === 0) && <p className="m-0 text-xs text-muted-foreground">No deployments recorded for these pull requests.</p>}
       </>}
     </section>

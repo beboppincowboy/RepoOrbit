@@ -95,7 +95,8 @@ type RepositoryOverview {
 # repositoriesCounted are fully covered and summed; repositoriesSyncing are excluded from totals, the trend and Needs attention.
 # AssignedToMe can include syncing repositories with covered issue data.
 # withheld counts unverified selections, without naming them (retryAt when rate limited).
-# reviewBacklog sums unreviewedOpenPullRequests. kind is "pr_awaiting_review", "issue_no_response" or "stale_issue".
+# reviewBacklog sums unreviewedOpenPullRequests. kind is "pr_awaiting_review", "issue_no_response", "stale_issue" or
+# "failed_workflow_run"; runId is set only on "failed_workflow_run" items (null otherwise).
 extend type Query { crossRepositoryOverview(days: Int! = 30): CrossRepositoryOverview }
 type AttentionItem { kind: String!, repositoryId: ID!, fullName: String!, number: Int64!, title: String!, url: String!, since: Time!, runId: ID }
 # status is the issue's Board status, as repositoryBoard reports it; null when the repository's status labels are off.

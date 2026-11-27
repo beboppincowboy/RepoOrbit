@@ -13,6 +13,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 	"github.com/repoorbit/repoorbit/backend/internal/githubapp/fake"
+	"github.com/repoorbit/repoorbit/backend/internal/ingestion"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
 )
 
@@ -63,8 +64,8 @@ func TestDeliveryIngestionFencesAndPermissionRecovery(t *testing.T) {
 	if err := e.deps.SyncActions(ctx, job, fence); err == nil {
 		t.Fatal("access change accepted permission result")
 	}
-	if err := e.pool.QueryRow(ctx, `SELECT last_error_code FROM activity_resources WHERE repository_id=$1 AND resource='actions'`, id).Scan(&code); err != nil || (code != nil && *code == "permission_denied") {
-		t.Fatalf("stale permission result stored: %v %v", code, err)
+	if err := e.pool.QueryRow(ctx, `SELECT last_error_code FROM activity_resources WHERE repository_id=$1 AND resource='actions'`, id).Scan(&code); err != nil || code == nil || *code != ingestion.CodeAccessMoved {
+		t.Fatalf("want the access race recorded, not the stale permission result: %v %v", code, err)
 	}
 	if err := e.deps.SyncActions(ctx, job, e.fence()); err != nil {
 		t.Fatal(err)
@@ -153,7 +154,7 @@ func TestDeliveryPaginationReconcilesDeletedRecords(t *testing.T) {
 	for i := range workflows {
 		workflows[i] = githubapp.Workflow{ID: int64(i + 1), Name: "CI", UpdatedAt: now}
 	}
-	runs := make([]githubapp.WorkflowRun, 11)
+	runs := make([]githubapp.WorkflowRun, 101)
 	for i := range runs {
 		runs[i] = githubapp.WorkflowRun{ID: int64(i + 1), WorkflowID: 1, CreatedAt: now, UpdatedAt: now}
 	}
@@ -186,10 +187,10 @@ func TestDeliveryPaginationReconcilesDeletedRecords(t *testing.T) {
 			t.Fatalf("workflows=%d runs=%d jobs=%d err=%v", workflowCount, runCount, jobCount, err)
 		}
 	}
-	check(101, 11, 101)
+	check(101, 101, 101)
 	e.gh.SetWorkflows(id, workflows[5:]...)
 	e.gh.SetWorkflowRuns(id, runs[5:]...)
 	signalActivity(t, e, id, false)
 	drainPages()
-	check(96, 6, 0)
+	check(96, 96, 0)
 }

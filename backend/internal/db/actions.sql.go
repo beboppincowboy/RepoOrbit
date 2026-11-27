@@ -81,7 +81,7 @@ WITH windowed_runs AS (
 ), job_stats AS (
   SELECT
     count(*) FILTER (WHERE j.status = 'completed' AND j.conclusion = 'failure')::bigint AS failed_jobs,
-    count(*) FILTER (WHERE j.status IN ('queued', 'in_progress'))::bigint AS running_jobs
+    count(*) FILTER (WHERE j.status <> 'completed')::bigint AS running_jobs
   FROM workflow_jobs j
   JOIN windowed_runs r ON r.repository_id = j.repository_id AND r.source_id = j.run_id
 )
@@ -392,7 +392,7 @@ func (q *Queries) ListCrossFailedWorkflowRuns(ctx context.Context, arg ListCross
 }
 
 const listDeployments = `-- name: ListDeployments :many
-SELECT repository_id, source_id, environment, sha, ref, state, description, html_url, created_at, updated_at FROM deployments WHERE repository_id = $1 ORDER BY created_at DESC, source_id DESC
+SELECT repository_id, source_id, environment, sha, ref, state, description, html_url, created_at, updated_at FROM deployments WHERE repository_id = $1 ORDER BY created_at DESC, source_id DESC LIMIT 50
 `
 
 func (q *Queries) ListDeployments(ctx context.Context, repositoryID int64) ([]Deployment, error) {
