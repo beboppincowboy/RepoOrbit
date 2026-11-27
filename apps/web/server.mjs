@@ -1,5 +1,6 @@
 // Production server: serves the built app shell and assets, and forwards /auth, /api and /graphql to the Go API
-// on the same origin. Uses only Node built-ins so the Docker image needs no node_modules at runtime.
+// on the same origin. Runs on Bun using only node: built-ins, so the
+// Docker image needs no node_modules at runtime. tests/server-parity.spec.ts pins its behavior.
 import { createServer, request as requestHTTP } from "node:http";
 import { request as requestHTTPS } from "node:https";
 import { readFile, stat } from "node:fs/promises";
@@ -21,6 +22,8 @@ function forward(req, res, { pathname, search }) {
   const upstream = requestAPI(api, { path: pathname + search, method: req.method, headers }, response => {
     const headers = { ...response.headers };
     delete headers.connection;
+    // The runtime frames the reply for this client. Copying "chunked" makes Bun send an HTTP/1.0 client an unchunked body.
+    delete headers["transfer-encoding"];
     res.writeHead(response.statusCode, headers);
     response.on("error", error => res.destroy(error));
     response.pipe(res);
