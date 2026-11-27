@@ -147,10 +147,11 @@ for (const runtime of ['bun']) {
     });
 
     test('HEAD has headers and no body; POST is 405', async () => {
-      const head = await fetch(`${web.url}/`, { method: 'HEAD' });
+      // Read raw bytes: fetch never exposes a HEAD body, even if the server sends one.
+      const head = await rawRequest(web.port, 'HEAD / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
       expect(head.status).toBe(200);
-      expect(head.headers.get('content-type')).toBe('text/html; charset=utf-8');
-      expect(await head.text()).toBe('');
+      expect(head.head.toLowerCase()).toContain('content-type: text/html; charset=utf-8');
+      expect(head.body).toHaveLength(0);
       expect((await fetch(`${web.url}/`, { method: 'POST', body: 'x' })).status).toBe(405);
     });
 
@@ -250,6 +251,23 @@ for (const runtime of ['bun']) {
       await until(() => stub.seen[0].closed);
       expect(stub.seen[0].closed).toBe(true);
       expect(stub.seen[0].complete).toBe(false);
+    });
+
+    test('client disconnect mid-response closes the upstream request', async () => {
+      let closed = false;
+      // Send headers and one chunk, then leave the response open.
+      stub.handler = (_req, res) => { res.on('close', () => { closed = true; }); res.writeHead(200, { 'content-type': 'text/plain' }); res.write('part0;'); };
+      const s = connect(web.port, '127.0.0.1');
+      s.on('error', () => {});
+      let text = '';
+      s.on('data', c => { text += c.toString(); });
+      s.write(get('/api/stream'));
+      await until(() => text.includes('part0;'));
+      expect(text).toContain('part0;');
+      expect(closed).toBe(false);
+      s.destroy();
+      await until(() => closed);
+      expect(closed).toBe(true);
     });
 
     test('early upstream 413 reaches the client before the upload finishes', async () => {
