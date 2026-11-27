@@ -141,7 +141,9 @@ Reads perform no business writes. The following security and scheduling bookkeep
 
 ## Deployment
 
-_To be written._
+A separate Bun web process runs `apps/web/server.mjs` on Bun 1.4.5 in `oven/bun:1.4.5-alpine` as user `bun`, with no node_modules at runtime. It serves static files from `dist/client` with an `_shell.html` fallback and proxies `/auth`, `/api` and `/graphql` to the API, streaming bodies so the API enforces its own request limits. Go does not serve the SPA; a separate web process keeps the option of per-route server rendering. `/webhooks/github`, `/live` and `/ready` are reachable only on the API.
+
+Vite builds run on Bun (`bun run --bun vite build`); Playwright, ESLint and tsc stay on Node 22. Node and Bun parity for `server.mjs` is pinned by `apps/web/tests/server-parity.spec.ts`.
 
 ## Observability
 
@@ -149,4 +151,4 @@ _To be written._
 
 ## Rollback
 
-_To be written._
+Revert the Bun runtime change (#20) and the package-manager change (#19) to return to npm and Node. No data or schema is involved.

@@ -5,9 +5,9 @@
   "type": "module",
   "packageManager": "bun@1.4.5",
   "scripts": {
-    "dev": "vite dev --host 0.0.0.0",
-    "build": "vite build",
-    "start": "node server.mjs",
+    "dev": "bun run --bun vite dev --host 0.0.0.0",
+    "build": "bun run --bun vite build",
+    "start": "bun server.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test"
