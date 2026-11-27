@@ -979,3 +979,107 @@ for (const { state, badge, columnName, draggable } of [
     expect(sent).toHaveLength(1);
   });
 }
+
+test('Discard leaves a card another tab replaced while it waited for the draft storage lock', async ({ page, context }) => {
+  await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  const original = await storedCard(page, 3);
+  const drawer = await openDrawer(page, 3);
+  const other = await context.newPage();
+  await holdDraftStorageLock(other);
+
+  await drawer.getByRole('button', { name: 'Discard' }).click();
+  await expectDraftStorageWaiters(page);
+  const replacement = { ...original, target: { ...original.target, status: 'in_review' } };
+  await other.evaluate(({ key, replacement }) => {
+    localStorage.setItem(key, JSON.stringify(replacement));
+    window.dispatchEvent(new Event('release-draft-lock'));
+  }, { key: boardKey(3), replacement });
+
+  await expect(drawer.getByRole('radio', { name: 'In Review' })).toBeChecked();
+  await expectDraftStorageWaiters(page, 0);
+  expect(await storedCard(page, 3)).toEqual(replacement);
+});
+
+// Makes the Board's per-repository write lock reject, leaving the draft storage lock working.
+const rejectBoardLock = (page: Page) => page.evaluate(() => {
+  const request = navigator.locks.request.bind(navigator.locks) as (...args: unknown[]) => Promise<unknown>;
+  navigator.locks.request = ((name: string, ...rest: unknown[]) => name.endsWith(':board:')
+    ? Promise.reject(new DOMException('refused', 'SecurityError'))
+    : request(name, ...rest)) as typeof navigator.locks.request;
+});
+
+test('a save that cannot get the Board lock says so and keeps the card staged', async ({ page }) => {
+  const { posts } = await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  await rejectBoardLock(page);
+  await confirmSave(page);
+
+  await expect(page.getByRole('status').filter({ hasText: '#3 was not sent and is still staged.' })).toBeVisible();
+  expect(await storedCard(page, 3)).toMatchObject({ phase: 'staged' });
+  expect(posts).toEqual([]);
+});
+
+// Stages #3, then rewrites its stored card as a sent one whose outcome is unknown, and reloads.
+async function seedUnknownCard(page: Page, operationId: number | null) {
+  await stageStatus(page, 3, 'In Progress');
+  await page.evaluate(({ key, operationId }) => {
+    const staged = JSON.parse(localStorage.getItem(key)!);
+    localStorage.setItem(key, JSON.stringify({ ...staged, phase: 'unknown', operationId, request: { draft: {}, idempotencyKey: 'sent-key' }, attemptedAt: new Date().toISOString() }));
+  }, { key: boardKey(3), operationId });
+  await page.reload();
+}
+
+test('a recovery that cannot get the Board lock shows the failure in the drawer', async ({ page }) => {
+  const { posts } = await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  await seedUnknownCard(page, 603);
+  await rejectBoardLock(page);
+  const drawer = await openDrawer(page, 3);
+  await drawer.getByRole('button', { name: 'Recheck' }).click();
+
+  await expect(drawer.getByRole('alert').filter({ hasText: 'Could not check this change' })).toBeVisible();
+  expect(posts).toEqual([]);
+});
+
+test('a user without Triage permission can still recheck a recorded update, but not resend one', async ({ page }) => {
+  await setup(page);
+  let canManageIssues = true;
+  await page.route('**/api/repositories/1/issue-capabilities', route => route.fulfill({ json: { canCreateIssue: true, canCreateIssueWithMetadata: canManageIssues, canManageIssues } }));
+  await page.route('**/api/write-operations/603/recheck', route => route.fulfill({ json: operation(3, 'succeeded', 603) }));
+  await page.goto('/workspace/1?tab=board');
+
+  for (const [operationId, action] of [[603, 'Recheck'], [null, 'Check recorded status']] as const) {
+    canManageIssues = true;
+    await page.reload();
+    await seedUnknownCard(page, operationId);
+    canManageIssues = false;
+    await page.reload();
+    const drawer = await openDrawer(page, 3);
+    await expect(drawer).toContainText('requires Triage or higher permission on GitHub');
+    const button = drawer.getByRole('button', { name: action });
+    if (operationId === null) {
+      await expect(button).toBeDisabled();
+    } else {
+      await button.click();
+      await expect.poll(() => storedCard(page, 3)).toBeNull();
+    }
+    await page.keyboard.press('Escape');
+  }
+});
+
+test('saving from the Board reads the repository Overview again', async ({ page }) => {
+  await setup(page);
+  await mockUpdates(page);
+  let overviewReads = 0;
+  page.on('request', request => { if (request.postData()?.includes('query RepositoryOverview')) overviewReads++; });
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'Done');
+  const before = overviewReads;
+  await confirmSave(page);
+
+  // Shorter than the fastest unsynced poll (10s), so only the save can cause this read.
+  await expect.poll(() => overviewReads, { timeout: 4000 }).toBeGreaterThan(before);
+});

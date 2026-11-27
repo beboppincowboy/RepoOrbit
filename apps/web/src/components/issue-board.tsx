@@ -8,7 +8,7 @@ import { StatusSourceSetup } from "@/components/status-source-setup";
 import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
 import { BOARD_STATUSES, deriveChange, loadBoardCard, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
-import { canDiscardBoardCard, runRecovery } from "@/lib/board-recovery";
+import { canDiscardBoardCard, runRecovery, recoveryAction } from "@/lib/board-recovery";
 import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from "@/lib/board-review";
 import { saveBoardChanges, withBoardLock } from "@/lib/board-save";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type BoardStatus, type IssueCapabilities, type ViewerSession } from "@/lib/api";
@@ -62,9 +62,11 @@ type IssueBoardProps = {
   openIssue: number | undefined;
   onOpenIssue: (issueNumber: number | undefined) => void;
   onOpenRun?: (runId: string) => void;
+  // Called after a save or a recovery that may have written to GitHub.
+  onGitHubWrite: () => void;
 };
 
-export function IssueBoard({ session, repositoryId, github, capabilities, capabilitiesError, assignable, openIssue, onOpenIssue, onOpenRun }: IssueBoardProps) {
+export function IssueBoard({ session, repositoryId, github, capabilities, capabilitiesError, assignable, openIssue, onOpenIssue, onOpenRun, onGitHubWrite }: IssueBoardProps) {
   const viewerKey = viewerKeyOf(session);
   const viewerLogin = session.user?.login ?? null;
   const demo = session.mode === "demo";
@@ -158,6 +160,8 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     return null;
   }
   const blocked = getBlockedReason();
+  // Recheck only reads GitHub, so it needs no write permission. Resending writes.
+  const recoveryBlocked = (card: BoardCard | undefined) => !demo && card && recoveryAction(card) === "recheck" ? null : blocked;
   // A Board that stops showing its columns takes the review with it.
   if (reviewed && !board?.statusLabels) setReviewed(null);
 
@@ -165,14 +169,23 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     if (!reviewed || saveRunning || blocked) return;
     setSaveRunning(true);
     try {
-      const ran = await saveBoardChanges({ viewerKey, repositoryId, reviewed, saver, onChange: () => window.dispatchEvent(new Event(CARDS_SAVED)) });
+      let ran = true;
+      let failed = false;
+      try {
+        ran = await saveBoardChanges({ viewerKey, repositoryId, reviewed, saver, onChange: () => window.dispatchEvent(new Event(CARDS_SAVED)) });
+      } catch {
+        failed = true;
+      }
       if (ran) {
+        onGitHubWrite();
         await refetchBoard();
         const current = loadBoardCards(viewerKey, repositoryId);
         if (pendingStages.current === 0) setCards(current);
         const unsent = current.filter(card => card.phase === "staged" && reviewed.some(seen => seen.number === card.number));
         if (unsent.length) {
           setSaveNotice(`${unsent.map(card => `#${card.number}`).join(", ")} ${unsent.length === 1 ? "was not sent and is" : "were not sent and are"} still staged.`);
+        } else if (failed) {
+          setSaveNotice("The save stopped unexpectedly. Check each card before saving again.");
         }
       }
     } finally {
@@ -183,13 +196,13 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
 
   // Resolves an unknown card, one send at a time with the save. Resolves the failure to show, or null.
   async function recover(issueNumber: number): Promise<string | null> {
-    if (saveRunning || blocked) return null;
+    if (saveRunning || recoveryBlocked(cardOf(issueNumber))) return null;
     setSaveRunning(true);
     try {
       const result = await withBoardLock(viewerKey, repositoryId, async () => {
         const stored = () => loadBoardCard(viewerKey, repositoryId, issueNumber);
         const card = await withDraftStorageLock(stored);
-        if (!card) return null;
+        if (!card || recoveryBlocked(card)) return null;
         const recovery = await runRecovery(card, { repositoryId });
         if (!recovery) return null;
         return withDraftStorageLock(() => {
@@ -204,8 +217,11 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
       });
       if (!result) return null;
       window.dispatchEvent(new Event(CARDS_SAVED));
+      onGitHubWrite();
       await refetchBoard();
       return result.error;
+    } catch {
+      return "Could not check this change. Reload the page and try again.";
     } finally {
       setSaveRunning(false);
       // Also redraws a card whose action was no longer offered when it was pressed.
@@ -242,9 +258,11 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   }
 
   async function discard(issueNumber: number) {
+    const seen = JSON.stringify(cardOf(issueNumber));
     const discarded = await withDraftStorageLock(() => {
       const card = loadBoardCard(viewerKey, repositoryId, issueNumber);
-      if (!card || !canDiscardBoardCard(card)) return false;
+      // Another tab may have replaced the card since the user chose to discard it.
+      if (!card || JSON.stringify(card) !== seen || !canDiscardBoardCard(card)) return false;
       removeBoardCard(viewerKey, repositoryId, issueNumber);
       return true;
     });
@@ -435,7 +453,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
           assignable={assignable}
           blocked={blocked ?? (locked(openCard) ? "This card's last save is not confirmed yet." : null)}
           sideEffects={openCard ? deriveChange(openCard.snapshot, openCard.target, saver)?.sideEffects ?? [] : []}
-          recoveryBlocked={blocked}
+          recoveryBlocked={recoveryBlocked(openCard)}
           busy={saving}
           onRecover={() => recover(openIssue)}
           onStage={target => { if (openRow) void stage(openRow, target); }}
