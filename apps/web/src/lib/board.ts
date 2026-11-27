@@ -62,6 +62,7 @@ export function removeBoardCard(viewerKey: string, repositoryId: string, issueNu
   removeStorage(issueDraftStorageKey(viewerKey, repositoryId, { board: issueNumber }));
 }
 
+// A true return from write() only means cleanup was not detected. Callers read the card back to verify persistence.
 export function guardBoardCardWrites(viewerKey: string, repositoryId: string) {
   const wasCleared = watchIssueDraftCleanup(viewerKey, repositoryId);
   return {

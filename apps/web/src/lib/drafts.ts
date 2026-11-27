@@ -42,6 +42,7 @@ function markDraftsCleared(key: string): void {
   if (typeof window !== "undefined") writeStorage(key, { token: crypto.getRandomValues(new Uint32Array(4)).join("-") });
 }
 
+// The cleanup baseline is captured at call time, so callers call this before waiting for a lock.
 export function watchIssueDraftCleanup(viewerKey: string, repositoryId: string): () => boolean {
   const keys = [CLEARED_KEY, repositoryClearedKey(viewerKey, repositoryId)];
   const token = (key: string) => readStorage<{ token: string }>(key)?.token;

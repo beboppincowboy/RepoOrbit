@@ -212,7 +212,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   function stage(row: BoardIssue, target: BoardTarget) {
     if (blocked || !row.status) return;
     const card = loadBoardCard(viewerKey, repositoryId, row.number);
-    if (locked(card)) {
+    if (locked(card) || JSON.stringify(card) !== JSON.stringify(cardOf(row.number))) {
       setCards(loadBoardCards(viewerKey, repositoryId));
       return;
     }
