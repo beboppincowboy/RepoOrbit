@@ -12,8 +12,9 @@ import { IssueIcon, PullRequestIcon } from "@/shared/ui/icons";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
 import { Button, buttonVariants } from "@/shared/ui/button";
-import { WriteHistory, writeOperationsQueryKey } from "@/components/write-history";
-import { StatusSourceSetup } from "@/components/status-source-setup";
+import { assignableUsersKey, issueCapabilitiesKey, workspaceIssueKey, workspaceIssuesKey, writeOperationsQueryKey } from "@/features/issues/query-keys";
+import { WriteHistory } from "@/features/issues/write-history";
+import { StatusSourceSetup } from "@/features/issues/status-source-setup";
 import {
   crossRepositoryOverviewKey,
   currentAccessSeq,
@@ -200,7 +201,7 @@ function RepositoryWorkspace() {
   }, [accessRejected, queryClient, refetchOverview, retryTime, session]);
   const editorOpen = search.editor !== undefined;
   const capabilitiesQuery = useQuery({
-    queryKey: ["issueCapabilities", viewerKey, repositoryId],
+    queryKey: issueCapabilitiesKey(viewerKey, repositoryId),
     queryFn: ({ signal }) => fetchIssueCapabilities(repositoryId, signal),
     enabled: !demo && !snapshot && Boolean(overview) && (editorOpen || search.tab === "issues" || search.tab === "board"),
     gcTime: 0,
@@ -208,14 +209,14 @@ function RepositoryWorkspace() {
   });
   const restoredNumber = typeof search.editor === "number" && selectedEditIssue?.number !== search.editor ? search.editor : null;
   const restoredIssueQuery = useQuery({
-    queryKey: ["workspaceIssue", viewerKey, repositoryId, restoredNumber],
+    queryKey: workspaceIssueKey(viewerKey, repositoryId, restoredNumber),
     queryFn: ({ signal }) => fetchWorkspaceIssue(repositoryId, restoredNumber!, signal),
     enabled: !snapshot && restoredNumber !== null,
     gcTime: 0,
     retry: false,
   });
   const assigneesQuery = useQuery({
-    queryKey: ["assignableUsers", viewerKey, repositoryId],
+    queryKey: assignableUsersKey(viewerKey, repositoryId),
     queryFn: ({ signal }) => fetchAssignableUsers(repositoryId, signal),
     enabled: !demo && !snapshot && Boolean(overview) && (editorOpen || search.tab === "board"),
     staleTime: 5 * 60_000,
@@ -258,7 +259,7 @@ function RepositoryWorkspace() {
   }
 
   function refreshIssueReads() {
-    void queryClient.invalidateQueries({ queryKey: ["workspaceIssues", repositoryId, viewerKey] });
+    void queryClient.invalidateQueries({ queryKey: workspaceIssuesKey(repositoryId, viewerKey) });
     void queryClient.invalidateQueries({ queryKey: ["repositoryOverview", session.mode, session.user?.login, repositoryId] });
     void queryClient.invalidateQueries({ queryKey: crossRepositoryOverviewKey(session) });
   }
@@ -638,7 +639,7 @@ function IssuesTab({
 }) {
   const [jumpNumber, setJumpNumber] = useState("");
   const query = useInfiniteQuery({
-    queryKey: ["workspaceIssues", id, viewerKey],
+    queryKey: workspaceIssuesKey(id, viewerKey),
     queryFn: ({ pageParam, signal }) => fetchWorkspaceIssues(id, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: last => last.hasNextPage ? last.endCursor : undefined,

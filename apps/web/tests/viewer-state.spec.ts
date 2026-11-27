@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { QueryClient } from '@tanstack/react-query';
 import { logout, sessionQuery, type ViewerSession } from '../src/features/auth/api';
-import { issueDraftStorageKey } from '../src/lib/drafts';
+import { issueDraftStorageKey } from '../src/features/issues/drafts';
 import { repositorySnapshotKey } from '../src/lib/repository-snapshots';
 import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, resetViewerSelection, selectedRepositoriesKey } from '../src/lib/selected-repositories';
 import { mockWindowStorage } from './mocks';

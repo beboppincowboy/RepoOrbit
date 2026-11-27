@@ -1,4 +1,5 @@
-import type { BoardStatus, DeploymentSummary } from "@/features/issues/api";
+import type { DeploymentSummary } from "@/features/issues/api";
+import type { BoardStatus } from "@/features/issues/status";
 import { activityFields, type ActivityStatus, type SyncState } from "@/features/repositories/api";
 import { RepositoryAccessUnverifiedError } from "@/shared/api/errors";
 import { coverageFields, graphqlQuery, guardedGraphql, type Coverage, type MetricWindow, type ReviewState } from "@/shared/api/transport";

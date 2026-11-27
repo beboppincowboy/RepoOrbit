@@ -13,7 +13,7 @@ import {
 } from "@/features/repositories/api";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError } from "@/shared/api/errors";
 import type { MetricWindow, ViewerSession } from "@/shared/api/transport";
-import { clearRepositoryIssueDrafts } from "@/lib/drafts";
+import { clearRepositoryIssueDrafts } from "@/features/issues/drafts";
 import { repositorySnapshotKey, repositorySnapshotPrefix, repositorySnapshotsKey } from "@/lib/repository-snapshots";
 
 export const selectedRepositoriesKey = (session: ViewerSession) => ["selectedRepositories", session.mode, session.user?.login] as const;

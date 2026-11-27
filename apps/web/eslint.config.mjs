@@ -43,24 +43,12 @@ export default tseslint.config(
     legacy,
   ]),
   boundary(["src/features/issues/**/*.{ts,tsx}"], [features("auth", "repositories", "board", "analytics"), legacy]),
-  boundary(["src/features/auth/**/*.{ts,tsx}"], [features("repositories", "board", "analytics"), legacy], ["src/features/auth/api.ts"]),
-  boundary(["src/features/auth/api.ts"], [
-    features("repositories", "board", "analytics"),
-    unmigrated("components", "routes"),
-    {
-      regex: "^@/lib(/(?!drafts$)|$)",
-      message: "The only module this file may import from lib is lib/drafts.",
-    },
-  ]),
+  boundary(["src/features/auth/**/*.{ts,tsx}"], [features("repositories", "board", "analytics"), legacy]),
   boundary(["src/features/repositories/**/*.{ts,tsx}"], [features("board", "analytics"), legacy]),
   boundary(["src/features/board/**/*.{ts,tsx}"], [features("auth", "analytics"), legacy]),
   boundary(["src/features/analytics/**/*.{ts,tsx}"], [features("auth", "board"), legacy]),
-  boundary(["src/lib/drafts.ts"], [
-    unmigrated("lib", "features", "components", "routes"),
-    { regex: "^\\.(/|$)", message: "lib/drafts may only import @/shared and packages, not siblings." },
-  ]),
   {
-    files: ["src/shared/**/*.{ts,tsx}", "src/features/**/*.{ts,tsx}", "src/lib/drafts.ts"],
+    files: ["src/shared/**/*.{ts,tsx}", "src/features/**/*.{ts,tsx}"],
     rules: {
       "no-restricted-syntax": [
         "error",

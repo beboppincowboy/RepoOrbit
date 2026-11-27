@@ -3,7 +3,7 @@ import { recheckWriteOperation, submitIssueUpdate, type IssueUpdateDraft, type W
 import { IssueWriteError } from '../src/features/issues/write-errors';
 import { loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard } from '../src/lib/board';
 import { saveBoardChanges, type BoardSaveOptions } from '../src/lib/board-save';
-import { clearAllIssueDrafts, clearRepositoryIssueDrafts, issueDraftStorageKey, withDraftStorageLock } from '../src/lib/drafts';
+import { clearAllIssueDrafts, clearRepositoryIssueDrafts, issueDraftStorageKey, withDraftStorageLock } from '../src/features/issues/drafts';
 import { mockWindowStorage } from './mocks';
 
 const viewer = 'user:ada';

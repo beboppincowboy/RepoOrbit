@@ -3,15 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { SideDrawer } from "@/components/side-drawer";
 import { Button } from "@/shared/ui/button";
-import { BOARD_STATUSES, stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
+import { stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
 import { canDiscardBoardCard, recoveryAction } from "@/lib/board-recovery";
 import { confirmDisabled } from "@/lib/board-review";
 import type { BoardIssue } from "@/features/board/api";
-import { fetchIssueDelivery, type BoardStatus, type DeliveryCheck, type IssueDelivery } from "@/features/issues/api";
+import { fetchIssueDelivery, type DeliveryCheck, type IssueDelivery } from "@/features/issues/api";
+import { BOARD_STATUSES, STATUS_NAMES } from "@/features/issues/status";
 import { deploymentUnavailableNote, githubHref, isFailedConclusion, isGitHubUrl, reviewLabels, workflowStatusLabel } from "@/lib/delivery";
-
-// Each Board column's name.
-export const STATUS_NAMES: Record<BoardStatus, string> = { backlog: "Backlog", todo: "Todo", in_progress: "In Progress", in_review: "In Review", done: "Done" };
 
 const mini = "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-[7px] text-[11px]";
 const option = "inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-0.5 text-xs has-checked:border-primary has-checked:bg-primary-soft has-checked:font-semibold has-checked:text-primary has-disabled:opacity-50";

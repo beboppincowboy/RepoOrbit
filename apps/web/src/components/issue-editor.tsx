@@ -17,7 +17,7 @@ import {
   classifyWriteFailure,
   generateIdempotencyKey,
 } from "@/features/issues/write-errors";
-import { issueDraftStorageKey } from "@/lib/drafts";
+import { issueDraftStorageKey } from "@/features/issues/drafts";
 import { readStorage, removeStorage, writeStorage } from "@/shared/utils/storage";
 
 const MAX_TITLE = 256;

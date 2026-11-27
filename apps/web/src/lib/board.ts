@@ -1,12 +1,9 @@
 import type { BoardIssue } from "@/features/board/api";
-import type { BoardSnapshot, BoardStatus, IssueUpdateDraft, WriteOperation } from "@/features/issues/api";
+import type { BoardSnapshot, IssueUpdateDraft, WriteOperation } from "@/features/issues/api";
+import { boardDraftPrefix, issueDraftStorageKey } from "@/features/issues/drafts";
+import { STATUS_LABELS, type BoardStatus } from "@/features/issues/status";
 import { classifyWriteFailure } from "@/features/issues/write-errors";
 import { readStorageByPrefix, removeStorage, writeStorage } from "@/shared/utils/storage";
-import { boardDraftPrefix, issueDraftStorageKey } from "./drafts";
-
-export const BOARD_STATUSES: readonly BoardStatus[] = ["backlog", "todo", "in_progress", "in_review", "done"];
-
-export const STATUS_LABELS: Partial<Record<BoardStatus, string>> = { todo: "status:todo", in_progress: "status:in-progress", in_review: "status:review" };
 
 export function isStatusLabel(label: string): boolean {
   return Object.values(STATUS_LABELS).includes(label.toLowerCase());

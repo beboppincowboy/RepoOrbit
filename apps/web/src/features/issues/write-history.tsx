@@ -11,6 +11,7 @@ import {
   type WriteOperation,
   type WriteOperationIssue,
 } from "@/features/issues/api";
+import { statusLabelsQueryKey, writeOperationsQueryKey } from "@/features/issues/query-keys";
 import { IssueWriteError } from "@/features/issues/write-errors";
 
 const stamp = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" });
@@ -68,14 +69,6 @@ function summarizeDraft(op: WriteOperation): string {
   if (d.assignees?.remove?.length) parts.push(`-assignees: ${d.assignees.remove.map(a => `@${a}`).join(", ")}`);
   if (d.state) parts.push(`state → ${d.state}`);
   return parts.length ? parts.join(" · ") : "Update issue";
-}
-
-export function writeOperationsQueryKey(viewerKey: string, repositoryId: string) {
-  return ["writeOperations", viewerKey, repositoryId] as const;
-}
-
-export function statusLabelsQueryKey(viewerKey: string, repositoryId: string) {
-  return ["statusLabels", viewerKey, repositoryId] as const;
 }
 
 export function WriteHistory({
