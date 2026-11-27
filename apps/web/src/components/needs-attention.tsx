@@ -3,7 +3,6 @@ import type { AttentionItem, AttentionKind } from "@/features/analytics/api";
 import type { MetricWindow } from "@/shared/api/transport";
 import { ChevronIcon, IssueIcon, PullRequestIcon, WorkflowIcon } from "@/shared/ui/icons";
 
-// Row styles shared by the overview lists (prototype D2 `.lrow`, `.mini`).
 export const listRowClass = "flex w-full items-center gap-3 border-b border-border px-3 py-2.5 text-left last:border-b-0 hover:bg-muted";
 export const emptyListClass = "p-4 text-muted-foreground";
 export const pillClass = "inline-flex shrink-0 items-center rounded-full border border-border px-[7px] text-[11px] text-soft";

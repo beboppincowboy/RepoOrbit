@@ -11,7 +11,7 @@ import { BOARD_STATUSES, deriveChange, loadBoardCard, loadBoardCards, removeBoar
 import { canDiscardBoardCard, runRecovery, recoveryAction } from "@/lib/board-recovery";
 import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from "@/lib/board-review";
 import { saveBoardChanges, withBoardLock } from "@/lib/board-save";
-import type { ViewerSession } from "@/features/auth/api";
+import type { ViewerSession } from "@/shared/api/transport";
 import { fetchRepositoryBoard, type BoardIssue } from "@/features/board/api";
 import { fetchStatusLabels, type BoardStatus, type IssueCapabilities } from "@/features/issues/api";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError } from "@/shared/api/errors";

@@ -1,4 +1,3 @@
-// Shared icons (prototype D2 `.ico`, I.chev / I.pr / I.issue).
 export function ChevronIcon({ className }: { className?: string }) {
   return <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" className={`shrink-0 text-muted-foreground ${className ?? ""}`}><path d="M6 3.5l4.5 4.5L6 12.5" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg>;
 }

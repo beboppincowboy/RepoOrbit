@@ -38,7 +38,6 @@ export default tseslint.config(
   ]),
   boundary(["src/features/issues/**/*.{ts,tsx}"], [features("auth", "repositories", "board", "analytics"), legacy]),
   boundary(["src/features/auth/**/*.{ts,tsx}"], [features("repositories", "board", "analytics"), legacy], ["src/features/auth/api.ts"]),
-  // Transitional: signing out clears saved issue drafts, which still live in lib/drafts.
   boundary(["src/features/auth/api.ts"], [
     features("repositories", "board", "analytics"),
     unmigrated("components", "routes"),
@@ -50,7 +49,6 @@ export default tseslint.config(
   boundary(["src/features/repositories/**/*.{ts,tsx}"], [features("board", "analytics"), legacy]),
   boundary(["src/features/board/**/*.{ts,tsx}"], [features("auth", "analytics"), legacy]),
   boundary(["src/features/analytics/**/*.{ts,tsx}"], [features("auth", "board"), legacy]),
-  // lib/drafts is reachable from the auth feature, so it must not lead back into any feature.
   boundary(["src/lib/drafts.ts"], [
     { regex: "(@/|(\\.\\./)*)features(/|$)", message: "lib/drafts must not import features." },
     unmigrated("components", "routes"),

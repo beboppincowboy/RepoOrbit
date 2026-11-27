@@ -97,10 +97,10 @@ export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: A
   const { data, errors } = await graphqlQuery<{ crossRepositoryOverview: CrossRepositoryOverview | null }>(`query CrossRepositoryOverview($days: Int! = 30) {
     crossRepositoryOverview(days: $days) {
       days windowStart now repositoriesCounted repositoriesSyncing withheld retryAt
-      openIssues { value coverage { ${coverageFields} } }
-      reviewBacklog { value coverage { ${coverageFields} } }
-      failingWorkflows { value coverage { ${coverageFields} } }
-      buildSuccessRate { rate numerator denominator coverage { ${coverageFields} } }
+      openIssues { ${countFields} }
+      reviewBacklog { ${countFields} }
+      failingWorkflows { ${countFields} }
+      buildSuccessRate { ${rateFields} }
       needsAttention { kind repositoryId fullName number title url since runId }
       assignedToMe { repositoryId fullName number title url updatedAt status }
       daily { day issuesOpened pullRequestsMerged }

@@ -1,5 +1,3 @@
-// localStorage access that never throws: it is a no-op outside the browser and swallows storage errors.
-
 export function storageKeys(prefix: string): string[] {
   if (typeof window === "undefined") return [];
   try {
