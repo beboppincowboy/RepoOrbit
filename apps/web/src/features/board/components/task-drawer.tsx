@@ -1,20 +1,20 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { SideDrawer } from "@/components/side-drawer";
+import { SideDrawer } from "@/shared/ui/side-drawer";
 import { Button } from "@/shared/ui/button";
-import { stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
-import { canDiscardBoardCard, recoveryAction } from "@/lib/board-recovery";
-import { confirmDisabled } from "@/lib/board-review";
+import { mini } from "@/features/board/components/board-styles";
+import { stageAssignees, targetOf, type BoardCard, type BoardTarget } from "@/features/board/model";
+import { canDiscardBoardCard, recoveryAction } from "@/features/board/recovery";
+import { confirmDisabled } from "@/features/board/review";
 import type { BoardIssue } from "@/features/board/api";
 import { fetchIssueDelivery, type DeliveryCheck, type IssueDelivery } from "@/features/issues/api";
+import { hasIgnoreCase } from "@/features/issues/model";
 import { BOARD_STATUSES, STATUS_NAMES } from "@/features/issues/status";
-import { deploymentUnavailableNote, githubHref, isFailedConclusion, isGitHubUrl, reviewLabels, workflowStatusLabel } from "@/lib/delivery";
+import { deploymentUnavailableNote, githubHref, isFailedConclusion, isGitHubUrl, reviewLabels, workflowStatusLabel } from "@/shared/utils/delivery";
 
-const mini = "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-[7px] text-[11px]";
 const option = "inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-0.5 text-xs has-checked:border-primary has-checked:bg-primary-soft has-checked:font-semibold has-checked:text-primary has-disabled:opacity-50";
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-const has = (list: string[], value: string) => list.some(item => same(item, value));
 
 const isFailed = (check: DeliveryCheck) => check.status === "completed" && isFailedConclusion(check.conclusion);
 const checkTone = (check: DeliveryCheck) => isFailed(check) ? "border-destructive/30 bg-destructive/10 text-destructive"
@@ -55,9 +55,9 @@ type TaskDrawerProps = {
 // opens, and Escape closes it.
 export function TaskDrawer({ issueNumber, repositoryId, viewerKey, onOpenRun, issue, card, github, assignable, blocked, sideEffects, recoveryBlocked, busy, onRecover, onStage, onDiscard, onClose }: TaskDrawerProps) {
   // A card holds the user's target over its snapshot; an unstaged issue's target is where it is now.
-  const target: BoardTarget | null = card?.target ?? (issue?.status ? { status: issue.status, assigneesAdd: [], assigneesRemove: [] } : null);
+  const target: BoardTarget | null = card?.target ?? (issue?.status ? targetOf(issue, undefined) : null);
   const base = card?.snapshot.assignees ?? issue?.assignees ?? [];
-  const assigned = target ? [...base.filter(login => !has(target.assigneesRemove, login)), ...target.assigneesAdd.filter(login => !has(base, login))] : base;
+  const assigned = target ? [...base.filter(login => !hasIgnoreCase(target.assigneesRemove, login)), ...target.assigneesAdd.filter(login => !hasIgnoreCase(base, login))] : base;
   const people = [...base, ...assignable, ...assigned].filter((login, i, all) => all.findIndex(other => same(other, login)) === i);
   const disabled = blocked !== null;
   const delivery = useQuery({
@@ -84,7 +84,7 @@ export function TaskDrawer({ issueNumber, repositoryId, viewerKey, onOpenRun, is
 
   function toggleAssignee(login: string, on: boolean) {
     const next = on ? [...assigned, login] : assigned.filter(other => !same(other, login));
-    onStage(stageAssignees(target!, next.filter(login => !has(base, login)), base.filter(login => !has(next, login))));
+    onStage(stageAssignees(target!, next.filter(login => !hasIgnoreCase(base, login)), base.filter(login => !hasIgnoreCase(next, login))));
   }
 
   return (
@@ -117,7 +117,7 @@ export function TaskDrawer({ issueNumber, repositoryId, viewerKey, onOpenRun, is
             <legend className="mb-1.5 text-xs font-medium text-soft">Assignees</legend>
             {people.length ? people.map(login => (
               <label key={login} className="flex items-center gap-2 has-disabled:opacity-50">
-                <input type="checkbox" className="accent-primary" checked={has(assigned, login)} disabled={disabled} onChange={e => toggleAssignee(login, e.target.checked)} />
+                <input type="checkbox" className="accent-primary" checked={hasIgnoreCase(assigned, login)} disabled={disabled} onChange={e => toggleAssignee(login, e.target.checked)} />
                 {login}
               </label>
             )) : <span className="text-xs text-muted-foreground">No assignable users.</span>}

@@ -1,6 +1,7 @@
 import { submitIssueUpdate } from "@/features/issues/api";
 import { IssueWriteError, generateIdempotencyKey } from "@/features/issues/write-errors";
-import { applySaveResult, deriveChange, loadBoardCard, removeBoardCard, saveBoardCard, type BoardCard, type BoardSaver, type BoardSaveResult } from "./board";
+import { loadBoardCard, removeBoardCard, saveBoardCard } from "@/features/board/card-storage";
+import { applySaveResult, deriveChange, type BoardCard, type BoardSaver, type BoardSaveResult } from "@/features/board/model";
 import { boardDraftPrefix, withDraftStorageLock } from "@/features/issues/drafts";
 
 export type BoardSaveOptions = {

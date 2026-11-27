@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 import type { IssueUpdateDraft } from '../src/features/issues/api';
 import { IssueWriteError } from '../src/features/issues/write-errors';
-import type { BoardCard } from '../src/lib/board';
-import { canDiscardBoardCard, recoveryAction, runRecovery } from '../src/lib/board-recovery';
+import type { BoardCard } from '../src/features/board/model';
+import { canDiscardBoardCard, recoveryAction, runRecovery } from '../src/features/board/recovery';
 
 const now = Date.parse('2026-11-25T12:00:00Z');
 const day = 24 * 60 * 60 * 1000;

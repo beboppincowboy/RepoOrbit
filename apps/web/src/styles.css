@@ -90,7 +90,7 @@
 @keyframes sync-pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .sync-pulse { animation: none !important; } }
 
-/* Board cards glide between columns (issue-board.tsx withCardMotion); the rest of the page does not cross-fade. */
+/* Board cards glide between columns (board-columns.tsx withCardMotion); the rest of the page does not cross-fade. */
 ::view-transition-group(*) { animation-duration: 220ms; animation-timing-function: cubic-bezier(.2, .8, .2, 1); }
 ::view-transition-old(root), ::view-transition-new(root) { animation: none; }
 @media (prefers-reduced-motion: reduce) { ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; } }

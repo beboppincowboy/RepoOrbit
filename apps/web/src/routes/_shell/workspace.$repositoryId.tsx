@@ -1,4 +1,4 @@
-import { githubHref, reviewLabels, utcTimestampFormatter as stamp } from "@/lib/delivery";
+import { githubHref, reviewLabels, utcTimestampFormatter as stamp } from "@/shared/utils/delivery";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";

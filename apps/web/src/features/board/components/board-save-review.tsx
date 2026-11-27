@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import { Button } from "@/shared/ui/button";
-import type { BoardReviewItem } from "@/lib/board-review";
+import type { BoardReviewItem } from "@/features/board/review";
 
 type BoardSaveReviewProps = {
   items: BoardReviewItem[];

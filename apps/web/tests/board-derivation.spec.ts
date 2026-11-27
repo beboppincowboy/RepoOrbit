@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test';
 import type { BoardIssue } from '../src/features/board/api';
-import type { BoardSnapshot, WriteOperation } from '../src/features/issues/api';
+import type { BoardSnapshot, IssueCapabilities, WriteOperation } from '../src/features/issues/api';
 import { IssueWriteError } from '../src/features/issues/write-errors';
-import { applySaveResult, deriveChange, isChangedOnGitHub, loadBoardCards, saveBoardCard, stageAssignees, type BoardCard, type BoardCardPhase, type BoardTarget } from '../src/lib/board';
+import { loadBoardCards, saveBoardCard } from '../src/features/board/card-storage';
+import { applySaveResult, columnOf, deriveChange, filterOptions, getBlockedReason, isChangedOnGitHub, matchesFilters, searchNeedle, stageAssignees, targetOf, type BoardCard, type BoardCardPhase, type BoardTarget } from '../src/features/board/model';
+import { issueDraftStorageKey } from '../src/features/issues/drafts';
 import { mockWindowStorage } from './mocks';
 
 
@@ -304,6 +306,117 @@ test.describe('saveBoardCard', () => {
         { ...pendingCard, phase: 'unknown' },
         stagedCard,
       ]);
+    } finally {
+      restore();
+    }
+  });
+});
+
+function issueRow(number: number, over: Partial<BoardIssue> = {}): BoardIssue {
+  return { number, title: `Issue ${number}`, url: `https://github.com/o/r/issues/${number}`, state: 'open', updatedAt: t0, authorLogin: null, labels: [], assignees: [], status: 'backlog', multipleStatus: false, ...over };
+}
+function stagedCard(number: number, target: BoardTarget, phase: BoardCardPhase = 'staged'): BoardCard {
+  return { version: 1, number, snapshot: snap({}), target, phase, request: null, operationId: null };
+}
+
+test.describe('filters', () => {
+  const rows = [
+    issueRow(7, { title: 'Fix Login', assignees: ['Sam'], labels: ['bug'] }),
+    issueRow(17, { title: 'Add search', assignees: ['bob'], labels: ['Bug', 'ui'] }),
+    issueRow(70, { title: 'Login page copy', assignees: ['Sam', 'bob'], labels: ['ui'] }),
+  ];
+  const shown = (assignee = '', label = '', text = '') => {
+    const needle = searchNeedle(text);
+    return rows.filter(row => matchesFilters(row, { assignee, label, needle })).map(row => row.number);
+  };
+
+  test('no filter keeps every row', () => {
+    expect(shown()).toEqual([7, 17, 70]);
+    expect(shown('', '', '  # ')).toEqual([7, 17, 70]);
+  });
+
+  test('assignee and label match the exact spelling', () => {
+    expect(shown('Sam')).toEqual([7, 70]);
+    expect(shown('sam')).toEqual([]);
+    expect(shown('', 'bug')).toEqual([7]);
+    expect(shown('', 'ui')).toEqual([17, 70]);
+  });
+
+  test('text matches part of the title in any case, or the whole issue number', () => {
+    expect(shown('', '', '  LOGIN ')).toEqual([7, 70]);
+    expect(shown('', '', '#7')).toEqual([7]);
+    expect(shown('', '', '7')).toEqual([7]);
+    expect(shown('', '', '##7')).toEqual([]);
+  });
+
+  test('filters combine', () => {
+    expect(shown('Sam', 'ui', 'login')).toEqual([70]);
+    expect(shown('bob', 'bug')).toEqual([]);
+  });
+
+  test('options are unique and sorted by locale', () => {
+    expect(filterOptions(['ui', 'bug', 'Bug', 'ui'])).toEqual(['bug', 'Bug', 'ui']);
+  });
+});
+
+test.describe('card placement', () => {
+  const todoRow = issueRow(7, { status: 'todo' });
+
+  test('an unstaged row sits in its status column', () => {
+    expect(columnOf(todoRow, undefined)).toBe('todo');
+    expect(columnOf(issueRow(8, { status: null }), undefined)).toBeNull();
+  });
+
+  test('a staged card moves to its target column, a failed one stays', () => {
+    for (const phase of ['staged', 'changed', 'pending', 'unknown', 'confirmed'] as const) {
+      expect(columnOf(todoRow, stagedCard(7, to('done'), phase))).toBe('done');
+    }
+    expect(columnOf(todoRow, stagedCard(7, to('done'), 'failed'))).toBe('todo');
+  });
+
+  test('the drop target starts from the card target, or from where the row is', () => {
+    expect(JSON.stringify(targetOf(todoRow, undefined))).toBe('{"status":"todo","assigneesAdd":[],"assigneesRemove":[]}');
+    const target = to('done', ['sam']);
+    expect(targetOf(todoRow, stagedCard(7, target, 'failed'))).toBe(target);
+  });
+});
+
+test.describe('getBlockedReason', () => {
+  const board = { statusLabels: true, truncated: false, issues: [issueRow(9, { state: 'closed', status: 'done' })] };
+  const writer: IssueCapabilities = { canCreateIssue: true, canCreateIssueWithMetadata: true, canManageIssues: true };
+  const input = { demo: false, board, capabilitiesError: null, capabilities: writer };
+
+  test('Demo wins over every other reason', () => {
+    expect(getBlockedReason({ demo: true, board: { ...board, statusLabels: false }, capabilitiesError: 'nope', capabilities: null }))
+      .toBe('Demo mode — remote GitHub writes are disabled, so Board changes cannot be staged.');
+  });
+
+  test('a Board without status labels, then a capability error, then unchecked permissions', () => {
+    expect(getBlockedReason({ ...input, board: { ...board, statusLabels: false }, capabilitiesError: 'nope' }))
+      .toBe('No status source: turn status labels on to stage Board changes.');
+    expect(getBlockedReason({ ...input, capabilitiesError: 'Could not check permissions' })).toBe('Could not check permissions');
+    expect(getBlockedReason({ ...input, board: null, capabilities: null })).toBe('Checking your current GitHub permissions…');
+  });
+
+  test('a read-only user is told which permission is needed', () => {
+    expect(getBlockedReason({ ...input, capabilities: { ...writer, canManageIssues: false } }))
+      .toBe('Moving cards, changing assignees, and closing or reopening issues requires Triage or higher permission on GitHub.');
+  });
+
+  test('a Board holding a closed issue gives a user with write access no reason', () => {
+    expect(getBlockedReason(input)).toBeNull();
+  });
+});
+
+test.describe('loadBoardCards', () => {
+  test('reads a stored pending card as pending and does not rewrite it', () => {
+    const { storage, restore } = mockWindowStorage();
+    try {
+      const key = issueDraftStorageKey('user:ada', 'repo-1', { board: 7 });
+      const raw = JSON.stringify(stagedCard(7, to('in_progress'), 'pending'));
+      storage.setItem(key, raw);
+      expect(loadBoardCards('user:ada', 'repo-1').map(card => card.phase)).toEqual(['pending']);
+      expect(storage.getItem(key)).toBe(raw);
     } finally {
       restore();
     }

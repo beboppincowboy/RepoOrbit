@@ -4,7 +4,7 @@ import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { Button } from "@/shared/ui/button";
 import { fetchRepositoryActions, type RepositoryActions } from "@/features/analytics/api";
 import type { MetricWindow } from "@/shared/api/transport";
-import { deploymentUnavailableNote, formatDurationSeconds, githubHref, utcTimestampFormatter, workflowStatusLabel, workflowStatusTone } from "@/lib/delivery";
+import { deploymentUnavailableNote, formatDurationSeconds, githubHref, utcTimestampFormatter, workflowStatusLabel, workflowStatusTone } from "@/shared/utils/delivery";
 
 const card = "rounded-xl border border-border bg-card min-w-0 min-h-0";
 
