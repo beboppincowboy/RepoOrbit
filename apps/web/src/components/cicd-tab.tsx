@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { LineChart, type ChartSeries } from "@/components/line-chart";
+import { LineChart, type ChartSeries } from "@/features/analytics/components/line-chart";
 import { Button } from "@/shared/ui/button";
 import { fetchRepositoryActions, type RepositoryActions } from "@/features/analytics/api";
 import type { MetricWindow } from "@/shared/api/transport";

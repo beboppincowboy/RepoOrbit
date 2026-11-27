@@ -1,4 +1,4 @@
-import type { IssueCapabilities, IssueCreateDraft, IssueUpdateDraft } from "@/features/issues/api";
+import type { IssueCapabilities, IssueCreateDraft, IssueUpdateDraft, WriteOperationIssue } from "@/features/issues/api";
 
 export const MAX_TITLE = 256;
 const MAX_BODY = 65536;
@@ -15,6 +15,18 @@ export type EditableIssue = {
   labels?: string[];
   assignees?: string[];
 };
+
+// The editor's view of an issue by number, filled with what GitHub confirmed for it when known.
+export function toEditableIssue(issueNumber: number, confirmed?: WriteOperationIssue): EditableIssue {
+  return {
+    number: issueNumber,
+    title: confirmed?.title,
+    state: confirmed?.state,
+    url: confirmed?.url,
+    labels: confirmed?.labels,
+    assignees: confirmed?.assignees,
+  };
+}
 
 export type Step = "edit" | "review" | "submitting" | "confirmed" | "unknown" | "failed";
 
