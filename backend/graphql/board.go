@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/readguard"
 )
 
 // maxBoardInclude bounds repositoryBoard's include numbers (staged cards the caps may leave out).
@@ -68,14 +69,14 @@ func (r *queryResolver) repositoryBoard(ctx context.Context, id string, include 
 	if err != nil {
 		return nil, err
 	}
-	if len(auth.ids) == 0 {
-		if auth.withheld > 0 {
-			return nil, unverifiedError(auth.retryAt)
+	if len(auth.Allowed) == 0 {
+		if auth.Withheld > 0 {
+			return nil, unverifiedError(auth.RetryAt)
 		}
 		return nil, nil
 	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth,
-		func() (*model.RepositoryBoard, error) { return read(auth.ids[0]) },
+	return readguard.Run(ctx, r.RepoAccess.Pool, auth,
+		func() (*model.RepositoryBoard, error) { return read(auth.Allowed[0]) },
 		func() (*model.RepositoryBoard, error) { return nil, unverifiedError(time.Time{}) },
 	)
 }
