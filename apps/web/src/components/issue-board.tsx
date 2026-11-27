@@ -7,7 +7,7 @@ import { BoardSaveReview } from "@/components/board-save-review";
 import { StatusSourceSetup } from "@/components/status-source-setup";
 import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
-import { BOARD_STATUSES, deriveChange, loadBoardCard, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
+import { BOARD_STATUSES, deriveChange, guardBoardCardWrites, loadBoardCard, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
 import { canDiscardBoardCard, runRecovery } from "@/lib/board-recovery";
 import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from "@/lib/board-review";
 import { saveBoardChanges, withBoardLock } from "@/lib/board-save";
@@ -184,7 +184,9 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     if (saveRunning || blocked) return null;
     setSaveRunning(true);
     try {
+      const guard = guardBoardCardWrites(viewerKey, repositoryId);
       const result = await withBoardLock(viewerKey, repositoryId, async () => {
+        if (guard.wasCleared()) return null;
         const stored = () => loadBoardCard(viewerKey, repositoryId, issueNumber);
         const card = stored();
         if (!card) return null;
@@ -194,7 +196,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
         if (!recovery || current?.phase !== "unknown" || current.operationId !== card.operationId
           || current.request?.idempotencyKey !== card.request?.idempotencyKey) return null;
         if (recovery.outcome.kind === "removed") removeBoardCard(viewerKey, repositoryId, issueNumber);
-        else if (recovery.outcome.card !== card) saveBoardCard(viewerKey, repositoryId, recovery.outcome.card);
+        else if (recovery.outcome.card !== card && !guard.write(recovery.outcome.card)) return null;
         window.dispatchEvent(new Event(CARDS_SAVED));
         return recovery;
       });
@@ -209,8 +211,12 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   }
 
   function stage(row: BoardIssue, target: BoardTarget) {
-    const card = cardOf(row.number);
-    if (blocked || !row.status || locked(card)) return;
+    if (blocked || !row.status) return;
+    const card = loadBoardCard(viewerKey, repositoryId, row.number);
+    if (locked(card)) {
+      setCards(loadBoardCards(viewerKey, repositoryId));
+      return;
+    }
     setSaveNotice(null);
     const snapshot = card?.snapshot ?? { state: row.state, labels: row.labels, assignees: row.assignees, status: row.status, updatedAt: row.updatedAt };
     if (deriveChange(snapshot, target, saver)) saveBoardCard(viewerKey, repositoryId, { version: 1, number: row.number, snapshot, target, phase: "staged", request: null, operationId: null });
@@ -328,8 +334,9 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
 
   const stagedCards = reviewableCards(cards);
   const staged = stagedCards.length;
+  const drawerOpen = openIssue !== undefined && board !== null;
   const select = (labelText: string, value: string, onChange: (value: string) => void, values: string[], all: string): ReactNode => (
-    <select aria-label={labelText} value={value} onChange={e => onChange(e.target.value)} className={field}>
+    <select aria-label={labelText} value={value} onChange={e => onChange(e.target.value)} className={drawerOpen ? `${field} min-[900px]:max-w-full` : field}>
       <option value="">{all}</option>
       {values.map(v => <option key={v} value={v}>{v}</option>)}
     </select>
@@ -365,7 +372,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3">
+    <div className={`flex min-h-0 flex-1 flex-col gap-3 ${drawerOpen ? "min-[900px]:mr-[400px]" : ""}`}>
       <section aria-label="Board controls" className={`${panel} flex flex-none flex-wrap items-center gap-2 px-4 py-3`}>
         {board?.statusLabels && (
           <div role="group" aria-label="View" className="inline-flex gap-0.5 rounded-full border border-border bg-card p-0.5">
@@ -395,7 +402,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
         </p>
       )}
       {renderContent()}
-      {openIssue !== undefined && board && (
+      {drawerOpen && (
         <TaskDrawer
           key={openIssue}
           issueNumber={openIssue}
