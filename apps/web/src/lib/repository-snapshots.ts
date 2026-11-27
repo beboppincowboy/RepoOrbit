@@ -1,4 +1,4 @@
-import type { MetricWindow, ViewerSession } from "@/lib/api";
+import type { MetricWindow, ViewerSession } from "@/shared/api/transport";
 
 // Matches saved overviews for one viewer across repositories and metric windows. The cache is in memory.
 export const repositorySnapshotsKey = (session: ViewerSession) => ["repositorySnapshot", session.mode, session.user?.login] as const;

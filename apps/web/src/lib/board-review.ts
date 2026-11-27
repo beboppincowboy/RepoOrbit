@@ -1,4 +1,5 @@
-import type { BoardIssue, BoardStatus } from "./api";
+import type { BoardIssue } from "@/features/board/api";
+import type { BoardStatus } from "@/features/issues/api";
 import { deriveChange, type BoardCard, type BoardSaver } from "./board";
 
 export type BoardReviewItem = { number: number; title: string; change: string; sideEffects: string[] };

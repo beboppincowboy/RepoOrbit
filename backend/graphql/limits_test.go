@@ -31,7 +31,7 @@ func TestOverviewRejectsMultipleWindowsInOneOperation(t *testing.T) {
 	}
 }
 
-// Copies of the operations apps/web/src/lib/api.ts sends; keep them in sync.
+// Copies of the operations apps/web/src/features/*/api.ts send; keep them in sync.
 const activityFieldsForTest = `synchronized message issues { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } pullRequests { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } releases { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } reviews { complete pendingChildren lastSuccessAt failureCode nextAttemptAt } comments { complete pendingChildren lastSuccessAt failureCode nextAttemptAt } issueEvents { traversal { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } historicalGap } futureResources`
 
 const repositoryOverviewQuery = `query RepositoryOverview($id: ID!, $days: Int!) {

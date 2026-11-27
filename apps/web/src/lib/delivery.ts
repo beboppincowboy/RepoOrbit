@@ -1,4 +1,4 @@
-import type { Coverage, ReviewState } from "@/lib/api";
+import type { Coverage, ReviewState } from "@/shared/api/transport";
 
 export const isGitHubUrl = (url: string) => url.startsWith("https://github.com/");
 export const githubHref = (url: string, fallback: string) => isGitHubUrl(url) ? url : fallback;

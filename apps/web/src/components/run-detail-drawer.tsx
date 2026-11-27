@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { SideDrawer } from "@/components/side-drawer";
-import { fetchWorkflowRun } from "@/lib/api";
+import { fetchWorkflowRun } from "@/features/analytics/api";
 import { formatDurationSeconds, githubHref, workflowStatusLabel, workflowStatusTone } from "@/lib/delivery";
 
 type RunDetailDrawerProps = {

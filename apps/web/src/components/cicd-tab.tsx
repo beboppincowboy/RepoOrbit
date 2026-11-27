@@ -1,8 +1,9 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
-import { Button } from "@/components/ui/button";
-import { fetchRepositoryActions, type MetricWindow, type RepositoryActions } from "@/lib/api";
+import { Button } from "@/shared/ui/button";
+import { fetchRepositoryActions, type RepositoryActions } from "@/features/analytics/api";
+import type { MetricWindow } from "@/shared/api/transport";
 import { deploymentUnavailableNote, formatDurationSeconds, githubHref, utcTimestampFormatter, workflowStatusLabel, workflowStatusTone } from "@/lib/delivery";
 
 const card = "rounded-xl border border-border bg-card min-w-0 min-h-0";

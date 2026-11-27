@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/shared/ui/button";
 import {
-  IssueWriteError,
-  canReplayWithSameKey,
-  classifyWriteFailure,
   fetchWriteOperation,
-  generateIdempotencyKey,
   recheckWriteOperation,
   submitIssueCreate,
   submitIssueUpdate,
@@ -14,8 +10,15 @@ import {
   type IssueUpdateDraft,
   type WriteOperation,
   type WriteOperationIssue,
-} from "@/lib/api";
-import { issueDraftStorageKey, readStorage, removeStorage, writeStorage } from "@/lib/drafts";
+} from "@/features/issues/api";
+import {
+  IssueWriteError,
+  canReplayWithSameKey,
+  classifyWriteFailure,
+  generateIdempotencyKey,
+} from "@/features/issues/write-errors";
+import { issueDraftStorageKey } from "@/lib/drafts";
+import { readStorage, removeStorage, writeStorage } from "@/shared/utils/storage";
 
 const MAX_TITLE = 256;
 const MAX_BODY = 65536;

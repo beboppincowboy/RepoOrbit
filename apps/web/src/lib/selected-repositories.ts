@@ -1,20 +1,18 @@
 import { useSyncExternalStore } from "react";
 import { useInfiniteQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import type { CrossRepositoryOverview } from "@/features/analytics/api";
 import {
-  GraphQLUnavailableError,
-  RepositoryAccessUnverifiedError,
   fetchRepositoryDetails,
   fetchSelectedRepositoryDetailsPage,
   fetchSelectedRepositoryMetadataPage,
-  type CrossRepositoryOverview,
-  type MetricWindow,
   type RepositoryDetail,
   type RepositoryConnection,
   type SelectedRepository,
   type SelectedRepositoryBatch,
   type SelectedRepositoryPage,
-  type ViewerSession,
-} from "@/lib/api";
+} from "@/features/repositories/api";
+import { GraphQLUnavailableError, RepositoryAccessUnverifiedError } from "@/shared/api/errors";
+import type { MetricWindow, ViewerSession } from "@/shared/api/transport";
 import { clearRepositoryIssueDrafts } from "@/lib/drafts";
 import { repositorySnapshotKey, repositorySnapshotPrefix, repositorySnapshotsKey } from "@/lib/repository-snapshots";
 

@@ -8,10 +8,10 @@ import { hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/componen
 import { CicdTab } from "@/components/cicd-tab";
 import { IssueBoard } from "@/components/issue-board";
 import { RunDetailDrawer } from "@/components/run-detail-drawer";
-import { IssueIcon, PullRequestIcon } from "@/components/needs-attention";
+import { IssueIcon, PullRequestIcon } from "@/shared/ui/icons";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/shared/ui/button";
 import { WriteHistory, writeOperationsQueryKey } from "@/components/write-history";
 import { StatusSourceSetup } from "@/components/status-source-setup";
 import {
@@ -27,22 +27,19 @@ import {
   useSelectedRepositoryMetadata,
   viewerKeyOf,
 } from "@/lib/selected-repositories";
+import { fetchRepositoryOverview, fetchWorkspacePullRequests, type WorkspacePullRequest } from "@/features/analytics/api";
 import {
-  RepositoryAccessUnverifiedError,
-  GraphQLUnavailableError,
   fetchIssueCapabilities,
   fetchWorkspaceIssue,
   fetchAssignableUsers,
-  fetchRepositoryOverview,
   fetchWorkspaceIssues,
-  fetchWorkspacePullRequests,
-  type ActivityResourceStatus,
-  type MetricWindow,
   type WorkspaceIssue,
-  type WorkspacePullRequest,
   type WriteOperation,
   type WriteOperationIssue,
-} from "@/lib/api";
+} from "@/features/issues/api";
+import type { ActivityResourceStatus } from "@/features/repositories/api";
+import { RepositoryAccessUnverifiedError, GraphQLUnavailableError } from "@/shared/api/errors";
+import type { MetricWindow } from "@/shared/api/transport";
 
 const tabs = { overview: "Overview", issues: "Issues", board: "Board", pulls: "Pull Requests", cicd: "CI/CD", contributors: "Contributors", activity: "Activity" } as const;
 type Tab = keyof typeof tabs;

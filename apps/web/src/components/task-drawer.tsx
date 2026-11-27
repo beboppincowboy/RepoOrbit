@@ -2,11 +2,12 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { SideDrawer } from "@/components/side-drawer";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/shared/ui/button";
 import { BOARD_STATUSES, stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
 import { canDiscardBoardCard, recoveryAction } from "@/lib/board-recovery";
 import { confirmDisabled } from "@/lib/board-review";
-import { fetchIssueDelivery, type BoardIssue, type BoardStatus, type DeliveryCheck, type IssueDelivery } from "@/lib/api";
+import type { BoardIssue } from "@/features/board/api";
+import { fetchIssueDelivery, type BoardStatus, type DeliveryCheck, type IssueDelivery } from "@/features/issues/api";
 import { deploymentUnavailableNote, githubHref, isFailedConclusion, isGitHubUrl, reviewLabels, workflowStatusLabel } from "@/lib/delivery";
 
 // Each Board column's name.

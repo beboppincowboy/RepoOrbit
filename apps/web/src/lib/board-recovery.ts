@@ -1,4 +1,5 @@
-import { canReplayWithSameKey, recheckWriteOperation, submitIssueUpdate, WRITE_RECOVERY_WINDOW_MS } from "./api";
+import { recheckWriteOperation, submitIssueUpdate } from "@/features/issues/api";
+import { canReplayWithSameKey, WRITE_RECOVERY_WINDOW_MS } from "@/features/issues/write-errors";
 import { applySaveResult, type BoardCard, type BoardSaveOutcome } from "./board";
 
 // "recheck" asks GitHub's operation record about a send that has an operation id. "resend" sends the stored request again

@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
-import { IssueWriteError, type BoardIssue, type BoardSnapshot, type WriteOperation } from '../src/lib/api';
+import type { BoardIssue } from '../src/features/board/api';
+import type { BoardSnapshot, WriteOperation } from '../src/features/issues/api';
+import { IssueWriteError } from '../src/features/issues/write-errors';
 import { applySaveResult, deriveChange, isChangedOnGitHub, loadBoardCards, saveBoardCard, stageAssignees, type BoardCard, type BoardCardPhase, type BoardTarget } from '../src/lib/board';
 import { mockWindowStorage } from './mocks';
 

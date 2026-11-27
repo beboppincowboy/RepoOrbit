@@ -1,12 +1,15 @@
 import { useMemo, useSyncExternalStore, type ReactNode } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/shared/ui/button";
 import { AssignedToMeList } from "@/components/assigned-to-me";
-import { ChevronIcon, IssueIcon, NeedsAttentionList, PullRequestIcon, WorkflowIcon } from "@/components/needs-attention";
+import { NeedsAttentionList } from "@/components/needs-attention";
+import { ChevronIcon, IssueIcon, PullRequestIcon, WorkflowIcon } from "@/shared/ui/icons";
 import { segGroupClass, segItemClass, warnNoteClass } from "@/components/repository-list";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
-import { RepositoryAccessUnverifiedError, fetchCrossRepositoryOverview, type CrossRepositoryOverview, type MetricWindow } from "@/lib/api";
+import { fetchCrossRepositoryOverview, type CrossRepositoryOverview } from "@/features/analytics/api";
+import { RepositoryAccessUnverifiedError } from "@/shared/api/errors";
+import type { MetricWindow } from "@/shared/api/transport";
 import {
   crossRepositoryOverviewKey,
   currentAccessSeq,

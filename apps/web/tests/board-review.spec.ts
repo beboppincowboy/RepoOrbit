@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import type { BoardIssue, BoardStatus } from '../src/lib/api';
+import type { BoardIssue } from '../src/features/board/api';
+import type { BoardStatus } from '../src/features/issues/api';
 import type { BoardCard, BoardCardPhase, BoardTarget } from '../src/lib/board';
 import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from '../src/lib/board-review';
 
