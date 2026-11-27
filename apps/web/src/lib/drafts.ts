@@ -1,7 +1,21 @@
 const DRAFT_PREFIX = "repoorbit:issue-draft:";
-const CLEARED_KEY = "repoorbit:issue-draft-cleared";
 
-const repositoryClearedKey = (viewerKey: string, repositoryId: string) => `${CLEARED_KEY}:${viewerKey}:${repositoryId}`;
+// Take the per-repository withBoardLock first when needed. Work here is synchronous and never waits for it or the network.
+// Run unlocked if Web Locks is unavailable or the request fails before work starts. Once work starts, propagate errors.
+export async function withDraftStorageLock<T>(work: () => T): Promise<T> {
+  const locks = globalThis.navigator?.locks;
+  if (!locks) return work();
+  let started = false;
+  try {
+    return await locks.request("repoorbit:issue-draft-storage", () => {
+      started = true;
+      return work();
+    });
+  } catch (error) {
+    if (started) throw error;
+    return work();
+  }
+}
 
 function repositoryDraftPrefix(viewerKey: string, repositoryId: string): string {
   return `${DRAFT_PREFIX}${viewerKey}:${repositoryId}:`;
@@ -28,26 +42,16 @@ function storageKeys(prefix: string): string[] {
   }
 }
 
-export function clearRepositoryIssueDrafts(viewerKey: string, repositoryId: string): void {
-  markDraftsCleared(repositoryClearedKey(viewerKey, repositoryId));
-  for (const key of storageKeys(repositoryDraftPrefix(viewerKey, repositoryId))) removeStorage(key);
+export function clearRepositoryIssueDrafts(viewerKey: string, repositoryId: string): Promise<void> {
+  return withDraftStorageLock(() => {
+    for (const key of storageKeys(repositoryDraftPrefix(viewerKey, repositoryId))) removeStorage(key);
+  });
 }
 
-export function clearAllIssueDrafts(): void {
-  markDraftsCleared(CLEARED_KEY);
-  for (const key of storageKeys(DRAFT_PREFIX)) removeStorage(key);
-}
-
-function markDraftsCleared(key: string): void {
-  if (typeof window !== "undefined") writeStorage(key, { token: crypto.getRandomValues(new Uint32Array(4)).join("-") });
-}
-
-// The cleanup baseline is captured at call time, so callers call this before waiting for a lock.
-export function watchIssueDraftCleanup(viewerKey: string, repositoryId: string): () => boolean {
-  const keys = [CLEARED_KEY, repositoryClearedKey(viewerKey, repositoryId)];
-  const token = (key: string) => readStorage<{ token: string }>(key)?.token;
-  const baseline = keys.map(token);
-  return () => keys.some((key, index) => token(key) !== baseline[index]);
+export function clearAllIssueDrafts(): Promise<void> {
+  return withDraftStorageLock(() => {
+    for (const key of storageKeys(DRAFT_PREFIX)) removeStorage(key);
+  });
 }
 
 // The parsed object stored under key, or null when it is missing, not JSON or not an object.

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
@@ -7,12 +7,12 @@ import { BoardSaveReview } from "@/components/board-save-review";
 import { StatusSourceSetup } from "@/components/status-source-setup";
 import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
 import { statusLabelsQueryKey } from "@/components/write-history";
-import { BOARD_STATUSES, deriveChange, guardBoardCardWrites, loadBoardCard, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
+import { BOARD_STATUSES, deriveChange, loadBoardCard, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
 import { canDiscardBoardCard, runRecovery } from "@/lib/board-recovery";
 import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from "@/lib/board-review";
 import { saveBoardChanges, withBoardLock } from "@/lib/board-save";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError, fetchRepositoryBoard, fetchStatusLabels, type BoardIssue, type BoardStatus, type IssueCapabilities, type ViewerSession } from "@/lib/api";
-import { boardDraftPrefix } from "@/lib/drafts";
+import { boardDraftPrefix, withDraftStorageLock } from "@/lib/drafts";
 import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/lib/selected-repositories";
 
 const panel = "rounded-xl border border-border bg-card min-w-0 min-h-0";
@@ -36,8 +36,7 @@ const noRows: BoardIssue[] = [];
 const OPEN_CAP = 500;
 const CLOSED_CAP = 50;
 const locked = (card?: BoardCard) => card?.phase === "pending" || card?.phase === "unknown";
-// The storage event only reaches other tabs. This one tells a mounted Board in this tab that a save or a recovery changed
-// the cards, including a Board mounted again while an earlier one's is still running.
+// The storage event only reaches other tabs. This one refreshes the Board in this tab, including after a remount.
 const CARDS_SAVED = "repoorbit:board-cards-saved";
 
 // Whether a save or a recovery started in this tab is still running. It outlives the Board, so one mounted again
@@ -71,6 +70,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   const queryClient = useQueryClient();
   const repoVisibility = useRepositoryVisibility(session, repositoryId);
   const [cards, setCards] = useState(() => loadBoardCards(viewerKey, repositoryId));
+  const pendingStages = useRef(0);
   const [view, setView] = useState<"board" | "list">("board");
   const [dragging, setDragging] = useState<BoardIssue>();
   const [dropTarget, setDropTarget] = useState<BoardStatus>();
@@ -117,7 +117,9 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   const boardLabels = board?.statusLabels;
   const refetchBoard = query.refetch;
   useEffect(() => {
-    const reload = () => setCards(loadBoardCards(viewerKey, repositoryId));
+    const reload = () => {
+      if (pendingStages.current === 0) setCards(loadBoardCards(viewerKey, repositoryId));
+    };
     const onStorage = (event: StorageEvent) => {
       reload();
       if (event.newValue === null && event.key?.startsWith(boardDraftPrefix(viewerKey, repositoryId))) void refetchBoard();
@@ -166,7 +168,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
       if (ran) {
         await refetchBoard();
         const current = loadBoardCards(viewerKey, repositoryId);
-        setCards(current);
+        if (pendingStages.current === 0) setCards(current);
         const unsent = current.filter(card => card.phase === "staged" && reviewed.some(seen => seen.number === card.number));
         if (unsent.length) {
           setSaveNotice(`${unsent.map(card => `#${card.number}`).join(", ")} ${unsent.length === 1 ? "was not sent and is" : "were not sent and are"} still staged.`);
@@ -183,23 +185,24 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     if (saveRunning || blocked) return null;
     setSaveRunning(true);
     try {
-      const guard = guardBoardCardWrites(viewerKey, repositoryId);
       const result = await withBoardLock(viewerKey, repositoryId, async () => {
-        if (guard.wasCleared()) return null;
         const stored = () => loadBoardCard(viewerKey, repositoryId, issueNumber);
-        const card = stored();
+        const card = await withDraftStorageLock(stored);
         if (!card) return null;
         const recovery = await runRecovery(card, { repositoryId });
-        const current = stored();
-        // Signing out, losing access or another tab may settle the card meanwhile.
-        if (!recovery || current?.phase !== "unknown" || current.operationId !== card.operationId
-          || current.request?.idempotencyKey !== card.request?.idempotencyKey) return null;
-        if (recovery.outcome.kind === "removed") removeBoardCard(viewerKey, repositoryId, issueNumber);
-        else if (recovery.outcome.card !== card && !guard.write(recovery.outcome.card)) return null;
-        window.dispatchEvent(new Event(CARDS_SAVED));
-        return recovery;
+        if (!recovery) return null;
+        return withDraftStorageLock(() => {
+          const current = stored();
+          // Signing out, losing access or another tab may settle the card meanwhile.
+          if (current?.phase !== "unknown" || current.operationId !== card.operationId
+            || current.request?.idempotencyKey !== card.request?.idempotencyKey) return null;
+          if (recovery.outcome.kind === "removed") removeBoardCard(viewerKey, repositoryId, issueNumber);
+          else if (recovery.outcome.card !== card) saveBoardCard(viewerKey, repositoryId, recovery.outcome.card);
+          return recovery;
+        });
       });
       if (!result) return null;
+      window.dispatchEvent(new Event(CARDS_SAVED));
       await refetchBoard();
       return result.error;
     } finally {
@@ -209,26 +212,43 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
     }
   }
 
-  function stage(row: BoardIssue, target: BoardTarget) {
+  async function stage(row: BoardIssue, target: BoardTarget) {
     if (blocked || !row.status) return;
-    const card = loadBoardCard(viewerKey, repositoryId, row.number);
-    if (locked(card) || JSON.stringify(card) !== JSON.stringify(cardOf(row.number))) {
-      setCards(loadBoardCards(viewerKey, repositoryId));
-      return;
-    }
+    const card = cardOf(row.number);
+    if (locked(card)) return;
     setSaveNotice(null);
     const snapshot = card?.snapshot ?? { state: row.state, labels: row.labels, assignees: row.assignees, status: row.status, updatedAt: row.updatedAt };
-    if (deriveChange(snapshot, target, saver)) saveBoardCard(viewerKey, repositoryId, { version: 1, number: row.number, snapshot, target, phase: "staged", request: null, operationId: null });
-    else removeBoardCard(viewerKey, repositoryId, row.number);
-    setCards(loadBoardCards(viewerKey, repositoryId));
+    const next: BoardCard | null = deriveChange(snapshot, target, saver)
+      ? { version: 1, number: row.number, snapshot, target, phase: "staged", request: null, operationId: null }
+      : null;
+    pendingStages.current++;
+    setCards(current => {
+      const remaining = current.filter(item => item.number !== row.number);
+      if (next) remaining.push(next);
+      return remaining.sort((a, b) => a.number - b.number);
+    });
+    try {
+      await withDraftStorageLock(() => {
+        const stored = loadBoardCard(viewerKey, repositoryId, row.number);
+        if (locked(stored) || JSON.stringify(stored) !== JSON.stringify(card)) return;
+        if (next) saveBoardCard(viewerKey, repositoryId, next);
+        else removeBoardCard(viewerKey, repositoryId, row.number);
+      });
+    } finally {
+      // Keep newer optimistic gestures visible until their writes have also been checked.
+      if (--pendingStages.current === 0) window.dispatchEvent(new Event(CARDS_SAVED));
+    }
   }
 
-  function discard(issueNumber: number) {
-    const card = loadBoardCard(viewerKey, repositoryId, issueNumber);
-    if (!card || !canDiscardBoardCard(card)) return;
-    setSaveNotice(null);
-    removeBoardCard(viewerKey, repositoryId, issueNumber);
-    setCards(loadBoardCards(viewerKey, repositoryId));
+  async function discard(issueNumber: number) {
+    const discarded = await withDraftStorageLock(() => {
+      const card = loadBoardCard(viewerKey, repositoryId, issueNumber);
+      if (!card || !canDiscardBoardCard(card)) return false;
+      removeBoardCard(viewerKey, repositoryId, issueNumber);
+      return true;
+    });
+    if (discarded) setSaveNotice(null);
+    window.dispatchEvent(new Event(CARDS_SAVED));
   }
 
   function closeDrawer() {
@@ -294,7 +314,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
               e.preventDefault();
               setDropTarget(undefined);
               const row = rows.find(r => r.number === Number(e.dataTransfer.getData("text/plain")));
-              if (row) withCardMotion(() => stage(row, { ...targetOf(row), status }));
+              if (row) withCardMotion(() => { void stage(row, { ...targetOf(row), status }); });
             }}
           >
             <h3 className="flex flex-none items-center justify-between gap-2 px-3 pt-3 pb-2 text-[13px]">
@@ -415,8 +435,8 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
           recoveryBlocked={blocked}
           busy={saving}
           onRecover={() => recover(openIssue)}
-          onStage={target => openRow && stage(openRow, target)}
-          onDiscard={() => discard(openIssue)}
+          onStage={target => { if (openRow) void stage(openRow, target); }}
+          onDiscard={() => void discard(openIssue)}
           onClose={closeDrawer}
         />
       )}

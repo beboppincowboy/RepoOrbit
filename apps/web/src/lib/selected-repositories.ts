@@ -390,7 +390,7 @@ function applyOutcomeEntry(
       return { rejected: false, accepted: true };
     }
     queryClient?.removeQueries({ queryKey: repositorySnapshotPrefix(session, repositoryId) });
-    clearRepositoryIssueDrafts(viewerKey, repositoryId);
+    void clearRepositoryIssueDrafts(viewerKey, repositoryId);
     return { outcome: { status: "denied", seq: nextAccessSeq(), draftsCleared: true }, rejected: true, accepted: true };
   }
   if (transition.status === "unverified") {

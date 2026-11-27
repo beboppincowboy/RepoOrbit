@@ -48,6 +48,6 @@ test('logout removes every saved issue draft and keeps unrelated storage', () =>
   } finally {
     globalThis.fetch = originalFetch;
   }
-  expect(Object.keys(storage).filter(key => key.startsWith('repoorbit:issue-draft:'))).toEqual([]);
+  expect(Object.keys(storage)).toEqual(['unrelated']);
   expect(storage.getItem('unrelated')).toBe('keep');
 }));

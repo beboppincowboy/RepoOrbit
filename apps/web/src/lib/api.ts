@@ -39,7 +39,7 @@ export const sessionQuery = { queryKey: ["session"], queryFn: fetchViewerSession
 export async function logout() {
   const response = await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
   if (!response.ok) throw new Error("Could not sign out. Try again.");
-  clearAllIssueDrafts();
+  await clearAllIssueDrafts();
 }
 type GraphQLResponse<Data> = {
   data?: Data | null;

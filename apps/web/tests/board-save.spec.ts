@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { IssueWriteError, recheckWriteOperation, submitIssueUpdate, type IssueUpdateDraft, type WriteOperation } from '../src/lib/api';
 import { loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard } from '../src/lib/board';
 import { saveBoardChanges, type BoardSaveOptions } from '../src/lib/board-save';
-import { clearAllIssueDrafts, clearRepositoryIssueDrafts, issueDraftStorageKey } from '../src/lib/drafts';
+import { clearAllIssueDrafts, clearRepositoryIssueDrafts, issueDraftStorageKey, withDraftStorageLock } from '../src/lib/drafts';
 import { mockWindowStorage } from './mocks';
 
 const viewer = 'user:ada';
@@ -44,15 +44,33 @@ function fakeSubmit(respond: (number: number) => WriteOperation | Promise<WriteO
 const save = (reviewed: BoardCard[], submit: BoardSaveOptions['submit'], onChange: () => void = () => {}) =>
   saveBoardChanges({ viewerKey: viewer, repositoryId: repo, reviewed, saver: ada, onChange, submit });
 
-function beforeCardWrite(number: number, action: () => void) {
-  const storage = window.localStorage;
-  const cardKey = issueDraftStorageKey(viewer, repo, { board: number });
-  const setItem = storage.setItem.bind(storage);
-  Object.defineProperty(storage, 'setItem', { value(key: string, value: string) {
-    if (key === cardKey) action();
-    setItem(key, value);
-  } });
-}
+test('draft storage work runs once whether the lock request rejects or the work throws', async () => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  let rejectRequest = true;
+  const locks = {
+    request: async (_name: string, work: () => unknown) => {
+      if (rejectRequest) throw new Error('Lock unavailable');
+      return work();
+    },
+  };
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks } });
+  try {
+    let calls = 0;
+    await expect(withDraftStorageLock(() => ++calls)).resolves.toBe(1);
+    expect(calls).toBe(1);
+
+    rejectRequest = false;
+    const error = new Error('Work failed');
+    await expect(withDraftStorageLock(() => {
+      calls++;
+      throw error;
+    })).rejects.toBe(error);
+    expect(calls).toBe(2);
+  } finally {
+    if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+  }
+});
 
 test.describe('saveBoardChanges', () => {
   let restoreWindow: () => void;
@@ -149,7 +167,8 @@ test.describe('saveBoardChanges', () => {
     let held = false;
     const changesWhileHeld: boolean[] = [];
     const locks = {
-      request: async (name: string, work: () => Promise<boolean>) => {
+      request: async <T,>(name: string, work: () => T | Promise<T>) => {
+        if (name === 'repoorbit:issue-draft-storage') return work();
         lockName = name;
         saveBoardCard(viewer, repo, locked);
         held = true;
@@ -234,42 +253,78 @@ test.describe('saveBoardChanges', () => {
     expect(loadBoardCards(viewer, repo)).toEqual([]);
   });
 
-  test('cleanup just before the pending write removes the card before any send', async () => {
-    const reviewed = review(3);
-    beforeCardWrite(3, clearAllIssueDrafts);
-    const { sends, submit } = fakeSubmit();
-    await save(reviewed, submit);
-    expect(stored(3)).toBeUndefined();
-    expect(sends).toEqual([]);
+  test('clearing drafts during a send stops the batch even if the next card is staged again unchanged', async () => {
+    const { sends, submit } = fakeSubmit(async number => {
+      if (number === 3) {
+        await clearRepositoryIssueDrafts(viewer, repo);
+        saveBoardCard(viewer, repo, staged(12));
+      }
+      return operation(number, 'succeeded');
+    });
+    await save(review(3, 12), submit);
+    expect(sends.map(send => send.number)).toEqual([3]);
+    expect(loadBoardCards(viewer, repo)).toEqual([staged(12)]);
   });
 
-  for (const [name, clear] of [
-    ['sign-out', clearAllIssueDrafts],
-    ['access loss', () => clearRepositoryIssueDrafts(viewer, repo)],
-  ] as const) {
-    test(`${name} just before the result write removes the card and stops the batch`, async () => {
-      const reviewed = review(3, 12);
-      const { sends, submit } = fakeSubmit(number => {
-        if (number === 3) beforeCardWrite(number, () => {
-          clear();
-          // Even a newly staged copy of the next card must wait for a new save.
-          saveBoardCard(viewer, repo, reviewed[1]);
-        });
-        return operation(number, 'unknown');
+  test('save and cleanup only mutate Board storage under the draft lock', async () => {
+    const reviewed = review(3, 12);
+    saveBoardCard(viewer, 'repo-2', staged(3));
+    const storage = window.localStorage;
+    const setItem = storage.setItem.bind(storage);
+    const removeItem = storage.removeItem.bind(storage);
+    const boardKeys = [3, 12].map(board => issueDraftStorageKey(viewer, repo, { board }));
+    boardKeys.push(issueDraftStorageKey(viewer, 'repo-2', { board: 3 }));
+    const mutations: [string, boolean][] = [];
+    const held = new Set<string>();
+    const draftLock = 'repoorbit:issue-draft-storage';
+    const boardLock = 'repoorbit:issue-draft:user:ada:repo-1:board:';
+    Object.defineProperties(storage, {
+      setItem: { value(key: string, value: string) {
+        if (boardKeys.includes(key)) mutations.push(['set', held.has(draftLock)]);
+        setItem(key, value);
+      } },
+      removeItem: { value(key: string) {
+        if (boardKeys.includes(key)) mutations.push(['remove', held.has(draftLock)]);
+        removeItem(key);
+      } },
+    });
+    const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    const locks = {
+      request: async <T,>(name: string, work: () => T | Promise<T>) => {
+        held.add(name);
+        try { return await work(); }
+        finally { held.delete(name); }
+      },
+    };
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks } });
+    try {
+      const { submit } = fakeSubmit(number => {
+        expect([...held]).toEqual([boardLock]);
+        return operation(number, number === 3 ? 'succeeded' : 'unknown');
       });
       await save(reviewed, submit);
       expect(stored(3)).toBeUndefined();
-      expect(sends.map(send => send.number)).toEqual([3]);
-      expect(stored(12)).toEqual(reviewed[1]);
-    });
-  }
+      expect(stored(12)).toMatchObject({ phase: 'unknown', operationId: 52 });
+      await clearRepositoryIssueDrafts(viewer, 'repo-2');
+      expect(loadBoardCards(viewer, 'repo-2')).toEqual([]);
+      await clearAllIssueDrafts();
+      expect(loadBoardCards(viewer, repo)).toEqual([]);
+      // Record the lock state inside the wrappers, since the storage helpers catch exceptions.
+      expect(mutations).toEqual([
+        ['set', true], ['remove', true], ['set', true], ['set', true], ['remove', true], ['remove', true],
+      ]);
+    } finally {
+      if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+      else Reflect.deleteProperty(globalThis, 'navigator');
+    }
+  });
 
   test('clearing drafts for another repository or viewer leaves this batch alone', async () => {
     saveBoardCard(viewer, 'repo-2', staged(3));
     saveBoardCard('user:sam', repo, staged(3));
-    const { sends, submit } = fakeSubmit(number => {
-      clearRepositoryIssueDrafts(viewer, 'repo-2');
-      clearRepositoryIssueDrafts('user:sam', repo);
+    const { sends, submit } = fakeSubmit(async number => {
+      await clearRepositoryIssueDrafts(viewer, 'repo-2');
+      await clearRepositoryIssueDrafts('user:sam', repo);
       return operation(number, 'unknown');
     });
     await save(review(3, 12), submit);
