@@ -1,3 +1,4 @@
+// Selected-repository reads, row selectors, and the per-viewer access outcomes that sequence late responses.
 import { useSyncExternalStore } from "react";
 import { useInfiniteQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import {

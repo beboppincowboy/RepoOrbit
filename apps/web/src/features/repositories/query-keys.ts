@@ -2,7 +2,7 @@ import type { MetricWindow, ViewerSession } from "@/shared/api/transport";
 
 // TanStack Query keys for repository reads. Prefix invalidation depends on each key's element order.
 
-// The viewer's selected-repository reads. The paged detail and metadata reads extend this prefix.
+// Key of the viewer's paged detail read, and the prefix of the metadata reads.
 export const selectedRepositoriesKey = (session: ViewerSession) => ["selectedRepositories", session.mode, session.user?.login] as const;
 
 // Matches the viewer's cross-repository overview in every metric window.
