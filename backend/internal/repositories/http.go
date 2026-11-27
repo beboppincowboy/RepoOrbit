@@ -9,11 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
-	"github.com/repoorbit/repoorbit/backend/internal/db"
-	"github.com/repoorbit/repoorbit/backend/internal/githubapp"
 )
 
 // Routes serves the browser-facing repository API. Mount it behind auth.Handler.Protect, which supplies the
@@ -127,44 +123,7 @@ func (s *Service) Installed(w http.ResponseWriter, r *http.Request) {
 		result = "rejected"
 		return
 	}
-	token, err := s.TokenSource.AccessToken(r.Context(), userID)
-	if err != nil {
-		return
-	}
-	installs, complete, err := collect(func(p int) ([]githubapp.Installation, bool, error) {
-		return s.GitHub.FetchInstallations(r.Context(), token, p)
-	})
-	for _, in := range installs {
-		if in.ID == id {
-			if err := s.storeInstallation(r.Context(), userID, in); err != nil {
-				log.Printf("repositories: store installation: %v", err)
-				return
-			}
-			s.invalidate(userID)
-			result = "ok"
-			return
-		}
-	}
-	if err == nil && complete {
-		result = "rejected"
-	}
-}
-
-// storeInstallation saves a connected installation and runs OnEligibilityChange in one transaction, so work paused
-// for lack of access resumes with it.
-func (s *Service) storeInstallation(ctx context.Context, userID int64, in githubapp.Installation) error {
-	return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
-		if err := accessfence.BumpAccess(ctx, tx, accessfence.ScopeInstallation, in.ID); err != nil {
-			return err
-		}
-		if err := s.Queries.WithTx(tx).UpsertInstallation(ctx, db.UpsertInstallationParams{UserID: userID, InstallationID: in.ID, AccountLogin: in.Account.Login}); err != nil {
-			return err
-		}
-		if s.OnEligibilityChange != nil {
-			return s.OnEligibilityChange(ctx, tx, userID)
-		}
-		return nil
-	})
+	result = s.connectInstallation(r.Context(), userID, id)
 }
 
 // refreshActivity queues an activity catch-up for a repository the viewer has selected. Selection and live
@@ -175,25 +134,11 @@ func (s *Service) refreshActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id <= 0 || s.SignalActivity == nil {
+	if err != nil || id <= 0 {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	if sel, err := s.Queries.ListSelectedIDs(r.Context(), db.ListSelectedIDsParams{UserID: userID, RepositoryIds: []int64{id}}); err != nil {
-		s.fail(w, err)
-		return
-	} else if len(sel) == 0 {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	if d := s.CheckOne(r.Context(), userID, id, true); d.Unverified {
-		s.fail(w, &UnverifiedError{RetryAt: d.RetryAt})
-		return
-	} else if !d.Allowed {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	outcome, err := s.signalActivity(r.Context(), id)
+	outcome, err := s.requestActivityRefresh(r.Context(), userID, id)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -209,17 +154,4 @@ func (s *Service) refreshActivity(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"state": outcome})
-}
-
-func (s *Service) signalActivity(ctx context.Context, repoID int64) (string, error) {
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback(ctx)
-	outcome, err := s.SignalActivity(ctx, tx, repoID)
-	if err != nil {
-		return "", err
-	}
-	return outcome, tx.Commit(ctx)
 }
