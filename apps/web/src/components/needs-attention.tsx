@@ -15,13 +15,17 @@ export function PullRequestIcon() {
 export function IssueIcon() {
   return <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.4" /><circle cx="8" cy="8" r="1.4" fill="currentColor" /></svg>;
 }
+export function WorkflowIcon() {
+  return <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.4" /><path d="M6 6l4 4M10 6l-4 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>;
+}
 
 const shortDate = new Intl.DateTimeFormat("en", { month: "short", day: "numeric", timeZone: "UTC" });
-// Problem wording per kind; `since` is the opening time, or the last update for stale issues.
-const kinds: Record<AttentionKind, { label: (n: number) => string; reason: (since: string) => string; pill: string; tab: "pulls" | "overview" }> = {
+// Problem wording per kind; `since` is the opening time, or the last update for stale issues / failed runs.
+const kinds: Record<AttentionKind, { label: (n: number) => string; reason: (since: string) => string; pill: string; tab: "pulls" | "overview" | "cicd" }> = {
   pr_awaiting_review: { label: n => `PR #${n}`, reason: () => "Awaiting first review", pill: "Review", tab: "pulls" },
   issue_no_response: { label: n => `Issue #${n}`, reason: since => `No response since ${shortDate.format(new Date(since))}`, pill: "Issues", tab: "overview" },
   stale_issue: { label: n => `Issue #${n}`, reason: () => "Open, 30+ days quiet", pill: "Issues", tab: "overview" },
+  failed_workflow_run: { label: n => `Run #${n}`, reason: since => `Workflow failed ${shortDate.format(new Date(since))}`, pill: "CI/CD", tab: "cicd" },
 };
 
 // Body of the "Needs attention" panel: one row per concrete problem, each opening its repository workspace in the same window.
@@ -30,8 +34,15 @@ export function NeedsAttentionList({ items, days }: { items: AttentionItem[]; da
   return items.map(item => {
     const kind = kinds[item.kind];
     const name = item.fullName.split("/")[1] ?? item.fullName;
-    return <Link key={`${item.kind}:${item.repositoryId}:${item.number}`} to="/workspace/$repositoryId" params={{ repositoryId: item.repositoryId }} search={{ days, tab: kind.tab }} className={listRowClass}>
-      <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-warning-soft text-warning">{item.kind === "pr_awaiting_review" ? <PullRequestIcon /> : <IssueIcon />}</span>
+    const icon = item.kind === "pr_awaiting_review" ? <PullRequestIcon /> : item.kind === "failed_workflow_run" ? <WorkflowIcon /> : <IssueIcon />;
+    return <Link
+      key={`${item.kind}:${item.repositoryId}:${item.runId ?? item.number}`}
+      to="/workspace/$repositoryId"
+      params={{ repositoryId: item.repositoryId }}
+      search={{ days, tab: kind.tab, ...(item.runId ? { run: item.runId } : {}) }}
+      className={listRowClass}
+    >
+      <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-warning-soft text-warning">{icon}</span>
       <span className="min-w-0 flex-1">
         <span className="block font-medium">{name} · {kind.label(item.number)}</span>
         <span className="block truncate text-xs text-muted-foreground">{kind.reason(item.since)} · {item.title}</span>

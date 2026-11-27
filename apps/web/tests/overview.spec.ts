@@ -6,7 +6,7 @@ const covered = { covered: true, reason: null, through: null };
 const overview = (over: object = {}) => ({
   days: 30, windowStart: '2026-10-18T00:00:00Z', now: '2026-11-17T00:00:00Z',
   repositoriesCounted: 2, repositoriesSyncing: 1, withheld: 0, retryAt: null,
-  openIssues: { value: 37, coverage: covered }, reviewBacklog: { value: 2, coverage: covered },
+  openIssues: { value: 37, coverage: covered }, reviewBacklog: { value: 2, coverage: covered }, failingWorkflows: { value: 1, coverage: covered }, buildSuccessRate: { rate: 0.75, numerator: 3, denominator: 4, coverage: covered },
   needsAttention: [
     { kind: 'pr_awaiting_review', repositoryId: '1', fullName: 'ada/repo-1', number: 130, title: 'Add rotor tests', url: 'https://github.com/ada/repo-1/pull/130', since: '2026-11-10T00:00:00Z' },
     { kind: 'issue_no_response', repositoryId: '1', fullName: 'ada/repo-1', number: 37, title: 'Crash on start', url: 'https://github.com/ada/repo-1/issues/37', since: '2026-11-01T00:00:00Z' },

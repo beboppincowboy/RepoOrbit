@@ -162,9 +162,10 @@ export async function refreshActivity(id: string): Promise<"accepted" | "coalesc
 }
 
 export type MetricWindow = 7 | 30 | 90;
-type Coverage = { covered: boolean; reason: string | null; through: string | null };
-type CountMetric = { value: number | null; coverage: Coverage };
-type MedianMetric = { seconds: number | null; sampleSize: number | null; coverage: Coverage };
+export type Coverage = { covered: boolean; reason: string | null; through: string | null };
+export type CountMetric = { value: number | null; coverage: Coverage };
+export type MedianMetric = { seconds: number | null; sampleSize: number | null; coverage: Coverage };
+export type RateMetric = { rate: number | null; numerator: number | null; denominator: number | null; coverage: Coverage };
 
 type RepositoryOverview = {
   fullName: string;
@@ -237,9 +238,9 @@ export async function fetchWorkspacePullRequests(id: string, after: string | nul
   return data.pullRequestEvidence;
 }
 
-export type AttentionKind = "pr_awaiting_review" | "issue_no_response" | "stale_issue";
-// since: when the item was opened, or for stale_issue when it was last updated (RFC 3339).
-export type AttentionItem = { kind: AttentionKind; repositoryId: string; fullName: string; number: number; title: string; url: string; since: string };
+export type AttentionKind = "pr_awaiting_review" | "issue_no_response" | "stale_issue" | "failed_workflow_run";
+// since: when the item was opened, or for stale_issue / failed_workflow_run when it was last updated (RFC 3339).
+export type AttentionItem = { kind: AttentionKind; repositoryId: string; fullName: string; number: number; title: string; url: string; since: string; runId: string | null };
 // status is null when the repository's status labels are off.
 export type AssignedIssue = { repositoryId: string; fullName: string; number: number; title: string; url: string; updatedAt: string; status: BoardStatus | null };
 // Totals, the trend and Needs attention cover counted repositories. Assigned issues require issue coverage.
@@ -254,6 +255,8 @@ export type CrossRepositoryOverview = {
   retryAt: string | null;
   openIssues: CountMetric;
   reviewBacklog: CountMetric;
+  failingWorkflows: CountMetric;
+  buildSuccessRate: RateMetric;
   needsAttention: AttentionItem[];
   assignedToMe: AssignedIssue[];
   daily: { day: string; issuesOpened: number | null; pullRequestsMerged: number | null }[];
@@ -268,7 +271,9 @@ export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: A
       days windowStart now repositoriesCounted repositoriesSyncing withheld retryAt
       openIssues { value coverage { ${coverage} } }
       reviewBacklog { value coverage { ${coverage} } }
-      needsAttention { kind repositoryId fullName number title url since }
+      failingWorkflows { value coverage { ${coverage} } }
+      buildSuccessRate { rate numerator denominator coverage { ${coverage} } }
+      needsAttention { kind repositoryId fullName number title url since runId }
       assignedToMe { repositoryId fullName number title url updatedAt status }
       daily { day issuesOpened pullRequestsMerged }
     }
@@ -279,6 +284,167 @@ export async function fetchCrossRepositoryOverview(days: MetricWindow, signal: A
   if (selectionLimit?.message) throw new Error(selectionLimit.message);
   if (!data?.crossRepositoryOverview || errors?.length) throw new Error("Could not load the overview. Check that the local services are running.");
   return data.crossRepositoryOverview;
+}
+
+export type ActionsDailyPoint = { day: string; succeeded: number | null; failed: number | null; other: number | null };
+export type WorkflowFailureSummary = {
+  workflowId: string;
+  workflowName: string;
+  failedRuns: number;
+  totalRuns: number;
+  latestRunId: string;
+  latestStatus: string;
+  latestConclusion: string;
+  latestAt: string;
+  htmlUrl: string;
+};
+export type WorkflowRunSummary = {
+  id: string;
+  workflowId: string;
+  workflowName: string;
+  runNumber: number;
+  event: string;
+  status: string;
+  conclusion: string;
+  headBranch: string;
+  headSha: string;
+  htmlUrl: string;
+  createdAt: string;
+  runStartedAt: string | null;
+  updatedAt: string;
+  durationSeconds: number | null;
+  queueSeconds: number | null;
+};
+export type WorkflowJobDetail = {
+  id: string;
+  runId: string;
+  name: string;
+  status: string;
+  conclusion: string;
+  htmlUrl: string;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationSeconds: number | null;
+  queueSeconds: number | null;
+};
+export type WorkflowRunDetail = { run: WorkflowRunSummary; jobs: WorkflowJobDetail[] };
+export type DeploymentSummary = {
+  id: string;
+  environment: string;
+  sha: string;
+  ref: string;
+  state: string;
+  description: string;
+  htmlUrl: string;
+  createdAt: string;
+  updatedAt: string;
+};
+export type RepositoryActions = {
+  days: MetricWindow;
+  windowStart: string;
+  now: string;
+  actionsCoverage: Coverage;
+  deploymentsCoverage: Coverage;
+  buildSuccessRate: RateMetric;
+  failedJobs: CountMetric;
+  runningJobs: CountMetric;
+  durationP50: MedianMetric;
+  durationP95: MedianMetric;
+  queueWaitP50: MedianMetric;
+  daily: ActionsDailyPoint[];
+  failuresByWorkflow: WorkflowFailureSummary[];
+  recentRuns: WorkflowRunSummary[];
+  deployments: DeploymentSummary[];
+  deploymentUnavailable: boolean;
+};
+export type DeliveryCheck = {
+  runId: string;
+  workflowName: string;
+  status: string;
+  conclusion: string;
+  htmlUrl: string;
+  updatedAt: string;
+  failingJobName: string | null;
+  failingJobUrl: string | null;
+};
+export type LinkedPullRequestDelivery = {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  reviewState: ReviewState | null;
+  headSha: string;
+  checks: DeliveryCheck[];
+  deployments: DeploymentSummary[];
+};
+export type IssueDelivery = {
+  issueNumber: number;
+  actionsCoverage: Coverage;
+  deploymentsCoverage: Coverage;
+  deploymentUnavailable: boolean;
+  pullRequests: LinkedPullRequestDelivery[];
+};
+
+export async function fetchRepositoryActions(id: string, days: MetricWindow, signal: AbortSignal): Promise<RepositoryActions | null> {
+  const coverage = "covered reason through";
+  const count = `value coverage { ${coverage} }`;
+  const median = `seconds sampleSize coverage { ${coverage} }`;
+  const rate = `rate numerator denominator coverage { ${coverage} }`;
+  const { data, errors } = await graphqlQuery<{ repositoryActions: RepositoryActions | null }>(`query RepositoryActions($id: ID!, $days: Int! = 30) {
+    repositoryActions(id: $id, days: $days) {
+      days windowStart now deploymentUnavailable
+      actionsCoverage { ${coverage} }
+      deploymentsCoverage { ${coverage} }
+      buildSuccessRate { ${rate} }
+      failedJobs { ${count} }
+      runningJobs { ${count} }
+      durationP50 { ${median} }
+      durationP95 { ${median} }
+      queueWaitP50 { ${median} }
+      daily { day succeeded failed other }
+      failuresByWorkflow { workflowId workflowName failedRuns totalRuns latestRunId latestStatus latestConclusion latestAt htmlUrl }
+      recentRuns { id workflowId workflowName runNumber event status conclusion headBranch headSha htmlUrl createdAt runStartedAt updatedAt durationSeconds queueSeconds }
+      deployments { id environment sha ref state description htmlUrl createdAt updatedAt }
+    }
+  }`, { id, days }, signal);
+  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
+  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
+  if (!data || errors?.length) throw new Error("Could not load CI/CD metrics");
+  return data.repositoryActions;
+}
+
+export async function fetchWorkflowRun(repositoryId: string, runId: string, signal: AbortSignal): Promise<WorkflowRunDetail | null> {
+  const { data, errors } = await graphqlQuery<{ workflowRun: WorkflowRunDetail | null }>(`query WorkflowRun($id: ID!, $runId: ID!) {
+    workflowRun(repositoryId: $id, runId: $runId) {
+      run { id workflowId workflowName runNumber event status conclusion headBranch headSha htmlUrl createdAt runStartedAt updatedAt durationSeconds queueSeconds }
+      jobs { id runId name status conclusion htmlUrl createdAt startedAt completedAt durationSeconds queueSeconds }
+    }
+  }`, { id: repositoryId, runId }, signal);
+  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
+  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
+  if (!data || errors?.length) throw new Error("Could not load workflow run details");
+  return data.workflowRun;
+}
+
+export async function fetchIssueDelivery(repositoryId: string, issueNumber: number, signal: AbortSignal): Promise<IssueDelivery | null> {
+  const coverage = "covered reason through";
+  const { data, errors } = await graphqlQuery<{ issueDelivery: IssueDelivery | null }>(`query IssueDelivery($id: ID!, $issueNumber: Int!) {
+    issueDelivery(repositoryId: $id, issueNumber: $issueNumber) {
+      issueNumber deploymentUnavailable
+      actionsCoverage { ${coverage} }
+      deploymentsCoverage { ${coverage} }
+      pullRequests {
+        number title state url reviewState headSha
+        checks { runId workflowName status conclusion htmlUrl updatedAt failingJobName failingJobUrl }
+        deployments { id environment sha ref state description htmlUrl createdAt updatedAt }
+      }
+    }
+  }`, { id: repositoryId, issueNumber }, signal);
+  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
+  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
+  if (!data || errors?.length) throw new Error("Could not load delivery lifecycle");
+  return data.issueDelivery;
 }
 
 export type BoardStatus = "backlog" | "todo" | "in_progress" | "in_review" | "done";

@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { BOARD_STATUSES, stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
-import type { BoardIssue, BoardStatus } from "@/lib/api";
+import { fetchIssueDelivery, type BoardIssue, type BoardStatus, type DeliveryCheck, type IssueDelivery, type ReviewState } from "@/lib/api";
 
 // Each Board column's name.
 export const STATUS_NAMES: Record<BoardStatus, string> = { backlog: "Backlog", todo: "Todo", in_progress: "In Progress", in_review: "In Review", done: "Done" };
@@ -13,8 +14,27 @@ const githubHref = (url: string, fallback: string) => url.startsWith("https://gi
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const has = (list: string[], value: string) => list.some(item => same(item, value));
 
+const reviewLabels: Record<ReviewState, [string, string]> = {
+  awaiting_review: ["Awaiting review", "border-border text-soft"],
+  commented: ["Commented", "border-border text-soft"],
+  approved: ["Approved", "border-success-soft bg-success-soft text-success-foreground"],
+  changes_requested: ["Changes requested", "border-warning-soft bg-warning-soft text-warning"],
+  merged: ["Merged", "border-primary-soft bg-primary-soft text-primary"],
+  closed: ["Closed", "border-border bg-muted text-muted-foreground"],
+};
+const failedConclusions = ["failure", "timed_out", "startup_failure"];
+const isFailed = (check: DeliveryCheck) => check.status === "completed" && failedConclusions.includes(check.conclusion);
+const checkTone = (check: DeliveryCheck) => isFailed(check) ? "border-destructive/30 bg-destructive/10 text-destructive"
+  : check.status === "completed" && check.conclusion === "success" ? "border-success/30 bg-success/10 text-success"
+  : "border-border bg-muted text-muted-foreground";
+const checkLabel = (check: DeliveryCheck) => check.status === "completed" ? check.conclusion || "completed" : check.status.replace(/_/g, " ");
+
 type TaskDrawerProps = {
   issueNumber: number;
+  repositoryId: string;
+  viewerKey: string;
+  // Opens the CI/CD run detail for a check's workflow run.
+  onOpenRun?: (runId: string) => void;
   // Undefined when the latest Board read did not return the issue.
   issue: BoardIssue | undefined;
   card: BoardCard | undefined;
@@ -32,7 +52,7 @@ type TaskDrawerProps = {
 
 // The Board's side panel for one issue: its details, plus a status menu, an assignee menu and Close or Reopen, each of
 // which only stages a change on the card. It takes focus when it opens, and Escape closes it.
-export function TaskDrawer({ issueNumber, issue, card, github, assignable, blocked, sideEffects, onStage, onDiscard, onClose }: TaskDrawerProps) {
+export function TaskDrawer({ issueNumber, repositoryId, viewerKey, onOpenRun, issue, card, github, assignable, blocked, sideEffects, onStage, onDiscard, onClose }: TaskDrawerProps) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => ref.current?.focus(), []);
   useEffect(() => {
@@ -47,6 +67,12 @@ export function TaskDrawer({ issueNumber, issue, card, github, assignable, block
   const assigned = target ? [...base.filter(login => !has(target.assigneesRemove, login)), ...target.assigneesAdd.filter(login => !has(base, login))] : base;
   const people = [...base, ...assignable, ...assigned].filter((login, i, all) => all.findIndex(other => same(other, login)) === i);
   const disabled = blocked !== null;
+  const delivery = useQuery({
+    queryKey: ["issueDelivery", viewerKey, repositoryId, issueNumber],
+    queryFn: ({ signal }) => fetchIssueDelivery(repositoryId, issueNumber, signal),
+    gcTime: 0,
+    retry: false,
+  });
 
   function toggleAssignee(login: string, on: boolean) {
     const next = on ? [...assigned, login] : assigned.filter(other => !same(other, login));
@@ -101,6 +127,7 @@ export function TaskDrawer({ issueNumber, issue, card, github, assignable, block
             </Button>
           </> : <p className="m-0 text-xs text-muted-foreground">Assignees: {issue.assignees.length ? issue.assignees.map(a => `@${a}`).join(", ") : "none"}</p>}
         </>}
+        <DeliverySection query={delivery} github={github} onOpenRun={onOpenRun} />
         {card && (
           <section aria-label="Staged change" className="flex flex-col gap-1.5 rounded-[10px] border border-primary-soft bg-primary-soft px-3 py-2">
             <strong>{card.target.status === card.snapshot.status ? "Staged assignee change" : `Staged: ${STATUS_NAMES[card.snapshot.status]} → ${STATUS_NAMES[card.target.status]}`}</strong>
@@ -111,5 +138,63 @@ export function TaskDrawer({ issueNumber, issue, card, github, assignable, block
         )}
       </div>
     </div>
+  );
+}
+
+// Read-only delivery lifecycle for an issue: confirmed linked pull requests, their CI checks and deployments.
+// It offers links to GitHub and the run detail only, never a re-run or cancel control.
+function DeliverySection({ query, github, onOpenRun }: { query: { isPending: boolean; isError: boolean; data: IssueDelivery | null | undefined }; github: string; onOpenRun?: (runId: string) => void }) {
+  const data = query.data;
+  const denied = data && !data.actionsCoverage.covered && data.actionsCoverage.reason === "permission_denied";
+  return (
+    <section aria-label="Delivery lifecycle" className="flex flex-col gap-2 rounded-[10px] border border-border px-3 py-2.5">
+      <h3 className="m-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Delivery lifecycle</h3>
+      {query.isPending && <p role="status" className="m-0 text-xs text-muted-foreground">Loading delivery lifecycle…</p>}
+      {query.isError && <p role="alert" className="m-0 text-xs text-muted-foreground">Delivery lifecycle is unavailable right now.</p>}
+      {!query.isPending && !query.isError && !data && <p className="m-0 text-xs text-muted-foreground">Delivery lifecycle is not available for this issue.</p>}
+      {data && <>
+        {denied && <p role="status" className="m-0 rounded-lg border border-warning bg-warning-soft px-2.5 py-1.5 text-xs">CI/CD data unavailable: missing GitHub Actions read permission.</p>}
+        {data.pullRequests.length === 0
+          ? <p className="m-0 text-xs text-muted-foreground">No confirmed GitHub-linked pull requests.</p>
+          : <ul className="m-0 flex list-none flex-col gap-2.5 p-0">
+            {data.pullRequests.map(pr => {
+              const review = pr.reviewState ? reviewLabels[pr.reviewState] : null;
+              return <li key={pr.number} className="flex flex-col gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <a href={githubHref(pr.url, `${github}/pull/${pr.number}`)} target="_blank" rel="noreferrer" className="font-medium text-primary underline">PR #{pr.number}</a>
+                  <span className="min-w-0 break-words">{pr.title}</span>
+                  {review ? <span className={`${mini} ${review[1]}`}>{review[0]}</span>
+                    : <span className={`${mini} border-dashed border-border-strong text-muted-foreground`}>Review history importing</span>}
+                </div>
+                {!denied && (pr.checks.length === 0
+                  ? <p className="m-0 text-xs text-muted-foreground">No CI checks recorded for this pull request.</p>
+                  : <ul aria-label={`Checks for PR #${pr.number}`} className="m-0 flex list-none flex-col gap-1.5 p-0">
+                    {pr.checks.map(check => <li key={check.runId} className="flex flex-col gap-1 rounded-lg bg-muted px-2.5 py-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">{check.workflowName}</span>
+                        <span className={`${mini} ${checkTone(check)}`}>{checkLabel(check)}</span>
+                      </div>
+                      {isFailed(check) && check.failingJobName && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                        <span>Failing job: <strong>{check.failingJobName}</strong></span>
+                        {check.failingJobUrl && check.failingJobUrl.startsWith("https://github.com/") && <a href={check.failingJobUrl} target="_blank" rel="noreferrer" className="text-primary underline">View logs on GitHub ↗</a>}
+                        {onOpenRun && <Button variant="outline" size="sm" onClick={() => onOpenRun(check.runId)}>Open run detail</Button>}
+                      </div>}
+                    </li>)}
+                  </ul>)}
+                {pr.deployments.length > 0 && <ul aria-label={`Deployments for PR #${pr.number}`} className="m-0 flex list-none flex-col gap-1 p-0 text-xs">
+                  {pr.deployments.map(dep => <li key={dep.id} className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{dep.environment}</span>
+                    <span className={`${mini} border-border bg-muted text-muted-foreground`}>{dep.state}</span>
+                    <a href={githubHref(dep.htmlUrl, `${github}/deployments`)} target="_blank" rel="noreferrer" className="text-primary underline">GitHub ↗</a>
+                  </li>)}
+                </ul>}
+              </li>;
+            })}
+          </ul>}
+        {data.deploymentUnavailable
+          ? <p className="m-0 text-xs text-muted-foreground"><strong className="font-medium text-foreground">Deployment data unavailable</strong> — no GitHub Deployment records exist; passing workflows are not treated as deployments.</p>
+          : data.pullRequests.every(pr => pr.deployments.length === 0) && <p className="m-0 text-xs text-muted-foreground">No deployments recorded for these pull requests.</p>}
+      </>}
+    </section>
   );
 }
