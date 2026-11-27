@@ -18,7 +18,7 @@ import { fetchRepositoryBoard, type BoardIssue } from "@/features/board/api";
 import { fetchStatusLabels, type IssueCapabilities } from "@/features/issues/api";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError } from "@/shared/api/errors";
 import { boardDraftPrefix, withDraftStorageLock } from "@/features/issues/drafts";
-import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/lib/selected-repositories";
+import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/features/repositories/access-store";
 
 const panel = "rounded-xl border border-border bg-card min-w-0 min-h-0";
 

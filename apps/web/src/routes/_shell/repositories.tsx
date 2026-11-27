@@ -2,10 +2,11 @@ import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/r
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { Button } from "@/shared/ui/button";
-import { SyncStatus } from "@/components/sync-status";
-import { RepositoryCell, RepositoriesHeading, SourceTabs, ToolsRow, noteClass, searchBoxClass, segGroupClass, segItemClass, tableCardClass, tdClass, thClass, warnNoteClass } from "@/components/repository-list";
-import { matchesListSearch, validateListSearch } from "@/lib/list-search";
-import { flattenSelectedRepositoryRows, recordRepositoriesRemoved, useSelectedRepositories } from "@/lib/selected-repositories";
+import { SyncStatus } from "@/features/repositories/sync-status";
+import { RepositoryCell, RepositoriesHeading, SourceTabs, ToolsRow, noteClass, searchBoxClass, segGroupClass, segItemClass, tableCardClass, tdClass, thClass, warnNoteClass } from "@/features/repositories/repository-list";
+import { matchesListSearch, validateListSearch } from "@/features/repositories/list-search";
+import { flattenSelectedRepositoryRows, recordRepositoriesRemoved, useSelectedRepositories } from "@/features/repositories/access-store";
+import { ownedRepositoriesKey } from "@/features/repositories/query-keys";
 import { ownedRepositories, setSelected, type ListedRepo, type OwnedPage } from "@/features/repositories/api";
 
 export const Route = createFileRoute("/_shell/repositories")({
@@ -30,7 +31,7 @@ function Repositories() {
   const [applying, setApplying] = useState(false);
 
   const query = useInfiniteQuery({
-    queryKey: ["owned"],
+    queryKey: ownedRepositoriesKey,
     queryFn: ({ pageParam }) => ownedRepositories(pageParam),
     initialPageParam: 1,
     getNextPageParam: last => (last.nextPage > 0 ? last.nextPage : undefined),
@@ -75,11 +76,11 @@ function Repositories() {
       }
     }
     if (removedIds.length > 0) recordRepositoriesRemoved(queryClient, session, removedIds);
-    queryClient.setQueryData<InfiniteData<OwnedPage>>(["owned"], old => old && { ...old, pages: old.pages.map(p => ({ ...p, repositories: p.repositories.map(r => (done.has(r.id) ? { ...r, selected: done.get(r.id)!, syncState: done.get(r.id)! ? "awaiting-sync" as const : "not-synchronized" as const } : r)) })) });
+    queryClient.setQueryData<InfiniteData<OwnedPage>>(ownedRepositoriesKey, old => old && { ...old, pages: old.pages.map(p => ({ ...p, repositories: p.repositories.map(r => (done.has(r.id) ? { ...r, selected: done.get(r.id)!, syncState: done.get(r.id)! ? "awaiting-sync" as const : "not-synchronized" as const } : r)) })) });
     setDraft({});
     setOutcomes(next);
     setApplying(false);
-    await Promise.all([queryClient.invalidateQueries({ queryKey: ["owned"] }), queryClient.invalidateQueries({ queryKey: ["selectedRepositories"] })]);
+    await Promise.all([queryClient.invalidateQueries({ queryKey: ownedRepositoriesKey }), queryClient.invalidateQueries({ queryKey: ["selectedRepositories"] })]);
   }
 
   function discard() {

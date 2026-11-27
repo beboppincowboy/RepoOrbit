@@ -1,4 +1,3 @@
-import { repositorySnapshotKey } from "@/lib/repository-snapshots";
 import { githubHref, reviewLabels, utcTimestampFormatter as stamp } from "@/lib/delivery";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,24 +9,23 @@ import { IssueBoard } from "@/components/issue-board";
 import { RunDetailDrawer } from "@/components/run-detail-drawer";
 import { IssueIcon, PullRequestIcon } from "@/shared/ui/icons";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
-import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
+import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/features/repositories/sync-status";
 import { Button, buttonVariants } from "@/shared/ui/button";
 import { assignableUsersKey, issueCapabilitiesKey, workspaceIssueKey, workspaceIssuesKey, writeOperationsQueryKey } from "@/features/issues/query-keys";
 import { WriteHistory } from "@/features/issues/write-history";
 import { StatusSourceSetup } from "@/features/issues/status-source-setup";
 import {
-  crossRepositoryOverviewKey,
   currentAccessSeq,
   recordAccessDenied,
   recordOverviewSnapshot,
   recordOverviewUnavailable,
   selectRepositoryVisibility,
-  selectedRepositoriesKey,
   useRepositoryVisibility,
   useSelectedRepositories,
   useSelectedRepositoryMetadata,
   viewerKeyOf,
-} from "@/lib/selected-repositories";
+} from "@/features/repositories/access-store";
+import { crossRepositoryOverviewKey, repositoryOverviewKey, repositoryOverviewPrefix, repositorySnapshotKey, selectedRepositoriesKey, workspacePullRequestsKey } from "@/features/repositories/query-keys";
 import { fetchRepositoryOverview, fetchWorkspacePullRequests, type WorkspacePullRequest } from "@/features/analytics/api";
 import {
   fetchIssueCapabilities,
@@ -133,7 +131,7 @@ function RepositoryWorkspace() {
   const viewerKey = viewerKeyOf(session);
   const [selectedEditIssue, setSelectedEditIssue] = useState<EditableIssue | null>(null);
   const [draftRevision, setDraftRevision] = useState(0);
-  const overviewKey = ["repositoryOverview", session.mode, session.user?.login, repositoryId, search.days] as const;
+  const overviewKey = repositoryOverviewKey(session, repositoryId, search.days);
   const snapshotKey = repositorySnapshotKey(session, repositoryId, search.days);
   const query = useQuery({
     queryKey: overviewKey,
@@ -260,7 +258,7 @@ function RepositoryWorkspace() {
 
   function refreshIssueReads() {
     void queryClient.invalidateQueries({ queryKey: workspaceIssuesKey(repositoryId, viewerKey) });
-    void queryClient.invalidateQueries({ queryKey: ["repositoryOverview", session.mode, session.user?.login, repositoryId] });
+    void queryClient.invalidateQueries({ queryKey: repositoryOverviewPrefix(session, repositoryId) });
     void queryClient.invalidateQueries({ queryKey: crossRepositoryOverviewKey(session) });
   }
 
@@ -582,7 +580,7 @@ const noPulls: WorkspacePullRequest[] = [];
 
 function PullRequests({ id, viewer, github }: { id: string; viewer: string; github: string }) {
   const query = useInfiniteQuery({
-    queryKey: ["workspacePullRequests", id, viewer],
+    queryKey: workspacePullRequestsKey(id, viewer),
     queryFn: ({ pageParam, signal }) => fetchWorkspacePullRequests(id, pageParam, signal),
     initialPageParam: null as string | null,
     getNextPageParam: last => last.hasNextPage ? last.endCursor : undefined,

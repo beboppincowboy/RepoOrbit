@@ -5,22 +5,22 @@ import { Button } from "@/shared/ui/button";
 import { AssignedToMeList } from "@/components/assigned-to-me";
 import { NeedsAttentionList } from "@/components/needs-attention";
 import { ChevronIcon, IssueIcon, PullRequestIcon, WorkflowIcon } from "@/shared/ui/icons";
-import { segGroupClass, segItemClass, warnNoteClass } from "@/components/repository-list";
+import { segGroupClass, segItemClass, warnNoteClass } from "@/features/repositories/repository-list";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { fetchCrossRepositoryOverview, type CrossRepositoryOverview } from "@/features/analytics/api";
 import { RepositoryAccessUnverifiedError } from "@/shared/api/errors";
 import type { MetricWindow } from "@/shared/api/transport";
+import { filterAggregateByVisibility } from "@/features/analytics/filter-aggregate";
 import {
-  crossRepositoryOverviewKey,
   currentAccessSeq,
-  filterAggregateByVisibility,
   selectVisibleRows,
   selectWithheldSummary,
   useSelectedRepositories,
   useSelectedRepositoryMetadata,
   useSelectionVisibility,
   viewerKeyOf,
-} from "@/lib/selected-repositories";
+} from "@/features/repositories/access-store";
+import { crossRepositoryOverviewKey } from "@/features/repositories/query-keys";
 
 const windows = [7, 30, 90] as const;
 
