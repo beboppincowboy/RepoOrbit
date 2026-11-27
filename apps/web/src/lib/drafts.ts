@@ -1,9 +1,20 @@
 const DRAFT_PREFIX = "repoorbit:issue-draft:";
 
 // Take the per-repository withBoardLock first when needed. Work here is synchronous and never waits for it or the network.
+// Run unlocked if Web Locks is unavailable or the request fails before work starts. Once work starts, propagate errors.
 export async function withDraftStorageLock<T>(work: () => T): Promise<T> {
   const locks = globalThis.navigator?.locks;
-  return locks ? locks.request("repoorbit:issue-draft-storage", work) : work();
+  if (!locks) return work();
+  let started = false;
+  try {
+    return await locks.request("repoorbit:issue-draft-storage", () => {
+      started = true;
+      return work();
+    });
+  } catch (error) {
+    if (started) throw error;
+    return work();
+  }
 }
 
 function repositoryDraftPrefix(viewerKey: string, repositoryId: string): string {

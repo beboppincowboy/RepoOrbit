@@ -25,7 +25,7 @@ export async function withBoardLock<T>(viewerKey: string, repositoryId: string, 
 }
 
 // Sends the reviewed cards as issue updates, one at a time in issue-number order. Each card is reloaded just before its
-// turn and sent only if it is still staged as reviewed. Transport and session errors stop the batch.
+// turn and sent only if it is still staged as reviewed. A cleared in-flight request, transport or session error stops the batch.
 // Resolves true if the save ran, or false if another save is already running in this tab.
 export async function saveBoardChanges({ viewerKey, repositoryId, reviewed, saver, onChange, submit = submitIssueUpdate }: BoardSaveOptions): Promise<boolean> {
   if (saving) return false;
@@ -59,12 +59,14 @@ export async function saveBoardChanges({ viewerKey, repositoryId, reviewed, save
         // A late result must respect storage cleared during the send or a recovery that recorded an operation id.
         const changed = await withDraftStorageLock(() => {
           const current = stored(number);
-          if (current?.request?.idempotencyKey !== request.idempotencyKey || ("error" in result && current.operationId !== null)) return false;
+          if (current?.request?.idempotencyKey !== request.idempotencyKey) return null;
+          if ("error" in result && current.operationId !== null) return false;
           const outcome = applySaveResult(prepared, result);
           if (outcome.kind === "removed") removeBoardCard(viewerKey, repositoryId, number);
           else saveBoardCard(viewerKey, repositoryId, outcome.card);
           return true;
         });
+        if (changed === null) break;
         if (changed) onChange();
         if ("error" in result) {
           const { error } = result;

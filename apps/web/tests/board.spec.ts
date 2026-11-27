@@ -731,6 +731,63 @@ async function expectDraftStorageWaiters(page: Page, count = 1) {
     (await navigator.locks.query()).pending?.filter(lock => lock.name === name).length, draftLockName)).toBe(count);
 }
 
+test('Check recorded status waits for queued draft cleanup before sending', async ({ page, context }) => {
+  const { posts } = await setup(page);
+  await mockUpdates(page);
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  await page.evaluate(key => {
+    const staged = JSON.parse(localStorage.getItem(key)!);
+    localStorage.setItem(key, JSON.stringify({
+      ...staged, phase: 'unknown', attemptedAt: new Date().toISOString(),
+      request: { draft: { labels: { add: ['status:in-progress'], remove: ['status:todo'] } }, idempotencyKey: 'recovery-key' },
+    }));
+  }, boardKey(3));
+  await page.reload();
+  const drawer = await openDrawer(page, 3);
+  const other = await context.newPage();
+  await holdDraftStorageLock(other);
+  await other.evaluate(({ name, key }) => {
+    void navigator.locks.request(name, () => localStorage.removeItem(key));
+  }, { name: draftLockName, key: boardKey(3) });
+  await expectDraftStorageWaiters(page);
+
+  await drawer.getByRole('button', { name: 'Check recorded status' }).click();
+  await expectDraftStorageWaiters(page, 2);
+  expect(posts).toEqual([]);
+  await other.evaluate(() => window.dispatchEvent(new Event('release-draft-lock')));
+
+  await expect(drawer.getByRole('region', { name: 'Staged change' })).toHaveCount(0);
+  expect(await storedCard(page, 3)).toBeNull();
+  expect(posts).toEqual([]);
+});
+
+test('a recovery result waiting for the draft storage lock preserves a replacement card', async ({ page, context }) => {
+  await setup(page);
+  await mockUpdates(page, route => route.fulfill({ status: 202, json: operation(3, 'unknown', 77) }));
+  let pending: Route | undefined;
+  await page.route('**/api/write-operations/77/recheck', route => { pending = route; });
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  await confirmSave(page);
+  const drawer = await openDrawer(page, 3);
+  await drawer.getByRole('button', { name: 'Recheck' }).click();
+  await expect.poll(() => Boolean(pending)).toBe(true);
+  const other = await context.newPage();
+  await holdDraftStorageLock(other);
+
+  await pending!.fulfill({ json: operation(3, 'succeeded', 77) });
+  await expectDraftStorageWaiters(page);
+  const replacement = { ...(await storedCard(page, 3)), operationId: 78 };
+  await other.evaluate(({ key, replacement }) => {
+    localStorage.setItem(key, JSON.stringify(replacement));
+    window.dispatchEvent(new Event('release-draft-lock'));
+  }, { key: boardKey(3), replacement });
+
+  await expect(drawer.getByRole('button', { name: 'Rechecking…' })).toHaveCount(0);
+  expect(await storedCard(page, 3)).toEqual(replacement);
+});
+
 test('Discard waits for the draft storage lock before removing the card', async ({ page, context }) => {
   const { posts } = await setup(page);
   await page.goto('/workspace/1?tab=board');
