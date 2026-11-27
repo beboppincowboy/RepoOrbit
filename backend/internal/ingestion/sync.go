@@ -217,12 +217,12 @@ func projectCleanupObservation(ctx context.Context, tx pgx.Tx, repoID int64, iss
 // projectIssue is ProjectIssue (sameSecond false) or ProjectConfirmedIssue (true). With cleanup, a projected closed
 // issue that still has a status label queues the app's status label cleanup; the cleanup itself projects without it.
 func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue, sameSecond, cleanup bool) error {
-	actorID, actorLogin, actorType, err := evidenceActor(issue.User)
+	args, err := issueProjectionArgs(repoID, issue, sameSecond)
 	if err != nil {
 		return err
 	}
 	var inserted int64
-	err = tx.QueryRow(ctx, `INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, closed_at, author_id, author_login, author_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (source_id) DO UPDATE SET title=EXCLUDED.title,state=EXCLUDED.state,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,closed_at=EXCLUDED.closed_at,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_issues.repository_id=EXCLUDED.repository_id AND (activity_issues.updated_at < EXCLUDED.updated_at OR ($13 AND activity_issues.updated_at = EXCLUDED.updated_at)) RETURNING source_id`, issue.ID, repoID, issue.Number, issue.Title, issue.State, issue.HTMLURL, issue.CreatedAt, issue.UpdatedAt, issue.ClosedAt, actorID, actorLogin, actorType, sameSecond).Scan(&inserted)
+	err = tx.QueryRow(ctx, `INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, closed_at, author_id, author_login, author_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (source_id) DO UPDATE SET title=EXCLUDED.title,state=EXCLUDED.state,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,closed_at=EXCLUDED.closed_at,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_issues.repository_id=EXCLUDED.repository_id AND (activity_issues.updated_at < EXCLUDED.updated_at OR ($13 AND activity_issues.updated_at = EXCLUDED.updated_at)) RETURNING source_id`, args...).Scan(&inserted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // the stored copy is as new or newer, or the issue is tombstoned
 	}
@@ -233,10 +233,11 @@ func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.
 		return err
 	}
 	for _, label := range issue.Labels {
-		if label.ID <= 0 {
-			return errors.New("invalid issue label")
+		labelArgs, err := issueLabelProjectionArgs(issue.ID, label.ID, label.Name)
+		if err != nil {
+			return err
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_labels(issue_id,source_id,name) VALUES($1,$2,$3)`, issue.ID, label.ID, label.Name); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_labels(issue_id,source_id,name) VALUES($1,$2,$3)`, labelArgs...); err != nil {
 			return err
 		}
 	}
@@ -244,10 +245,11 @@ func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.
 		return err
 	}
 	for _, assignee := range issue.Assignees {
-		if assignee.ID <= 0 {
-			return errors.New("invalid issue assignee")
+		assigneeArgs, err := issueAssigneeProjectionArgs(issue.ID, assignee)
+		if err != nil {
+			return err
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_assignees(issue_id,source_id,login,type) VALUES($1,$2,$3,$4)`, issue.ID, assignee.ID, assignee.Login, assignee.Type); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_assignees(issue_id,source_id,login,type) VALUES($1,$2,$3,$4)`, assigneeArgs...); err != nil {
 			return err
 		}
 	}
