@@ -35,11 +35,8 @@ const (
 // raceRetry is how soon a refresh whose commit was withheld (selection or authorization changed mid-flight) is retried.
 const raceRetry = 5 * time.Second
 
-// TokenSource is the part of auth.Service the refresh needs (and repositories.TokenSource).
-type TokenSource interface {
-	AccessToken(ctx context.Context, userID int64) (string, error)
-	Revoke(ctx context.Context, userID int64) error
-}
+// TokenSource is the credential interface shared by refresh and repository access checks.
+type TokenSource = repositories.TokenSource
 
 // AccessChecker is repositories.Service's live access check (fresh, never from cache).
 type AccessChecker interface {
