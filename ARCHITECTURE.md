@@ -24,9 +24,14 @@ cd backend && go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./...
 | `cmd/api` | `graphql`, `internal/auth`, `internal/db`, `internal/githubapp`, `internal/ingestion`, `internal/issues`, `internal/jobs`, `internal/platform`, `internal/repositories` |
 | `cmd/worker` | `internal/auth`, `internal/db`, `internal/githubapp`, `internal/ingestion`, `internal/jobs`, `internal/platform`, `internal/repositories` |
 | `cmd/fakegithub` | `internal/githubapp/fake` |
-| `graphql` | `graphql/model`, `internal/accessfence`, `internal/analytics`, `internal/auth`, `internal/db`, `internal/ingestion`, `internal/jobs`, `internal/repositories` |
+| `graphql` | `graphql/model`, `internal/analytics`, `internal/auth`, `internal/board`, `internal/db`, `internal/ingestion`, `internal/jobs`, `internal/readguard`, `internal/repositories` |
 | `graphql/model` | `internal/analytics` |
-| `internal/issues` | `internal/accessfence`, `internal/auth`, `internal/db`, `internal/githubapp`, `internal/ingestion`, `internal/repositories` |
+| `internal/board` | `internal/db` |
+| `internal/readguard` | `internal/accessfence`, `internal/db`, `internal/repositories` |
+| `internal/issues` | `internal/accessfence`, `internal/auth`, `internal/db`, `internal/githubapp`, `internal/ingestion`, `internal/issues/application`, `internal/issues/domain`, `internal/repositories` |
+| `internal/issues/application` | `internal/issues/domain` |
+| `internal/issues/domain` | none (stdlib only) |
+| `internal/archtest` | none (test-only boundary check) |
 | `internal/ingestion` | `internal/accessfence`, `internal/auth`, `internal/db`, `internal/githubapp`, `internal/jobs`, `internal/repositories` |
 | `internal/repositories` | `internal/accessfence`, `internal/auth`, `internal/db`, `internal/githubapp` |
 | `internal/auth` | `internal/accessfence`, `internal/db`, `internal/githubapp` |
@@ -101,7 +106,38 @@ _To be written._
 
 ## Read side
 
-_To be written._
+### Guarded reads (`internal/readguard`)
+
+Every non-demo GraphQL read goes through `backend/internal/readguard`, which takes the authenticated user ID from the caller (never a client-supplied viewer ID) and enforces a fixed four-step order:
+
+1. Capture a user-scoped access fence (`accessfence.TakeSnapshotForUser`) before checking repository access.
+2. Check repository access (`RepoAccess.Check(..., fresh=true)`), splitting repositories into allowed and withheld (unverified) while retaining the latest `retryAt`.
+3. Execute the caller's read callback (closing rows inside the callback).
+4. Re-check `fence.Current`; if the fence moved during the read, discard the read value and invoke the stale handler.
+
+`readguard` exposes `AuthorizeSelected`, `AuthorizePreselected`, `FenceOnly`, and `Run[T]`. Database errors surface as `"database unavailable"`, never as withheld counts or `ACCESS_UNVERIFIED`. GraphQL owns only transport mapping (`null` for unselected/missing/denied single-repository fields, `ACCESS_UNVERIFIED` with `retryAt` for unverified access, `ACCESS_UNVERIFIED` without `retryAt` on mid-read fence movement, empty page with `withheld + allowed` on stale list reads, and skipping access checks in Demo mode). Request-scoped visibility memoization (`repositories.WithRequestVisibility`) deduplicates access checks within a request.
+
+The REST issue guard in `backend/internal/issues` (`checkedAccess`, `access`, `fenceHolds`) is intentionally kept separate from `readguard`: it uses per-repository `accessfence.Take` snapshots that insert fence rows, retries once, maps to HTTP 503/404, wipes private drafts on denial, and also serves commands.
+
+### Read models
+
+- **Board (`internal/board`):** `board.Reader` wraps `GetBoardStatusLabels`, `ListRepositoryBoard`, and the 100-number include cap (`MaxInclude`). The flag and issue rows stay two separate statements (not batched), keeping the Board query count constant regardless of issue count. Status is derived solely in SQL via the `issue_board_states` view, gated by the repository's status-label flag. `backend/graphql/board.go` only authorizes and maps to GraphQL models.
+- **Overview and delivery (`internal/analytics`):** `analytics.Load*` computes metrics and rollups inside a `REPEATABLE READ`, read-only PostgreSQL transaction. `gqlgen` binds analytics types directly as GraphQL models, so no separate mapping layer is added.
+
+### Projection owner
+
+`backend/internal/ingestion` is the single owner of issue projection writes (`ProjectIssue`, `ProjectConfirmedIssue`, `LockIssue`, and deletion with tombstones). Both background sync jobs and confirmed Issue command writes call it; `internal/issues` imports `internal/ingestion`, never the reverse, so there is no import cycle.
+
+### Intentional read-path side effects
+
+Reads perform no business writes. The following security and scheduling bookkeeping side effects remain on the read path on purpose:
+
+- **User token refresh:** `UpdateUserTokens` under a row lock when an access token is refreshed during an access check.
+- **Revoke and `InvalidateAccess`:** redacts write-operation drafts, deletes sessions, wipes tokens, and bumps access fences when GitHub rejects a token or access is revoked.
+- **Installation sync:** `BumpAccess`, `PruneInstallations`, and `UpsertInstallation` when live installation visibility changes.
+- **Eligibility-triggered job resume:** eligibility change → `RecheckEligibility` → `jobs.Resume`, so a GraphQL read can resume paused ingestion jobs.
+- **Draft wipe on denial:** private-repository drafts are wiped when a check observes denial.
+- **REST fence rows:** `access_fences` rows inserted by REST `accessfence.Take`.
 
 ## Deployment
 

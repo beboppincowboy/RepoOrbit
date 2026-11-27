@@ -28,6 +28,11 @@ var forbidden = map[string][]string{
 		module + "/graphql",
 		"github.com/99designs/gqlgen",
 	},
+	"board": {
+		"net/http",
+		module + "/graphql",
+		"github.com/99designs/gqlgen",
+	},
 }
 
 func imports(t *testing.T, dir string) []string {
