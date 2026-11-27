@@ -97,10 +97,11 @@ type RepositoryOverview {
 # withheld counts unverified selections, without naming them (retryAt when rate limited).
 # reviewBacklog sums unreviewedOpenPullRequests. kind is "pr_awaiting_review", "issue_no_response" or "stale_issue".
 extend type Query { crossRepositoryOverview(days: Int! = 30): CrossRepositoryOverview }
-type AttentionItem { kind: String!, repositoryId: ID!, fullName: String!, number: Int64!, title: String!, url: String!, since: Time! }
+type AttentionItem { kind: String!, repositoryId: ID!, fullName: String!, number: Int64!, title: String!, url: String!, since: Time!, runId: ID }
 # status is the issue's Board status, as repositoryBoard reports it; null when the repository's status labels are off.
 type AssignedIssue { repositoryId: ID!, fullName: String!, number: Int64!, title: String!, url: String!, updatedAt: Time!, status: String }
 type CrossDailyPoint { day: Time!, issuesOpened: Int64, pullRequestsMerged: Int64 }
+type MetricRate { rate: Float, numerator: Int64, denominator: Int64, coverage: MetricCoverage! }
 type CrossRepositoryOverview {
   days: Int!
   windowStart: Time!
@@ -111,9 +112,51 @@ type CrossRepositoryOverview {
   retryAt: String
   openIssues: MetricCount!
   reviewBacklog: MetricCount!
+  failingWorkflows: MetricCount!
+  buildSuccessRate: MetricRate!
   needsAttention: [AttentionItem!]!
   assignedToMe: [AssignedIssue!]!
   daily: [CrossDailyPoint!]!
+}
+
+extend type Query {
+  repositoryActions(id: ID!, days: Int! = 30): RepositoryActions
+  workflowRun(repositoryId: ID!, runId: ID!): WorkflowRunDetail
+  issueDelivery(repositoryId: ID!, issueNumber: Int!): IssueDelivery
+}
+
+type ActionsDailyPoint { day: Time!, succeeded: Int64, failed: Int64, other: Int64 }
+type WorkflowFailureSummary { workflowId: ID!, workflowName: String!, failedRuns: Int64!, totalRuns: Int64!, latestRunId: ID!, latestStatus: String!, latestConclusion: String!, latestAt: Time!, htmlUrl: String! }
+type WorkflowRunSummary { id: ID!, workflowId: ID!, workflowName: String!, runNumber: Int64!, event: String!, status: String!, conclusion: String!, headBranch: String!, headSha: String!, htmlUrl: String!, createdAt: Time!, runStartedAt: Time, updatedAt: Time!, durationSeconds: Int64, queueSeconds: Int64 }
+type WorkflowJobDetail { id: ID!, runId: ID!, name: String!, status: String!, conclusion: String!, htmlUrl: String!, createdAt: Time!, startedAt: Time, completedAt: Time, durationSeconds: Int64, queueSeconds: Int64 }
+type WorkflowRunDetail { run: WorkflowRunSummary!, jobs: [WorkflowJobDetail!]! }
+type DeploymentSummary { id: ID!, environment: String!, sha: String!, ref: String!, state: String!, description: String!, htmlUrl: String!, createdAt: Time!, updatedAt: Time! }
+type RepositoryActions {
+  days: Int!
+  windowStart: Time!
+  now: Time!
+  actionsCoverage: MetricCoverage!
+  deploymentsCoverage: MetricCoverage!
+  buildSuccessRate: MetricRate!
+  failedJobs: MetricCount!
+  runningJobs: MetricCount!
+  durationP50: MetricMedian!
+  durationP95: MetricMedian!
+  queueWaitP50: MetricMedian!
+  daily: [ActionsDailyPoint!]!
+  failuresByWorkflow: [WorkflowFailureSummary!]!
+  recentRuns: [WorkflowRunSummary!]!
+  deployments: [DeploymentSummary!]!
+  deploymentUnavailable: Boolean!
+}
+type DeliveryCheck { runId: ID!, workflowName: String!, status: String!, conclusion: String!, htmlUrl: String!, updatedAt: Time!, failingJobName: String, failingJobUrl: String }
+type LinkedPullRequestDelivery { number: Int64!, title: String!, state: String!, url: String!, reviewState: String, headSha: String!, checks: [DeliveryCheck!]!, deployments: [DeploymentSummary!]! }
+type IssueDelivery {
+  issueNumber: Int64!
+  actionsCoverage: MetricCoverage!
+  deploymentsCoverage: MetricCoverage!
+  deploymentUnavailable: Boolean!
+  pullRequests: [LinkedPullRequestDelivery!]!
 }
 
 # One selected repository's Board snapshot (R15): its open issues (the 500 most recently updated), its closed issues

@@ -39,6 +39,8 @@ models:
     fields:
       repositoryId:
         resolver: true
+      runId:
+        resolver: true
   AssignedIssue:
     model: github.com/repoorbit/repoorbit/backend/internal/analytics.AssignedIssue
     fields:
@@ -46,3 +48,46 @@ models:
         resolver: true
   CrossDailyPoint:
     model: github.com/repoorbit/repoorbit/backend/internal/analytics.CrossDailyPoint
+  MetricRate:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.Rate
+  ActionsDailyPoint:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.ActionsDailyPoint
+  WorkflowFailureSummary:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.WorkflowFailureSummary
+    fields:
+      workflowId:
+        resolver: true
+      latestRunId:
+        resolver: true
+  WorkflowRunSummary:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.WorkflowRunSummary
+    fields:
+      id:
+        resolver: true
+      workflowId:
+        resolver: true
+  WorkflowJobDetail:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.WorkflowJobDetail
+    fields:
+      id:
+        resolver: true
+      runId:
+        resolver: true
+  WorkflowRunDetail:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.WorkflowRunDetail
+  DeploymentSummary:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.DeploymentSummary
+    fields:
+      id:
+        resolver: true
+  RepositoryActions:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.RepositoryActions
+  DeliveryCheck:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.DeliveryCheck
+    fields:
+      runId:
+        resolver: true
+  LinkedPullRequestDelivery:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.LinkedPullRequestDelivery
+  IssueDelivery:
+    model: github.com/repoorbit/repoorbit/backend/internal/analytics.IssueDelivery

@@ -28,6 +28,25 @@ func (r *attentionItemResolver) RepositoryID(ctx context.Context, obj *analytics
 	return strconv.FormatInt(obj.RepositoryID, 10), nil
 }
 
+// RunID is the resolver for the runId field.
+func (r *attentionItemResolver) RunID(ctx context.Context, obj *analytics.AttentionItem) (*string, error) {
+	if obj.RunID == nil {
+		return nil, nil
+	}
+	s := strconv.FormatInt(*obj.RunID, 10)
+	return &s, nil
+}
+
+// RunID is the resolver for the runId field.
+func (r *deliveryCheckResolver) RunID(ctx context.Context, obj *analytics.DeliveryCheck) (string, error) {
+	return strconv.FormatInt(obj.RunID, 10), nil
+}
+
+// ID is the resolver for the id field.
+func (r *deploymentSummaryResolver) ID(ctx context.Context, obj *analytics.DeploymentSummary) (string, error) {
+	return strconv.FormatInt(obj.ID, 10), nil
+}
+
 // Viewer is the resolver for the viewer field.
 func (r *queryResolver) Viewer(ctx context.Context) (*model.Viewer, error) {
 	v, ok := auth.FromContext(ctx)
@@ -197,9 +216,54 @@ func (r *queryResolver) CrossRepositoryOverview(ctx context.Context, days int) (
 	return r.crossRepositoryOverview(ctx, days)
 }
 
+// RepositoryActions is the resolver for the repositoryActions field.
+func (r *queryResolver) RepositoryActions(ctx context.Context, id string, days int) (*analytics.RepositoryActions, error) {
+	return r.repositoryActions(ctx, id, days)
+}
+
+// WorkflowRun is the resolver for the workflowRun field.
+func (r *queryResolver) WorkflowRun(ctx context.Context, repositoryID string, runID string) (*analytics.WorkflowRunDetail, error) {
+	return r.workflowRun(ctx, repositoryID, runID)
+}
+
+// IssueDelivery is the resolver for the issueDelivery field.
+func (r *queryResolver) IssueDelivery(ctx context.Context, repositoryID string, issueNumber int) (*analytics.IssueDelivery, error) {
+	return r.issueDelivery(ctx, repositoryID, issueNumber)
+}
+
 // RepositoryBoard is the resolver for the repositoryBoard field.
 func (r *queryResolver) RepositoryBoard(ctx context.Context, id string, include []int) (*model.RepositoryBoard, error) {
 	return r.repositoryBoard(ctx, id, include)
+}
+
+// WorkflowID is the resolver for the workflowId field.
+func (r *workflowFailureSummaryResolver) WorkflowID(ctx context.Context, obj *analytics.WorkflowFailureSummary) (string, error) {
+	return strconv.FormatInt(obj.WorkflowID, 10), nil
+}
+
+// LatestRunID is the resolver for the latestRunId field.
+func (r *workflowFailureSummaryResolver) LatestRunID(ctx context.Context, obj *analytics.WorkflowFailureSummary) (string, error) {
+	return strconv.FormatInt(obj.LatestRunID, 10), nil
+}
+
+// ID is the resolver for the id field.
+func (r *workflowJobDetailResolver) ID(ctx context.Context, obj *analytics.WorkflowJobDetail) (string, error) {
+	return strconv.FormatInt(obj.ID, 10), nil
+}
+
+// RunID is the resolver for the runId field.
+func (r *workflowJobDetailResolver) RunID(ctx context.Context, obj *analytics.WorkflowJobDetail) (string, error) {
+	return strconv.FormatInt(obj.RunID, 10), nil
+}
+
+// ID is the resolver for the id field.
+func (r *workflowRunSummaryResolver) ID(ctx context.Context, obj *analytics.WorkflowRunSummary) (string, error) {
+	return strconv.FormatInt(obj.ID, 10), nil
+}
+
+// WorkflowID is the resolver for the workflowId field.
+func (r *workflowRunSummaryResolver) WorkflowID(ctx context.Context, obj *analytics.WorkflowRunSummary) (string, error) {
+	return strconv.FormatInt(obj.WorkflowID, 10), nil
 }
 
 // AssignedIssue returns AssignedIssueResolver implementation.
@@ -208,9 +272,37 @@ func (r *Resolver) AssignedIssue() AssignedIssueResolver { return &assignedIssue
 // AttentionItem returns AttentionItemResolver implementation.
 func (r *Resolver) AttentionItem() AttentionItemResolver { return &attentionItemResolver{r} }
 
+// DeliveryCheck returns DeliveryCheckResolver implementation.
+func (r *Resolver) DeliveryCheck() DeliveryCheckResolver { return &deliveryCheckResolver{r} }
+
+// DeploymentSummary returns DeploymentSummaryResolver implementation.
+func (r *Resolver) DeploymentSummary() DeploymentSummaryResolver {
+	return &deploymentSummaryResolver{r}
+}
+
 // Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 
+// WorkflowFailureSummary returns WorkflowFailureSummaryResolver implementation.
+func (r *Resolver) WorkflowFailureSummary() WorkflowFailureSummaryResolver {
+	return &workflowFailureSummaryResolver{r}
+}
+
+// WorkflowJobDetail returns WorkflowJobDetailResolver implementation.
+func (r *Resolver) WorkflowJobDetail() WorkflowJobDetailResolver {
+	return &workflowJobDetailResolver{r}
+}
+
+// WorkflowRunSummary returns WorkflowRunSummaryResolver implementation.
+func (r *Resolver) WorkflowRunSummary() WorkflowRunSummaryResolver {
+	return &workflowRunSummaryResolver{r}
+}
+
 type assignedIssueResolver struct{ *Resolver }
 type attentionItemResolver struct{ *Resolver }
+type deliveryCheckResolver struct{ *Resolver }
+type deploymentSummaryResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
+type workflowFailureSummaryResolver struct{ *Resolver }
+type workflowJobDetailResolver struct{ *Resolver }
+type workflowRunSummaryResolver struct{ *Resolver }

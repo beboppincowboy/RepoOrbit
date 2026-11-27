@@ -11,6 +11,131 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getActionsCoverage = `-- name: GetActionsCoverage :one
+SELECT
+  sa.boundary AS actions_boundary,
+  sa.watermark AS actions_watermark,
+  COALESCE(sa.last_error_code, '')::text AS actions_error_code,
+  sd.boundary AS deployments_boundary,
+  sd.watermark AS deployments_watermark,
+  COALESCE(sd.last_error_code, '')::text AS deployments_error_code
+FROM (SELECT 1) AS one
+LEFT JOIN activity_resources sa ON sa.repository_id = $1 AND sa.resource = 'actions'
+LEFT JOIN activity_resources sd ON sd.repository_id = $1 AND sd.resource = 'deployments'
+`
+
+type GetActionsCoverageRow struct {
+	ActionsBoundary      pgtype.Timestamptz
+	ActionsWatermark     pgtype.Timestamptz
+	ActionsErrorCode     string
+	DeploymentsBoundary  pgtype.Timestamptz
+	DeploymentsWatermark pgtype.Timestamptz
+	DeploymentsErrorCode string
+}
+
+func (q *Queries) GetActionsCoverage(ctx context.Context, repositoryID int64) (GetActionsCoverageRow, error) {
+	row := q.db.QueryRow(ctx, getActionsCoverage, repositoryID)
+	var i GetActionsCoverageRow
+	err := row.Scan(
+		&i.ActionsBoundary,
+		&i.ActionsWatermark,
+		&i.ActionsErrorCode,
+		&i.DeploymentsBoundary,
+		&i.DeploymentsWatermark,
+		&i.DeploymentsErrorCode,
+	)
+	return i, err
+}
+
+const getActionsMetrics = `-- name: GetActionsMetrics :one
+WITH windowed_runs AS (
+  SELECT
+    wr.repository_id,
+    wr.source_id,
+    wr.workflow_id,
+    wr.status,
+    wr.conclusion,
+    wr.created_at,
+    wr.run_started_at,
+    wr.updated_at
+  FROM workflow_runs wr
+  WHERE wr.repository_id = $1
+    AND wr.created_at BETWEEN $2::timestamptz AND $3::timestamptz
+), run_stats AS (
+  SELECT
+    count(*) FILTER (WHERE wr.status = 'completed' AND wr.conclusion <> '')::bigint AS completed_runs,
+    count(*) FILTER (WHERE wr.status = 'completed' AND wr.conclusion = 'success')::bigint AS succeeded_runs,
+    count(*) FILTER (WHERE wr.status = 'completed' AND wr.run_started_at IS NOT NULL AND wr.updated_at >= wr.run_started_at)::bigint AS duration_sample,
+    COALESCE(floor(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM wr.updated_at - wr.run_started_at)::float8)
+      FILTER (WHERE wr.status = 'completed' AND wr.run_started_at IS NOT NULL AND wr.updated_at >= wr.run_started_at)), 0)::bigint AS duration_p50_seconds,
+    COALESCE(floor(percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM wr.updated_at - wr.run_started_at)::float8)
+      FILTER (WHERE wr.status = 'completed' AND wr.run_started_at IS NOT NULL AND wr.updated_at >= wr.run_started_at)), 0)::bigint AS duration_p95_seconds,
+    count(*) FILTER (WHERE wr.run_started_at IS NOT NULL AND wr.run_started_at >= wr.created_at)::bigint AS queue_wait_sample,
+    COALESCE(floor(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM wr.run_started_at - wr.created_at)::float8)
+      FILTER (WHERE wr.run_started_at IS NOT NULL AND wr.run_started_at >= wr.created_at)), 0)::bigint AS queue_wait_p50_seconds
+  FROM windowed_runs wr
+), latest_per_workflow AS (
+  SELECT DISTINCT ON (wr.workflow_id) wr.workflow_id, wr.status, wr.conclusion
+  FROM windowed_runs wr
+  ORDER BY wr.workflow_id, wr.created_at DESC, wr.source_id DESC
+), job_stats AS (
+  SELECT
+    count(*) FILTER (WHERE j.status = 'completed' AND j.conclusion = 'failure')::bigint AS failed_jobs,
+    count(*) FILTER (WHERE j.status IN ('queued', 'in_progress'))::bigint AS running_jobs
+  FROM workflow_jobs j
+  JOIN windowed_runs r ON r.repository_id = j.repository_id AND r.source_id = j.run_id
+)
+SELECT
+  rs.completed_runs,
+  rs.succeeded_runs,
+  rs.duration_sample,
+  rs.duration_p50_seconds,
+  rs.duration_p95_seconds,
+  rs.queue_wait_sample,
+  rs.queue_wait_p50_seconds,
+  js.failed_jobs,
+  js.running_jobs,
+  (SELECT count(*)::bigint FROM latest_per_workflow lpw WHERE lpw.status = 'completed' AND lpw.conclusion = 'failure') AS failing_workflows
+FROM run_stats rs CROSS JOIN job_stats js
+`
+
+type GetActionsMetricsParams struct {
+	RepositoryID int64
+	WindowStart  pgtype.Timestamptz
+	Now          pgtype.Timestamptz
+}
+
+type GetActionsMetricsRow struct {
+	CompletedRuns       int64
+	SucceededRuns       int64
+	DurationSample      int64
+	DurationP50Seconds  int64
+	DurationP95Seconds  int64
+	QueueWaitSample     int64
+	QueueWaitP50Seconds int64
+	FailedJobs          int64
+	RunningJobs         int64
+	FailingWorkflows    int64
+}
+
+func (q *Queries) GetActionsMetrics(ctx context.Context, arg GetActionsMetricsParams) (GetActionsMetricsRow, error) {
+	row := q.db.QueryRow(ctx, getActionsMetrics, arg.RepositoryID, arg.WindowStart, arg.Now)
+	var i GetActionsMetricsRow
+	err := row.Scan(
+		&i.CompletedRuns,
+		&i.SucceededRuns,
+		&i.DurationSample,
+		&i.DurationP50Seconds,
+		&i.DurationP95Seconds,
+		&i.QueueWaitSample,
+		&i.QueueWaitP50Seconds,
+		&i.FailedJobs,
+		&i.RunningJobs,
+		&i.FailingWorkflows,
+	)
+	return i, err
+}
+
 const getWorkflowRun = `-- name: GetWorkflowRun :one
 SELECT repository_id, source_id, workflow_id, workflow_name, run_number, event, status, conclusion, head_branch, head_sha, html_url, created_at, run_started_at, updated_at, pull_request_numbers FROM workflow_runs WHERE repository_id = $1 AND source_id = $2
 `
@@ -43,12 +168,190 @@ func (q *Queries) GetWorkflowRun(ctx context.Context, arg GetWorkflowRunParams) 
 	return i, err
 }
 
+const listActionsDaily = `-- name: ListActionsDaily :many
+WITH days AS (
+  SELECT (($1::timestamptz AT TIME ZONE 'UTC')::date + g)::date AS day
+  FROM generate_series(0, $2::int - 1) AS g
+), runs AS (
+  SELECT
+    (created_at AT TIME ZONE 'UTC')::date AS day,
+    count(*) FILTER (WHERE status = 'completed' AND conclusion = 'success')::bigint AS succeeded,
+    count(*) FILTER (WHERE status = 'completed' AND conclusion = 'failure')::bigint AS failed,
+    count(*) FILTER (WHERE status = 'completed' AND conclusion <> '' AND conclusion NOT IN ('success', 'failure'))::bigint AS other
+  FROM workflow_runs
+  WHERE repository_id = $3
+    AND created_at BETWEEN $1::timestamptz AND $4::timestamptz
+  GROUP BY 1
+)
+SELECT
+  d.day,
+  COALESCE(r.succeeded, 0)::bigint AS succeeded,
+  COALESCE(r.failed, 0)::bigint AS failed,
+  COALESCE(r.other, 0)::bigint AS other
+FROM days d
+LEFT JOIN runs r ON r.day = d.day
+ORDER BY d.day
+`
+
+type ListActionsDailyParams struct {
+	WindowStart  pgtype.Timestamptz
+	Days         int32
+	RepositoryID int64
+	Now          pgtype.Timestamptz
+}
+
+type ListActionsDailyRow struct {
+	Day       pgtype.Date
+	Succeeded int64
+	Failed    int64
+	Other     int64
+}
+
+func (q *Queries) ListActionsDaily(ctx context.Context, arg ListActionsDailyParams) ([]ListActionsDailyRow, error) {
+	rows, err := q.db.Query(ctx, listActionsDaily,
+		arg.WindowStart,
+		arg.Days,
+		arg.RepositoryID,
+		arg.Now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListActionsDailyRow
+	for rows.Next() {
+		var i ListActionsDailyRow
+		if err := rows.Scan(
+			&i.Day,
+			&i.Succeeded,
+			&i.Failed,
+			&i.Other,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCrossFailedWorkflowRuns = `-- name: ListCrossFailedWorkflowRuns :many
+SELECT
+  w.repository_id,
+  r.name AS full_name,
+  w.source_id AS run_id,
+  w.run_number,
+  w.workflow_name,
+  w.html_url,
+  w.updated_at
+FROM workflow_runs w
+JOIN repositories r ON r.id = w.repository_id
+WHERE w.repository_id = ANY($1::bigint[])
+  AND w.status = 'completed'
+  AND w.conclusion = 'failure'
+  AND w.created_at BETWEEN $2::timestamptz AND $3::timestamptz
+ORDER BY w.updated_at DESC, w.source_id DESC
+LIMIT 25
+`
+
+type ListCrossFailedWorkflowRunsParams struct {
+	RepositoryIds []int64
+	WindowStart   pgtype.Timestamptz
+	Now           pgtype.Timestamptz
+}
+
+type ListCrossFailedWorkflowRunsRow struct {
+	RepositoryID int64
+	FullName     string
+	RunID        int64
+	RunNumber    int64
+	WorkflowName string
+	HtmlUrl      string
+	UpdatedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) ListCrossFailedWorkflowRuns(ctx context.Context, arg ListCrossFailedWorkflowRunsParams) ([]ListCrossFailedWorkflowRunsRow, error) {
+	rows, err := q.db.Query(ctx, listCrossFailedWorkflowRuns, arg.RepositoryIds, arg.WindowStart, arg.Now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCrossFailedWorkflowRunsRow
+	for rows.Next() {
+		var i ListCrossFailedWorkflowRunsRow
+		if err := rows.Scan(
+			&i.RepositoryID,
+			&i.FullName,
+			&i.RunID,
+			&i.RunNumber,
+			&i.WorkflowName,
+			&i.HtmlUrl,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeployments = `-- name: ListDeployments :many
 SELECT repository_id, source_id, environment, sha, ref, state, description, html_url, created_at, updated_at FROM deployments WHERE repository_id = $1 ORDER BY created_at DESC, source_id DESC
 `
 
 func (q *Queries) ListDeployments(ctx context.Context, repositoryID int64) ([]Deployment, error) {
 	rows, err := q.db.Query(ctx, listDeployments, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Deployment
+	for rows.Next() {
+		var i Deployment
+		if err := rows.Scan(
+			&i.RepositoryID,
+			&i.SourceID,
+			&i.Environment,
+			&i.Sha,
+			&i.Ref,
+			&i.State,
+			&i.Description,
+			&i.HtmlUrl,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeploymentsForSHA = `-- name: ListDeploymentsForSHA :many
+SELECT repository_id, source_id, environment, sha, ref, state, description, html_url, created_at, updated_at
+FROM deployments
+WHERE repository_id = $1
+  AND $2::text <> ''
+  AND sha = $2::text
+ORDER BY created_at DESC, source_id DESC
+LIMIT 20
+`
+
+type ListDeploymentsForSHAParams struct {
+	RepositoryID int64
+	Sha          string
+}
+
+func (q *Queries) ListDeploymentsForSHA(ctx context.Context, arg ListDeploymentsForSHAParams) ([]Deployment, error) {
+	rows, err := q.db.Query(ctx, listDeploymentsForSHA, arg.RepositoryID, arg.Sha)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +416,226 @@ func (q *Queries) ListIssuePullRequestLinks(ctx context.Context, arg ListIssuePu
 	return items, nil
 }
 
+const listLinkedPullRequestsForIssue = `-- name: ListLinkedPullRequestsForIssue :many
+SELECT
+  p.number,
+  p.title,
+  p.state,
+  p.html_url,
+  p.head_sha,
+  COALESCE(CASE
+    WHEN p.merged_at IS NOT NULL THEN 'merged'
+    WHEN p.state <> 'open' THEN 'closed'
+    WHEN NOT EXISTS (
+      SELECT 1 FROM activity_children c
+      WHERE c.repository_id = p.repository_id AND c.resource = 'reviews' AND c.parent_id = p.source_id AND c.watermark IS NOT NULL
+    ) THEN NULL
+    WHEN 'CHANGES_REQUESTED' = ANY(d.latest) THEN 'changes_requested'
+    WHEN 'APPROVED' = ANY(d.latest) THEN 'approved'
+    WHEN d.reviewed THEN 'commented'
+    ELSE 'awaiting_review'
+  END, '')::text AS review_state
+FROM issue_pull_request_links l
+JOIN activity_pull_requests p ON p.repository_id = l.repository_id AND p.number = l.pull_request_number
+CROSS JOIN LATERAL (
+  SELECT
+    EXISTS (
+      SELECT 1 FROM activity_reviews r
+      WHERE r.repository_id = p.repository_id AND r.pull_request_id = p.source_id AND r.submitted_at IS NOT NULL
+        AND upper(r.state) <> 'PENDING' AND r.author_id IS NOT NULL AND r.author_type <> 'Bot'
+        AND r.author_id IS DISTINCT FROM p.author_id
+    ) AS reviewed,
+    ARRAY(
+      SELECT DISTINCT ON (r.author_id) upper(r.state)
+      FROM activity_reviews r
+      WHERE r.repository_id = p.repository_id AND r.pull_request_id = p.source_id AND r.submitted_at IS NOT NULL
+        AND upper(r.state) IN ('APPROVED', 'CHANGES_REQUESTED')
+        AND r.author_id IS NOT NULL AND r.author_type <> 'Bot'
+        AND r.author_id IS DISTINCT FROM p.author_id
+      ORDER BY r.author_id, r.submitted_at DESC, r.source_id DESC
+    ) AS latest
+) d
+WHERE l.repository_id = $1 AND l.issue_number = $2
+ORDER BY p.number ASC
+`
+
+type ListLinkedPullRequestsForIssueParams struct {
+	RepositoryID int64
+	IssueNumber  int64
+}
+
+type ListLinkedPullRequestsForIssueRow struct {
+	Number      int64
+	Title       string
+	State       string
+	HtmlUrl     string
+	HeadSha     string
+	ReviewState string
+}
+
+func (q *Queries) ListLinkedPullRequestsForIssue(ctx context.Context, arg ListLinkedPullRequestsForIssueParams) ([]ListLinkedPullRequestsForIssueRow, error) {
+	rows, err := q.db.Query(ctx, listLinkedPullRequestsForIssue, arg.RepositoryID, arg.IssueNumber)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLinkedPullRequestsForIssueRow
+	for rows.Next() {
+		var i ListLinkedPullRequestsForIssueRow
+		if err := rows.Scan(
+			&i.Number,
+			&i.Title,
+			&i.State,
+			&i.HtmlUrl,
+			&i.HeadSha,
+			&i.ReviewState,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecentWorkflowRuns = `-- name: ListRecentWorkflowRuns :many
+SELECT repository_id, source_id, workflow_id, workflow_name, run_number, event, status, conclusion, head_branch, head_sha, html_url, created_at, run_started_at, updated_at, pull_request_numbers
+FROM workflow_runs
+WHERE repository_id = $1
+  AND created_at BETWEEN $2::timestamptz AND $3::timestamptz
+ORDER BY created_at DESC, source_id DESC
+LIMIT 50
+`
+
+type ListRecentWorkflowRunsParams struct {
+	RepositoryID int64
+	WindowStart  pgtype.Timestamptz
+	Now          pgtype.Timestamptz
+}
+
+func (q *Queries) ListRecentWorkflowRuns(ctx context.Context, arg ListRecentWorkflowRunsParams) ([]WorkflowRun, error) {
+	rows, err := q.db.Query(ctx, listRecentWorkflowRuns, arg.RepositoryID, arg.WindowStart, arg.Now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowRun
+	for rows.Next() {
+		var i WorkflowRun
+		if err := rows.Scan(
+			&i.RepositoryID,
+			&i.SourceID,
+			&i.WorkflowID,
+			&i.WorkflowName,
+			&i.RunNumber,
+			&i.Event,
+			&i.Status,
+			&i.Conclusion,
+			&i.HeadBranch,
+			&i.HeadSha,
+			&i.HtmlUrl,
+			&i.CreatedAt,
+			&i.RunStartedAt,
+			&i.UpdatedAt,
+			&i.PullRequestNumbers,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkflowFailures = `-- name: ListWorkflowFailures :many
+WITH windowed_runs AS (
+  SELECT repository_id, source_id, workflow_id, workflow_name, run_number, event, status, conclusion, head_branch, head_sha, html_url, created_at, run_started_at, updated_at, pull_request_numbers
+  FROM workflow_runs
+  WHERE repository_id = $1
+    AND created_at BETWEEN $2::timestamptz AND $3::timestamptz
+), agg AS (
+  SELECT
+    workflow_id,
+    count(*)::bigint AS total_runs,
+    count(*) FILTER (WHERE status = 'completed' AND conclusion = 'failure')::bigint AS failed_runs
+  FROM windowed_runs
+  GROUP BY workflow_id
+), latest AS (
+  SELECT DISTINCT ON (workflow_id)
+    workflow_id, workflow_name, source_id AS latest_run_id, status AS latest_status,
+    conclusion AS latest_conclusion, created_at AS latest_at, html_url
+  FROM windowed_runs
+  ORDER BY workflow_id, created_at DESC, source_id DESC
+)
+SELECT
+  l.workflow_id,
+  l.workflow_name,
+  a.failed_runs,
+  a.total_runs,
+  l.latest_run_id,
+  l.latest_status,
+  l.latest_conclusion,
+  l.latest_at,
+  l.html_url
+FROM agg a
+JOIN latest l ON l.workflow_id = a.workflow_id
+WHERE a.failed_runs > 0
+ORDER BY a.failed_runs DESC, l.latest_at DESC, l.workflow_id ASC
+LIMIT 20
+`
+
+type ListWorkflowFailuresParams struct {
+	RepositoryID int64
+	WindowStart  pgtype.Timestamptz
+	Now          pgtype.Timestamptz
+}
+
+type ListWorkflowFailuresRow struct {
+	WorkflowID       int64
+	WorkflowName     string
+	FailedRuns       int64
+	TotalRuns        int64
+	LatestRunID      int64
+	LatestStatus     string
+	LatestConclusion string
+	LatestAt         pgtype.Timestamptz
+	HtmlUrl          string
+}
+
+func (q *Queries) ListWorkflowFailures(ctx context.Context, arg ListWorkflowFailuresParams) ([]ListWorkflowFailuresRow, error) {
+	rows, err := q.db.Query(ctx, listWorkflowFailures, arg.RepositoryID, arg.WindowStart, arg.Now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListWorkflowFailuresRow
+	for rows.Next() {
+		var i ListWorkflowFailuresRow
+		if err := rows.Scan(
+			&i.WorkflowID,
+			&i.WorkflowName,
+			&i.FailedRuns,
+			&i.TotalRuns,
+			&i.LatestRunID,
+			&i.LatestStatus,
+			&i.LatestConclusion,
+			&i.LatestAt,
+			&i.HtmlUrl,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkflowJobs = `-- name: ListWorkflowJobs :many
 SELECT repository_id, source_id, run_id, name, status, conclusion, html_url, created_at, started_at, completed_at FROM workflow_jobs WHERE repository_id = $1 AND run_id = $2 ORDER BY created_at, source_id
 `
@@ -166,6 +689,60 @@ type ListWorkflowRunsParams struct {
 
 func (q *Queries) ListWorkflowRuns(ctx context.Context, arg ListWorkflowRunsParams) ([]WorkflowRun, error) {
 	rows, err := q.db.Query(ctx, listWorkflowRuns, arg.RepositoryID, arg.CreatedAt, arg.CreatedAt_2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WorkflowRun
+	for rows.Next() {
+		var i WorkflowRun
+		if err := rows.Scan(
+			&i.RepositoryID,
+			&i.SourceID,
+			&i.WorkflowID,
+			&i.WorkflowName,
+			&i.RunNumber,
+			&i.Event,
+			&i.Status,
+			&i.Conclusion,
+			&i.HeadBranch,
+			&i.HeadSha,
+			&i.HtmlUrl,
+			&i.CreatedAt,
+			&i.RunStartedAt,
+			&i.UpdatedAt,
+			&i.PullRequestNumbers,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkflowRunsForPullRequest = `-- name: ListWorkflowRunsForPullRequest :many
+SELECT repository_id, source_id, workflow_id, workflow_name, run_number, event, status, conclusion, head_branch, head_sha, html_url, created_at, run_started_at, updated_at, pull_request_numbers
+FROM workflow_runs
+WHERE repository_id = $1
+  AND (
+    $2::bigint = ANY(pull_request_numbers)
+    OR ($3::text <> '' AND head_sha = $3::text)
+  )
+ORDER BY created_at DESC, source_id DESC
+LIMIT 20
+`
+
+type ListWorkflowRunsForPullRequestParams struct {
+	RepositoryID      int64
+	PullRequestNumber int64
+	HeadSha           string
+}
+
+func (q *Queries) ListWorkflowRunsForPullRequest(ctx context.Context, arg ListWorkflowRunsForPullRequestParams) ([]WorkflowRun, error) {
+	rows, err := q.db.Query(ctx, listWorkflowRunsForPullRequest, arg.RepositoryID, arg.PullRequestNumber, arg.HeadSha)
 	if err != nil {
 		return nil, err
 	}
