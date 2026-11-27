@@ -60,7 +60,8 @@ async function setup(page: Page, opts: { session?: typeof signedIn | typeof demo
 const column = (page: Page, name: string) => page.getByRole('list', { name, exact: true });
 const card = (page: Page, n: number) => page.locator(`[data-issue-card="${n}"]`);
 const boardKeys = (page: Page) => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('repoorbit:issue-draft:') && key.includes(':board:')));
-const storedCard = (page: Page, n: number) => page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? 'null'), `repoorbit:issue-draft:real:ada:1:board:${n}`);
+const boardKey = (n: number) => `repoorbit:issue-draft:real:ada:1:board:${n}`;
+const storedCard = (page: Page, n: number) => page.evaluate(key => JSON.parse(localStorage.getItem(key) ?? 'null'), boardKey(n));
 
 async function openDrawer(page: Page, n: number) {
   await card(page, n).getByRole('button').click();
@@ -77,6 +78,7 @@ async function stageStatus(page: Page, n: number, status: string) {
   const drawer = await openDrawer(page, n);
   await drawer.getByRole('radio', { name: status, exact: true }).check();
   await expect(card(page, n)).toContainText('Staged');
+  await expect.poll(() => storedCard(page, n)).toMatchObject({ phase: 'staged' });
   await page.keyboard.press('Escape');
   await expect(drawer).toHaveCount(0);
 }
@@ -168,7 +170,7 @@ test('dragging a card stages the move on the card and sends nothing', async ({ p
   await card(page, 3).dragTo(column(page, 'In Progress'), { steps: 15 });
   await expect(column(page, 'In Progress').locator('[data-issue-card="3"]')).toContainText('Staged · from Todo');
   await expect(column(page, 'Todo').locator('[data-issue-card="3"]')).toHaveCount(0);
-  expect(await storedCard(page, 3)).toMatchObject({ phase: 'staged', target: { status: 'in_progress' }, snapshot: { status: 'todo', labels: ['status:todo'] }, request: null, operationId: null });
+  await expect.poll(() => storedCard(page, 3)).toMatchObject({ phase: 'staged', target: { status: 'in_progress' }, snapshot: { status: 'todo', labels: ['status:todo'] }, request: null, operationId: null });
   await expect(page.getByText('1 staged change')).toBeVisible();
   expect(posts).toEqual([]);
 });
@@ -230,7 +232,7 @@ test('assigning someone to a Backlog card moves it to Todo and names the side ef
   await expect(column(page, 'Todo').locator('[data-issue-card="12"]')).toContainText('Staged · from Backlog');
   await expect(drawer.getByRole('radio', { name: 'Todo' })).toBeChecked();
   await expect(drawer).toContainText('Moves to Todo because an assignee was added');
-  expect(await storedCard(page, 12)).toMatchObject({ target: { status: 'todo', assigneesAdd: ['alex'], assigneesRemove: [], assignedFromBacklog: true } });
+  await expect.poll(() => storedCard(page, 12)).toMatchObject({ target: { status: 'todo', assigneesAdd: ['alex'], assigneesRemove: [], assignedFromBacklog: true } });
   expect(posts).toEqual([]);
 });
 
@@ -241,7 +243,7 @@ test('Reopen on a Done card stages it to Backlog', async ({ page }) => {
   await drawer.getByRole('button', { name: 'Reopen issue' }).click();
   await expect(column(page, 'Backlog').locator('[data-issue-card="9"]')).toContainText('Staged · from Done');
   await expect(drawer).toContainText('Reopens the issue');
-  expect(await storedCard(page, 9)).toMatchObject({ target: { status: 'backlog' }, snapshot: { state: 'closed', status: 'done' } });
+  await expect.poll(() => storedCard(page, 9)).toMatchObject({ target: { status: 'backlog' }, snapshot: { state: 'closed', status: 'done' } });
 });
 
 test('a failed card stays in its confirmed column naming its target, and an unknown card is locked', async ({ page }) => {
@@ -269,6 +271,7 @@ test('staging respects an unknown card written before the Board refreshes', asyn
   await page.goto('/workspace/1?tab=board');
   const drawer = await openDrawer(page, 3);
   await drawer.getByRole('radio', { name: 'In Progress' }).check();
+  await expect.poll(() => storedCard(page, 3)).toMatchObject({ phase: 'staged' });
   const unknown = await page.evaluate(() => {
     const key = 'repoorbit:issue-draft:real:ada:1:board:3';
     const updated = { ...JSON.parse(localStorage.getItem(key)!), phase: 'unknown', request: { draft: {}, idempotencyKey: 'other-tab' } };
@@ -278,8 +281,8 @@ test('staging respects an unknown card written before the Board refreshes', asyn
 
   const done = drawer.getByRole('radio', { name: 'Done' });
   await done.click();
-  expect(await storedCard(page, 3)).toEqual(unknown);
   await expect(done).toBeDisabled();
+  expect(await storedCard(page, 3)).toEqual(unknown);
 });
 
 test('a stale drawer assignee edit preserves a newer stored card', async ({ page }) => {
@@ -287,6 +290,7 @@ test('a stale drawer assignee edit preserves a newer stored card', async ({ page
   await page.goto('/workspace/1?tab=board');
   const drawer = await openDrawer(page, 3);
   await drawer.getByRole('radio', { name: 'In Progress' }).check();
+  await expect.poll(() => storedCard(page, 3)).toMatchObject({ phase: 'staged' });
   const changed = await page.evaluate(() => {
     const key = 'repoorbit:issue-draft:real:ada:1:board:3';
     const staged = JSON.parse(localStorage.getItem(key)!);
@@ -300,8 +304,8 @@ test('a stale drawer assignee edit preserves a newer stored card', async ({ page
   });
 
   await drawer.getByRole('checkbox', { name: 'sam', exact: true }).click();
-  expect(await storedCard(page, 3)).toEqual(changed);
   await expect(card(page, 3)).toContainText('Changed on GitHub');
+  expect(await storedCard(page, 3)).toEqual(changed);
 });
 
 test('Discard removes an expired unknown card with no operation id without sending a write', async ({ page }) => {
@@ -351,6 +355,7 @@ test('a staged card survives a reload and confirmed access loss clears it with t
   const drawer = await openDrawer(page, 3);
   await drawer.getByRole('radio', { name: 'In Progress' }).check();
   await expect(column(page, 'In Progress').locator('[data-issue-card="3"]')).toContainText('Staged');
+  await expect.poll(() => storedCard(page, 3)).toMatchObject({ phase: 'staged' });
   await page.evaluate(() => localStorage.setItem('repoorbit:issue-draft:real:ada:1:create', JSON.stringify({ version: 1, title: 'Draft' })));
 
   await page.goto('/workspace/1?tab=board');
@@ -552,7 +557,7 @@ test('a changed_on_github response marks the card Changed on GitHub, with no Boa
   const drawer = await openDrawer(page, 3);
   await expect(drawer).toContainText('This issue changed on GitHub. Stage your change again to save it, or discard it.');
   await drawer.getByRole('button', { name: 'Stage again' }).click();
-  expect(await storedCard(page, 3)).toMatchObject({ phase: 'staged', snapshot: { status: 'in_review' }, target: { status: 'in_progress' } });
+  await expect.poll(() => storedCard(page, 3)).toMatchObject({ phase: 'staged', snapshot: { status: 'in_review' }, target: { status: 'in_progress' } });
 });
 
 test('a not-recorded response leaves the card Failed, and saving it again sends a new Idempotency-Key (R6)', async ({ page }) => {
@@ -574,7 +579,7 @@ test('a not-recorded response leaves the card Failed, and saving it again sends 
   const drawer = await openDrawer(page, 3);
   await expect(drawer).toContainText('The save failed. Stage your change again to retry, or discard it.');
   await drawer.getByRole('button', { name: 'Stage again' }).click();
-  expect(await storedCard(page, 3)).toMatchObject({ phase: 'staged', target: { status: 'in_progress' } });
+  await expect.poll(() => storedCard(page, 3)).toMatchObject({ phase: 'staged', target: { status: 'in_progress' } });
   await drawer.getByRole('button', { name: 'Close task drawer' }).click();
   await card(page, 3).dragTo(column(page, 'In Review'), { steps: 15 });
   await expect(card(page, 3)).toContainText('Staged · from Todo');
@@ -706,6 +711,111 @@ test('another tab waits for the save lock, rereads the card, and refreshes the B
   expect(boardIncludes).toHaveLength(readsBeforeRemoval + 1);
   expect(sent).toHaveLength(1);
   expect(replays).toEqual([]);
+});
+
+const draftLockName = 'repoorbit:issue-draft-storage';
+
+async function holdDraftStorageLock(other: Page) {
+  await setup(other);
+  await other.goto('/workspace/1?tab=board');
+  await other.evaluate(name => new Promise<void>(acquired => {
+    void navigator.locks.request(name, () => new Promise<void>(release => {
+      window.addEventListener('release-draft-lock', () => release(), { once: true });
+      acquired();
+    }));
+  }), draftLockName);
+}
+
+async function expectDraftStorageWaiters(page: Page, count = 1) {
+  await expect.poll(() => page.evaluate(async name =>
+    (await navigator.locks.query()).pending?.filter(lock => lock.name === name).length, draftLockName)).toBe(count);
+}
+
+test('Discard waits for the draft storage lock before removing the card', async ({ page, context }) => {
+  const { posts } = await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  const original = await storedCard(page, 3);
+  const drawer = await openDrawer(page, 3);
+  const other = await context.newPage();
+  await holdDraftStorageLock(other);
+
+  await drawer.getByRole('button', { name: 'Discard' }).click();
+  await expectDraftStorageWaiters(page);
+  expect(await storedCard(page, 3)).toEqual(original);
+
+  await other.evaluate(() => window.dispatchEvent(new Event('release-draft-lock')));
+  await expect(drawer.getByRole('region', { name: 'Staged change' })).toHaveCount(0);
+  expect(await storedCard(page, 3)).toBeNull();
+  expect(posts).toEqual([]);
+});
+
+test('a staging gesture waiting for the draft storage lock preserves another tab’s unknown card', async ({ page, context }) => {
+  await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  const original = await storedCard(page, 3);
+  const drawer = await openDrawer(page, 3);
+  const other = await context.newPage();
+  await holdDraftStorageLock(other);
+
+  const done = drawer.getByRole('radio', { name: 'Done' });
+  await done.check();
+  await expectDraftStorageWaiters(page);
+  expect(await storedCard(page, 3)).toEqual(original);
+
+  const unknown = { ...original, phase: 'unknown', request: { draft: {}, idempotencyKey: 'other-tab' } };
+  await other.evaluate(({ key, unknown }) => {
+    localStorage.setItem(key, JSON.stringify(unknown));
+    window.dispatchEvent(new Event('release-draft-lock'));
+  }, { key: boardKey(3), unknown });
+
+  await expect(done).toBeDisabled();
+  await expect(drawer.getByRole('radio', { name: 'In Progress' })).toBeChecked();
+  await expect(card(page, 3)).toHaveAttribute('draggable', 'false');
+  expect(await storedCard(page, 3)).toEqual(unknown);
+});
+
+test('two drawer gestures waiting for the draft storage lock both apply', async ({ page, context }) => {
+  await setup(page);
+  await page.goto('/workspace/1?tab=board');
+  const drawer = await openDrawer(page, 3);
+  const other = await context.newPage();
+  await holdDraftStorageLock(other);
+
+  await drawer.getByRole('radio', { name: 'In Progress' }).check();
+  await drawer.getByRole('checkbox', { name: 'sam', exact: true }).check();
+  await expectDraftStorageWaiters(page, 2);
+  expect(await storedCard(page, 3)).toBeNull();
+
+  await other.evaluate(() => window.dispatchEvent(new Event('release-draft-lock')));
+  await expect.poll(() => storedCard(page, 3)).toMatchObject({
+    phase: 'staged', target: { status: 'in_progress', assigneesAdd: ['sam'] },
+  });
+});
+
+test('a save result waiting for the draft storage lock leaves a deleted card deleted', async ({ page, context }) => {
+  await setup(page);
+  let pending: Route | undefined;
+  await mockUpdates(page, async route => { pending = route; });
+  await page.goto('/workspace/1?tab=board');
+  await stageStatus(page, 3, 'In Progress');
+  await confirmSave(page);
+  await expect.poll(() => Boolean(pending)).toBe(true);
+  const other = await context.newPage();
+  await holdDraftStorageLock(other);
+
+  await pending!.fulfill({ status: 201, json: operation(3, 'unknown') });
+  await expectDraftStorageWaiters(page);
+  expect(await storedCard(page, 3)).toMatchObject({ phase: 'unknown', operationId: null });
+  await other.evaluate(key => {
+    localStorage.removeItem(key);
+    window.dispatchEvent(new Event('release-draft-lock'));
+  }, boardKey(3));
+
+  await expect(review(page)).toHaveCount(0);
+  await expect(card(page, 3)).toHaveAttribute('draggable', 'true');
+  expect(await storedCard(page, 3)).toBeNull();
 });
 
 test('a transport failure names the reviewed cards that remain staged and the next save clears the notice', async ({ page }) => {

@@ -1,6 +1,6 @@
 import { IssueWriteError, generateIdempotencyKey, submitIssueUpdate } from "./api";
-import { applySaveResult, deriveChange, guardBoardCardWrites, loadBoardCard, removeBoardCard, type BoardCard, type BoardSaver, type BoardSaveResult } from "./board";
-import { boardDraftPrefix } from "./drafts";
+import { applySaveResult, deriveChange, loadBoardCard, removeBoardCard, saveBoardCard, type BoardCard, type BoardSaver, type BoardSaveResult } from "./board";
+import { boardDraftPrefix, withDraftStorageLock } from "./drafts";
 
 export type BoardSaveOptions = {
   viewerKey: string;
@@ -32,42 +32,40 @@ export async function saveBoardChanges({ viewerKey, repositoryId, reviewed, save
   saving = true;
   const stored = (issueNumber: number) => loadBoardCard(viewerKey, repositoryId, issueNumber);
   try {
-    const guard = guardBoardCardWrites(viewerKey, repositoryId);
     return await withBoardLock(viewerKey, repositoryId, async () => {
       for (const seen of [...reviewed].sort((a, b) => a.number - b.number)) {
-        if (guard.wasCleared()) break;
-        const card = stored(seen.number);
-        if (card?.phase !== "staged" || !unchangedSinceReview(card, seen)) continue;
-        const change = deriveChange(card.snapshot, card.target, saver);
-        if (!change) continue;
+        const prepared = await withDraftStorageLock(() => {
+          const card = stored(seen.number);
+          if (card?.phase !== "staged" || !unchangedSinceReview(card, seen)) return;
+          const change = deriveChange(card.snapshot, card.target, saver);
+          if (!change) return;
 
-        const request = { draft: change.draft, idempotencyKey: generateIdempotencyKey() };
-        const sending: BoardCard = { ...card, request, attemptedAt: new Date().toISOString() };
-        // Stored as pending, which reads back as unknown, so a send cut off by a reload stays locked. Nothing is sent
-        // unless the request reads back from storage.
-        if (!guard.write({ ...sending, phase: "pending" })) {
-          onChange();
-          break;
-        }
-        if (stored(card.number)?.request?.idempotencyKey !== request.idempotencyKey) continue;
+          const request = { draft: change.draft, idempotencyKey: generateIdempotencyKey() };
+          const sending = { ...card, request, attemptedAt: new Date().toISOString() };
+          // Pending reads back as unknown so a send cut off by a reload stays locked. Verify persistence before sending.
+          saveBoardCard(viewerKey, repositoryId, { ...sending, phase: "pending" });
+          if (stored(card.number)?.request?.idempotencyKey === request.idempotencyKey) return sending;
+        });
+        if (!prepared) continue;
+        const { number, request } = prepared;
         onChange();
-        if (guard.wasCleared()) break;
 
         let result: BoardSaveResult;
         try {
-          result = { operation: await submit(repositoryId, card.number, request.idempotencyKey, request.draft, AbortSignal.timeout(120_000)) };
+          result = { operation: await submit(repositoryId, number, request.idempotencyKey, request.draft, AbortSignal.timeout(120_000)) };
         } catch (error) {
           result = { error };
         }
         // A late result must respect storage cleared during the send or a recovery that recorded an operation id.
-        const current = stored(card.number);
-        if (current?.request?.idempotencyKey === request.idempotencyKey && (!("error" in result) || current.operationId === null)) {
-          const outcome = applySaveResult(sending, result);
-          if (outcome.kind === "removed") removeBoardCard(viewerKey, repositoryId, card.number);
-          const cleared = outcome.kind === "card" && !guard.write(outcome.card);
-          onChange();
-          if (cleared) break;
-        }
+        const changed = await withDraftStorageLock(() => {
+          const current = stored(number);
+          if (current?.request?.idempotencyKey !== request.idempotencyKey || ("error" in result && current.operationId !== null)) return false;
+          const outcome = applySaveResult(prepared, result);
+          if (outcome.kind === "removed") removeBoardCard(viewerKey, repositoryId, number);
+          else saveBoardCard(viewerKey, repositoryId, outcome.card);
+          return true;
+        });
+        if (changed) onChange();
         if ("error" in result) {
           const { error } = result;
           if (!(error instanceof IssueWriteError) || error.kind === "transport" || error.kind === "unauthenticated") break;
