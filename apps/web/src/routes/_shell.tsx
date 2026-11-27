@@ -1,5 +1,5 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router";
-import { AppShell } from "@/components/app-shell";
+import { AppShell } from "@/features/repositories/app-shell";
 import { sessionQuery } from "@/features/auth/api";
 
 // Workspace shell: every signed-in screen renders inside the sidebar layout. Signed-out real-mode visitors go to /login.

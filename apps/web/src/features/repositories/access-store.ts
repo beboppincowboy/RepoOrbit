@@ -1,6 +1,6 @@
+// Selected-repository reads, row selectors, and the per-viewer access outcomes that sequence late responses.
 import { useSyncExternalStore } from "react";
 import { useInfiniteQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
-import type { CrossRepositoryOverview } from "@/features/analytics/api";
 import {
   fetchRepositoryDetails,
   fetchSelectedRepositoryDetailsPage,
@@ -13,12 +13,14 @@ import {
 } from "@/features/repositories/api";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError } from "@/shared/api/errors";
 import type { MetricWindow, ViewerSession } from "@/shared/api/transport";
-import { clearRepositoryIssueDrafts } from "@/lib/drafts";
-import { repositorySnapshotKey, repositorySnapshotPrefix, repositorySnapshotsKey } from "@/lib/repository-snapshots";
-
-export const selectedRepositoriesKey = (session: ViewerSession) => ["selectedRepositories", session.mode, session.user?.login] as const;
-
-export const crossRepositoryOverviewKey = (session: ViewerSession) => ["crossRepositoryOverview", session.mode, session.user?.login] as const;
+import { clearRepositoryIssueDrafts } from "@/features/issues/drafts";
+import {
+  crossRepositoryOverviewKey,
+  repositorySnapshotKey,
+  repositorySnapshotPrefix,
+  repositorySnapshotsKey,
+  selectedRepositoriesKey,
+} from "@/features/repositories/query-keys";
 
 export function viewerKeyOf(session: ViewerSession): string {
   return `${session.mode}:${session.user?.login ?? ""}`;
@@ -85,7 +87,8 @@ function setViewerOutcome(viewerKey: string, repositoryId: string, outcome: Repo
   notifyVisibility();
 }
 
-function newerRejection(
+// The outcome when it is a denial or unverified check recorded after sinceSeq (a currentAccessSeq() value), else null.
+export function newerRejection(
   outcome: RepositoryAccessOutcome | undefined,
   sinceSeq: number,
 ): Exclude<RepositoryAccessOutcome, { status: "verified" }> | null {
@@ -339,31 +342,6 @@ export function selectWithheldSummary(
 export function selectFailedDetailBatches(selection: ReturnType<typeof useSelectedRepositories>): SelectedBatch[] {
   if (selection.isRefetchError) return [];
   return selection.data?.pages.flatMap(page => page.batches.filter(batch => batch.details === null)) ?? [];
-}
-
-export function filterAggregateByVisibility(
-  aggregate: CrossRepositoryOverview,
-  aggregateStartedAtSeq: number,
-  visibility: ViewerVisibility,
-): CrossRepositoryOverview {
-  const supersededIds = new Set<string>();
-  for (const [repoId, outcome] of visibility.entries()) {
-    if (newerRejection(outcome, aggregateStartedAtSeq)) {
-      supersededIds.add(repoId);
-    }
-  }
-  if (supersededIds.size === 0) {
-    return aggregate;
-  }
-  const withheldCoverage = { covered: false, reason: "access_changed", through: null };
-  return {
-    ...aggregate,
-    openIssues: { value: null, coverage: withheldCoverage },
-    reviewBacklog: { value: null, coverage: withheldCoverage },
-    needsAttention: aggregate.needsAttention.filter(item => !supersededIds.has(item.repositoryId)),
-    assignedToMe: aggregate.assignedToMe.filter(item => !supersededIds.has(item.repositoryId)),
-    daily: aggregate.daily.map(point => ({ day: point.day, issuesOpened: null, pullRequestsMerged: null })),
-  };
 }
 
 type OutcomeTransition =

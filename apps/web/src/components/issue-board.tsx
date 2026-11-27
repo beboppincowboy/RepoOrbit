@@ -4,19 +4,21 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 import { Button } from "@/shared/ui/button";
 import { BoardSaveReview } from "@/components/board-save-review";
-import { StatusSourceSetup } from "@/components/status-source-setup";
-import { STATUS_NAMES, TaskDrawer } from "@/components/task-drawer";
-import { statusLabelsQueryKey } from "@/components/write-history";
-import { BOARD_STATUSES, deriveChange, loadBoardCard, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
+import { StatusSourceSetup } from "@/features/issues/status-source-setup";
+import { TaskDrawer } from "@/components/task-drawer";
+import { repositoryBoardKey } from "@/features/board/query-keys";
+import { statusLabelsQueryKey } from "@/features/issues/query-keys";
+import { BOARD_STATUSES, STATUS_NAMES, type BoardStatus } from "@/features/issues/status";
+import { deriveChange, loadBoardCard, loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard, type BoardCardPhase, type BoardTarget } from "@/lib/board";
 import { canDiscardBoardCard, runRecovery, recoveryAction } from "@/lib/board-recovery";
 import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from "@/lib/board-review";
 import { saveBoardChanges, withBoardLock } from "@/lib/board-save";
 import type { ViewerSession } from "@/shared/api/transport";
 import { fetchRepositoryBoard, type BoardIssue } from "@/features/board/api";
-import { fetchStatusLabels, type BoardStatus, type IssueCapabilities } from "@/features/issues/api";
+import { fetchStatusLabels, type IssueCapabilities } from "@/features/issues/api";
 import { GraphQLUnavailableError, RepositoryAccessUnverifiedError } from "@/shared/api/errors";
-import { boardDraftPrefix, withDraftStorageLock } from "@/lib/drafts";
-import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/lib/selected-repositories";
+import { boardDraftPrefix, withDraftStorageLock } from "@/features/issues/drafts";
+import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, useRepositoryVisibility, viewerKeyOf } from "@/features/repositories/access-store";
 
 const panel = "rounded-xl border border-border bg-card min-w-0 min-h-0";
 
@@ -89,7 +91,7 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
   const saving = useSyncExternalStore(subscribeSaveRunning, () => saveRunning, () => false);
 
   const query = useQuery({
-    queryKey: ["repositoryBoard", viewerKey, repositoryId],
+    queryKey: repositoryBoardKey(viewerKey, repositoryId),
     queryFn: async ({ signal }) => {
       const startedAtSeq = currentAccessSeq();
       try {

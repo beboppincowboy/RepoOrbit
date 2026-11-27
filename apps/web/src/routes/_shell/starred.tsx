@@ -2,10 +2,11 @@ import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/r
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { Button } from "@/shared/ui/button";
-import { SyncStatus } from "@/components/sync-status";
-import { RepositoryCell, RepositoriesHeading, SourceTabs, ToolsRow, noteClass, searchBoxClass, tableCardClass, tdClass, thClass, warnNoteClass } from "@/components/repository-list";
-import { matchesListSearch, validateListSearch } from "@/lib/list-search";
-import { recordRepositoryRemoved } from "@/lib/selected-repositories";
+import { SyncStatus } from "@/features/repositories/sync-status";
+import { RepositoryCell, RepositoriesHeading, SourceTabs, ToolsRow, noteClass, searchBoxClass, tableCardClass, tdClass, thClass, warnNoteClass } from "@/features/repositories/repository-list";
+import { matchesListSearch, validateListSearch } from "@/features/repositories/list-search";
+import { recordRepositoryRemoved } from "@/features/repositories/access-store";
+import { starredRepositoriesKey } from "@/features/repositories/query-keys";
 import { setFollowed, starredRepositories, type ListedRepo, type StarredPage } from "@/features/repositories/api";
 
 export const Route = createFileRoute("/_shell/starred")({
@@ -25,7 +26,7 @@ function Starred() {
   const [savingFollow, setSavingFollow] = useState(false);
 
   const query = useInfiniteQuery({
-    queryKey: ["starred"],
+    queryKey: starredRepositoriesKey,
     queryFn: ({ pageParam }: { pageParam: StarredParam }) => starredRepositories(pageParam.page, pageParam.refresh),
     initialPageParam: { page: 1, refresh: true } as StarredParam,
     getNextPageParam: (last: StarredPage) => (last.nextPage > 0 ? { page: last.nextPage, refresh: false } : undefined),
@@ -44,7 +45,7 @@ function Starred() {
       await setFollowed(repo.id, !repo.selected);
       const selected = !repo.selected;
       if (!selected) recordRepositoryRemoved(queryClient, session, repo.id);
-      queryClient.setQueryData<InfiniteData<StarredPage>>(["starred"], old => old && { ...old, pages: old.pages.map(p => ({ ...p, repositories: p.repositories.map(r => (r.id === repo.id ? { ...r, selected, syncState: selected ? "awaiting-sync" as const : "not-synchronized" as const } : r)) })) });
+      queryClient.setQueryData<InfiniteData<StarredPage>>(starredRepositoriesKey, old => old && { ...old, pages: old.pages.map(p => ({ ...p, repositories: p.repositories.map(r => (r.id === repo.id ? { ...r, selected, syncState: selected ? "awaiting-sync" as const : "not-synchronized" as const } : r)) })) });
       setError(null);
       void queryClient.invalidateQueries({ queryKey: ["selectedRepositories"] });
     } catch (e) { setError(e instanceof Error ? e.message : "Something went wrong."); } finally { setSavingFollow(false); }
@@ -55,7 +56,7 @@ function Starred() {
     <ToolsRow>
       <SourceTabs />
       {!demo && <input type="search" aria-label="Search starred repositories" placeholder="Filter by name or description" value={search.q ?? ""} onChange={e => navigate({ search: prev => ({ ...prev, q: e.target.value || undefined }), replace: true })} className={searchBoxClass} />}
-      {!demo && <Button variant="outline" size="sm" className="ml-auto" onClick={() => queryClient.resetQueries({ queryKey: ["starred"] })} disabled={controlsDisabled}>Refresh</Button>}
+      {!demo && <Button variant="outline" size="sm" className="ml-auto" onClick={() => queryClient.resetQueries({ queryKey: starredRepositoriesKey })} disabled={controlsDisabled}>Refresh</Button>}
     </ToolsRow>
     {demo && <p className={noteClass}>Demo mode has no GitHub connection, so there are no stars to follow.</p>}
     {error && <p role="alert" className={`${noteClass} text-destructive`}>{error}</p>}

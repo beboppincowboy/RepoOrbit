@@ -1,11 +1,10 @@
 import { RepositoryAccessUnverifiedError } from "@/shared/api/errors";
 import { coverageFields, graphqlQuery, guardedGraphql, restFetch, type Coverage, type ReviewState } from "@/shared/api/transport";
+import type { BoardStatus } from "./status";
 import { IssueWriteError, toIssueWriteError } from "./write-errors";
 
 // An issue's Board-relevant state: a staged card's snapshot, and the `current` of a 409 "changed on GitHub".
 export type BoardSnapshot = { state: "open" | "closed"; labels: string[]; assignees: string[]; status: BoardStatus; updatedAt: string };
-
-export type BoardStatus = "backlog" | "todo" | "in_progress" | "in_review" | "done";
 
 export type WorkspaceIssue = {
   id: string;

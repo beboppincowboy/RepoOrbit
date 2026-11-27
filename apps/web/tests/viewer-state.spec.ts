@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { QueryClient } from '@tanstack/react-query';
 import { logout, sessionQuery, type ViewerSession } from '../src/features/auth/api';
-import { issueDraftStorageKey } from '../src/lib/drafts';
-import { repositorySnapshotKey } from '../src/lib/repository-snapshots';
-import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, resetViewerSelection, selectedRepositoriesKey } from '../src/lib/selected-repositories';
+import { issueDraftStorageKey } from '../src/features/issues/drafts';
+import { repositorySnapshotKey, selectedRepositoriesKey } from '../src/features/repositories/query-keys';
+import { currentAccessSeq, recordAccessDenied, recordAccessUnverified, recordAccessVerified, resetViewerSelection } from '../src/features/repositories/access-store';
 import { mockWindowStorage } from './mocks';
 
 const session: ViewerSession = { mode: 'real', user: { login: 'ada', demo: false }, csrfToken: null };

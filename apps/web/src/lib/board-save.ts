@@ -1,7 +1,7 @@
 import { submitIssueUpdate } from "@/features/issues/api";
 import { IssueWriteError, generateIdempotencyKey } from "@/features/issues/write-errors";
 import { applySaveResult, deriveChange, loadBoardCard, removeBoardCard, saveBoardCard, type BoardCard, type BoardSaver, type BoardSaveResult } from "./board";
-import { boardDraftPrefix, withDraftStorageLock } from "./drafts";
+import { boardDraftPrefix, withDraftStorageLock } from "@/features/issues/drafts";
 
 export type BoardSaveOptions = {
   viewerKey: string;

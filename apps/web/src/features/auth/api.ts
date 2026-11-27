@@ -1,4 +1,4 @@
-import { clearAllIssueDrafts } from "@/lib/drafts";
+import { clearAllIssueDrafts } from "@/features/issues/drafts";
 import { getCsrfToken, restFetch, setCsrfToken, type ViewerSession } from "@/shared/api/transport";
 
 export type { ViewerSession };

@@ -1,4 +1,3 @@
-import { repositorySnapshotsKey } from "@/lib/repository-snapshots";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -17,8 +16,9 @@ import {
   useSelectionVisibility,
   type SelectedBatch,
   type VisibleSelectedRow,
-} from "@/lib/selected-repositories";
-import { LoadingCircle, SyncDot, syncDisplay, syncLabels } from "@/components/sync-status";
+} from "@/features/repositories/access-store";
+import { ownedRepositoriesKey, repositorySnapshotsKey, starredRepositoriesKey } from "@/features/repositories/query-keys";
+import { LoadingCircle, SyncDot, syncDisplay, syncLabels } from "@/features/repositories/sync-status";
 
 const icon = (d: ReactNode) => <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" className="shrink-0">{d}</svg>;
 const gridIcon = icon(<path d="M2 2h5v5H2zM9 2h5v5H9zM2 9h5v5H2zM9 9h5v5H9z" fill="none" stroke="currentColor" strokeWidth="1.4" />);
@@ -61,8 +61,8 @@ export function AppShell({ session, children }: { session: ViewerSession; childr
     if (!Number.isFinite(delay)) return;
     const timer = window.setTimeout(() => {
       void queryClient.invalidateQueries({ queryKey: ["selectedRepositories", mode, login] });
-      void queryClient.invalidateQueries({ queryKey: ["owned"] });
-      void queryClient.invalidateQueries({ queryKey: ["starred"] });
+      void queryClient.invalidateQueries({ queryKey: ownedRepositoriesKey });
+      void queryClient.invalidateQueries({ queryKey: starredRepositoriesKey });
     }, Math.max(1000, delay + 1000));
     return () => window.clearTimeout(timer);
   }, [login, mode, queryClient, retryTime]);

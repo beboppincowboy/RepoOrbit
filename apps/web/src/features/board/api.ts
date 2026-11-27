@@ -1,4 +1,4 @@
-import type { BoardStatus } from "@/features/issues/api";
+import type { BoardStatus } from "@/features/issues/status";
 import { guardedGraphql } from "@/shared/api/transport";
 
 // status is null when the repository's status labels are off. multipleStatus flags an open issue carrying more than one
