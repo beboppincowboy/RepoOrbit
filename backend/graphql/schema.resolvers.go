@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
-	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/analytics"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/readguard"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
@@ -97,32 +97,33 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 	for i, row := range rows {
 		ids[i] = row.ID
 	}
-	readFence, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, userID)
+	auth, err := r.authorizePreselected(ctx, userID, ids)
 	if err != nil {
-		return nil, fmt.Errorf("database unavailable")
+		return nil, err
 	}
-	checks := r.RepoAccess.Check(ctx, userID, ids, true)
+	result.Withheld = auth.Withheld
+	result.RetryAt = retryAtString(auth.RetryAt)
 	for _, row := range rows {
 		cursorID := strconv.FormatInt(row.ID, 10)
 		result.EndCursor = &cursorID
-		d := checks[row.ID]
-		if d.Unverified {
-			result.Withheld++
-			result.RetryAt = laterRetry(result.RetryAt, d.RetryAt)
-		}
+		d := auth.Checks[row.ID]
 		if d.Allowed {
 			result.Nodes = append(result.Nodes, &model.Repository{ID: cursorID, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: true, SyncState: string(repositories.SyncStateFor(true)), Activity: activityStatus(false, true)})
 		}
 	}
-	if err := r.loadSelectedStatuses(ctx, userID, result.Nodes, selectedRepositoryStatusSelection(ctx)); err != nil {
-		return nil, fmt.Errorf("database unavailable")
-	}
-	current, err := readFence.Current(ctx, r.RepoAccess.Pool)
-	if err != nil || !current {
-		result.Withheld += len(result.Nodes)
-		result.Nodes = []*model.Repository{}
-	}
-	return result, nil
+	return readguard.Run(ctx, r.RepoAccess.Pool, auth,
+		func() (*model.RepositoryConnection, error) {
+			if err := r.loadSelectedStatuses(ctx, userID, result.Nodes, selectedRepositoryStatusSelection(ctx)); err != nil {
+				return nil, fmt.Errorf("database unavailable")
+			}
+			return result, nil
+		},
+		func() (*model.RepositoryConnection, error) {
+			result.Withheld += len(result.Nodes)
+			result.Nodes = []*model.Repository{}
+			return result, nil
+		},
+	)
 }
 
 // Repository is the resolver for the repository field. A repository the user can access but has not selected
@@ -148,9 +149,9 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 	if err != nil {
 		return nil, err
 	}
-	readFence, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, userID)
+	auth, err := r.fenceOnly(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("database unavailable")
+		return nil, err
 	}
 	d := r.RepoAccess.CheckOne(ctx, userID, repoID, true)
 	if d.Unverified {
@@ -159,21 +160,24 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 	if !d.Allowed {
 		return nil, nil
 	}
-	selected, err := r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: userID, RepositoryIds: []int64{repoID}})
-	if err != nil {
-		return nil, fmt.Errorf("database unavailable")
-	}
-	repo := &model.Repository{ID: id, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: len(selected) == 1, SyncState: string(repositories.SyncStateFor(len(selected) == 1)), Activity: activityStatus(false, len(selected) == 1)}
-	if len(selected) == 1 {
-		if err := r.loadSelectedStatuses(ctx, userID, []*model.Repository{repo}, repositoryStatusSelection(ctx)); err != nil {
-			return nil, fmt.Errorf("database unavailable")
-		}
-	}
-	current, err := readFence.Current(ctx, r.RepoAccess.Pool)
-	if err != nil || !current {
-		return nil, unverifiedError(time.Time{})
-	}
-	return repo, nil
+	return readguard.Run(ctx, r.RepoAccess.Pool, auth,
+		func() (*model.Repository, error) {
+			selected, err := r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: userID, RepositoryIds: []int64{repoID}})
+			if err != nil {
+				return nil, fmt.Errorf("database unavailable")
+			}
+			repo := &model.Repository{ID: id, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: len(selected) == 1, SyncState: string(repositories.SyncStateFor(len(selected) == 1)), Activity: activityStatus(false, len(selected) == 1)}
+			if len(selected) == 1 {
+				if err := r.loadSelectedStatuses(ctx, userID, []*model.Repository{repo}, repositoryStatusSelection(ctx)); err != nil {
+					return nil, fmt.Errorf("database unavailable")
+				}
+			}
+			return repo, nil
+		},
+		func() (*model.Repository, error) {
+			return nil, unverifiedError(time.Time{})
+		},
+	)
 }
 
 // Issues is the resolver for the issues field.

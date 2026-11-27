@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/repoorbit/repoorbit/backend/internal/analytics"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
+	"github.com/repoorbit/repoorbit/backend/internal/readguard"
 )
 
 func readAuthorizedRepo[T any](r *queryResolver, ctx context.Context, rawID string, repoID int64, load func(*pgxpool.Pool, int64) (*T, error)) (*T, error) {
@@ -27,15 +28,15 @@ func readAuthorizedRepo[T any](r *queryResolver, ctx context.Context, rawID stri
 	if err != nil {
 		return nil, err
 	}
-	if len(auth.ids) == 0 {
-		if auth.withheld > 0 {
-			return nil, unverifiedError(auth.retryAt)
+	if len(auth.Allowed) == 0 {
+		if auth.Withheld > 0 {
+			return nil, unverifiedError(auth.RetryAt)
 		}
 		return nil, nil
 	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth,
+	return readguard.Run(ctx, r.RepoAccess.Pool, auth,
 		func() (*T, error) {
-			out, err := load(r.RepoAccess.Pool, auth.ids[0])
+			out, err := load(r.RepoAccess.Pool, auth.Allowed[0])
 			if err != nil {
 				return nil, fmt.Errorf("database unavailable")
 			}

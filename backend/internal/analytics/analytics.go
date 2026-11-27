@@ -2,7 +2,7 @@
 // evidence in a single read-only REPEATABLE READ snapshot.
 //
 // Precondition: LoadRepositoryOverview performs no access check. The caller must take the access fence, verify the user may read
-// repositoryID, call LoadRepositoryOverview, and discard the result if the fence moved (graphql/evidence.go read order).
+// repositoryID, call LoadRepositoryOverview, and discard the result if the fence moved (internal/readguard read order).
 package analytics
 
 import (

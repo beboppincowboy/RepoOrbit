@@ -10,6 +10,7 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/analytics"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 	"github.com/repoorbit/repoorbit/backend/internal/jobs"
+	"github.com/repoorbit/repoorbit/backend/internal/readguard"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
@@ -46,15 +47,15 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 	if err != nil {
 		return nil, err
 	}
-	if len(auth.ids) == 0 {
-		if auth.withheld > 0 {
-			return nil, unverifiedError(auth.retryAt)
+	if len(auth.Allowed) == 0 {
+		if auth.Withheld > 0 {
+			return nil, unverifiedError(auth.RetryAt)
 		}
 		return nil, nil
 	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth,
+	return readguard.Run(ctx, r.RepoAccess.Pool, auth,
 		func() (*model.RepositoryOverview, error) {
-			targetID := auth.ids[0]
+			targetID := auth.Allowed[0]
 			overview, err := analytics.LoadRepositoryOverview(ctx, r.RepoAccess.Pool, targetID, days, now)
 			if err != nil {
 				return nil, fmt.Errorf("database unavailable")
@@ -66,7 +67,7 @@ func (r *queryResolver) repositoryOverview(ctx context.Context, id string, days 
 				}
 			}
 			return &model.RepositoryOverview{
-				Overview: overview, FullName: auth.checks[targetID].Repo.FullName,
+				Overview: overview, FullName: auth.Checks[targetID].Repo.FullName,
 				SyncState: string(repositories.SyncStateFor(true)), Activity: repo.Activity,
 			}, nil
 		},
@@ -124,21 +125,21 @@ func (r *queryResolver) crossRepositoryOverview(ctx context.Context, days int) (
 	if err != nil {
 		return nil, err
 	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth,
+	return readguard.Run(ctx, r.RepoAccess.Pool, auth,
 		func() (*model.CrossRepositoryOverview, error) {
 			var assignee int64
-			if len(auth.ids) > 0 {
+			if len(auth.Allowed) > 0 {
 				var err error
 				assignee, err = r.Queries.GetUserGithubID(ctx, user)
 				if err != nil {
 					return nil, fmt.Errorf("database unavailable")
 				}
 			}
-			out, err := analytics.LoadCrossRepositoryOverview(ctx, r.RepoAccess.Pool, auth.ids, assignee, days, now)
+			out, err := analytics.LoadCrossRepositoryOverview(ctx, r.RepoAccess.Pool, auth.Allowed, assignee, days, now)
 			if err != nil {
 				return nil, fmt.Errorf("database unavailable")
 			}
-			return &model.CrossRepositoryOverview{CrossOverview: out, Withheld: auth.withheld, RetryAt: auth.retryAtString()}, nil
+			return &model.CrossRepositoryOverview{CrossOverview: out, Withheld: auth.Withheld, RetryAt: retryAtString(auth.RetryAt)}, nil
 		},
 		func() (*model.CrossRepositoryOverview, error) {
 			return nil, unverifiedError(time.Time{})

@@ -8,9 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
-	"github.com/repoorbit/repoorbit/backend/internal/db"
-	"github.com/repoorbit/repoorbit/backend/internal/repositories"
+	"github.com/repoorbit/repoorbit/backend/internal/readguard"
 )
 
 type listQueryArgs struct {
@@ -42,99 +40,32 @@ func parseListArgs(raw []string, first int, after *string) (listQueryArgs, error
 	return args, nil
 }
 
-type guardedAuth struct {
-	userID   int64
-	ids      []int64
-	withheld int
-	retryAt  time.Time
-	fence    accessfence.Snapshot
-	checks   map[int64]repositories.Decision
-}
-
-func (a guardedAuth) retryAtString() *string {
-	if a.retryAt.IsZero() {
+func retryAtString(t time.Time) *string {
+	if t.IsZero() {
 		return nil
 	}
-	s := stamp(a.retryAt)
+	s := stamp(t)
 	return &s
 }
 
-func (r *Resolver) authorizeSelected(ctx context.Context, rawIDs []int64) (guardedAuth, error) {
-	var a guardedAuth
+func (r *Resolver) readGuard() *readguard.Guard {
+	return &readguard.Guard{Pool: r.RepoAccess.Pool, Queries: r.Queries, Access: r.RepoAccess}
+}
+
+func (r *Resolver) authorizeSelected(ctx context.Context, rawIDs []int64) (readguard.Auth, error) {
 	user, err := r.userID(ctx)
 	if err != nil {
-		return a, err
+		return readguard.Auth{}, err
 	}
-	if len(rawIDs) == 0 {
-		return guardedAuth{userID: user}, nil
-	}
-	snap, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, user)
-	if err != nil {
-		return a, fmt.Errorf("database unavailable")
-	}
-	selected, err := r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: user, RepositoryIds: rawIDs})
-	if err != nil {
-		return a, fmt.Errorf("database unavailable")
-	}
-	if len(selected) == 0 {
-		return guardedAuth{userID: user}, nil
-	}
-	return r.finishAuth(ctx, user, selected, snap), nil
+	return r.readGuard().AuthorizeSelected(ctx, user, rawIDs)
 }
 
-func (r *Resolver) authorizePreselected(ctx context.Context, user int64, selected []int64) (guardedAuth, error) {
-	var a guardedAuth
-	snap, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, user)
-	if err != nil {
-		return a, fmt.Errorf("database unavailable")
-	}
-	return r.finishAuth(ctx, user, selected, snap), nil
+func (r *Resolver) authorizePreselected(ctx context.Context, user int64, selected []int64) (readguard.Auth, error) {
+	return r.readGuard().AuthorizePreselected(ctx, user, selected)
 }
 
-func (r *Resolver) finishAuth(ctx context.Context, user int64, selected []int64, snap accessfence.Snapshot) guardedAuth {
-	checks := r.RepoAccess.Check(ctx, user, selected, true)
-	allowed := make([]int64, 0, len(selected))
-	withheld := 0
-	var retryAt time.Time
-	for _, id := range selected {
-		d := checks[id]
-		if d.Allowed {
-			allowed = append(allowed, id)
-		}
-		if d.Unverified {
-			withheld++
-			if !d.RetryAt.IsZero() && (retryAt.IsZero() || d.RetryAt.After(retryAt)) {
-				retryAt = d.RetryAt
-			}
-		}
-	}
-	return guardedAuth{
-		userID:   user,
-		ids:      allowed,
-		withheld: withheld,
-		retryAt:  retryAt,
-		fence:    snap,
-		checks:   checks,
-	}
-}
-
-func guardedRead[T any](
-	ctx context.Context,
-	pool *pgxpool.Pool,
-	auth guardedAuth,
-	read func() (T, error),
-	onStale func() (T, error),
-) (T, error) {
-	val, err := read()
-	if err != nil {
-		var zero T
-		return zero, err
-	}
-	current, err := auth.fence.Current(ctx, pool)
-	if err != nil || !current {
-		return onStale()
-	}
-	return val, nil
+func (r *Resolver) fenceOnly(ctx context.Context, user int64) (readguard.Auth, error) {
+	return r.readGuard().FenceOnly(ctx, user)
 }
 
 type pageData[N any] struct {
@@ -191,17 +122,17 @@ func readGuardedEvidencePage[N any, C any](
 		return zero, err
 	}
 	withhold := func() (C, error) {
-		return buildConn(pageData[N]{nodes: []*N{}}, auth.withheld+len(auth.ids), auth.retryAtString()), nil
+		return buildConn(pageData[N]{nodes: []*N{}}, auth.Withheld+len(auth.Allowed), retryAtString(auth.RetryAt)), nil
 	}
-	if len(auth.ids) == 0 {
+	if len(auth.Allowed) == 0 {
 		return withhold()
 	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth, func() (C, error) {
-		page, err := queryEvidencePage(ctx, r.RepoAccess.Pool, args.limit, sql, []any{auth.ids, args.after, args.limit + 1}, scanRow)
+	return readguard.Run(ctx, r.RepoAccess.Pool, auth, func() (C, error) {
+		page, err := queryEvidencePage(ctx, r.RepoAccess.Pool, args.limit, sql, []any{auth.Allowed, args.after, args.limit + 1}, scanRow)
 		if err != nil {
 			return zero, err
 		}
-		return buildConn(page, auth.withheld, auth.retryAtString()), nil
+		return buildConn(page, auth.Withheld, retryAtString(auth.RetryAt)), nil
 	}, withhold)
 }
 
