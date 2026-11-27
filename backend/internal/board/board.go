@@ -1,7 +1,3 @@
-// Package board implements the repository Board read use case.
-//
-// It wraps the status-label flag query, the bounded Board issue query (backed by the issue_board_states view),
-// and the 100-number include cap without depending on HTTP or GraphQL transport packages.
 package board
 
 import (
@@ -17,14 +13,12 @@ import (
 // MaxInclude bounds the number of explicit issue numbers a Board read may request beyond the SQL caps.
 const MaxInclude = 100
 
-// Snapshot is one repository's Board read result.
 type Snapshot struct {
 	StatusLabels bool
 	Truncated    bool
 	Issues       []Issue
 }
 
-// Issue is one card in a Board Snapshot.
 type Issue struct {
 	Number         int
 	Title          string
@@ -38,29 +32,26 @@ type Issue struct {
 	MultipleStatus bool
 }
 
-// Reader reads Board snapshots from PostgreSQL.
 type Reader struct {
 	Queries *db.Queries
 }
 
-// ValidateInclude enforces MaxInclude and converts include numbers to int64 for SQL parameters.
-func ValidateInclude(include []int) ([]int64, error) {
+func ValidateInclude(include []int) error {
 	if len(include) > MaxInclude {
-		return nil, fmt.Errorf("at most %d include numbers", MaxInclude)
+		return fmt.Errorf("at most %d include numbers", MaxInclude)
 	}
-	numbers := make([]int64, len(include))
-	for i, n := range include {
-		numbers[i] = int64(n)
-	}
-	return numbers, nil
+	return nil
 }
 
 // Read loads one repository's Board snapshot using two separate statements (status-label flag, then bounded rows).
 // It returns (nil, nil) when the repository does not exist for the requested demo mode.
 func (r *Reader) Read(ctx context.Context, repoID int64, demo bool, include []int) (*Snapshot, error) {
-	numbers, err := ValidateInclude(include)
-	if err != nil {
+	if err := ValidateInclude(include); err != nil {
 		return nil, err
+	}
+	numbers := make([]int64, len(include))
+	for i, n := range include {
+		numbers[i] = int64(n)
 	}
 	// The flag and the rows are two statements, so a flag flipped between them shows on the next read.
 	on, err := r.Queries.GetBoardStatusLabels(ctx, db.GetBoardStatusLabelsParams{ID: repoID, Demo: demo})

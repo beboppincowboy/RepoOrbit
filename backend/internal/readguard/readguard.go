@@ -20,12 +20,9 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
-// ErrDatabaseUnavailable is returned when a database operation in the guard fails.
 var ErrDatabaseUnavailable = errors.New("database unavailable")
 
-// Auth holds the result of authorizing a read for an authenticated user.
 type Auth struct {
-	UserID   int64
 	Allowed  []int64
 	Withheld int
 	RetryAt  time.Time
@@ -33,18 +30,15 @@ type Auth struct {
 	Checks   map[int64]repositories.Decision
 }
 
-// Guard authorizes and fences reads for an authenticated user.
 type Guard struct {
 	Pool    *pgxpool.Pool
 	Queries *db.Queries
 	Access  *repositories.Service
 }
 
-// AuthorizeSelected snapshots the user's access fence, narrows rawIDs to the user's selected repositories,
-// and checks access for each selected repository.
 func (g *Guard) AuthorizeSelected(ctx context.Context, userID int64, rawIDs []int64) (Auth, error) {
 	if len(rawIDs) == 0 {
-		return Auth{UserID: userID}, nil
+		return Auth{}, nil
 	}
 	snap, err := accessfence.TakeSnapshotForUser(ctx, g.Pool, userID)
 	if err != nil {
@@ -55,7 +49,7 @@ func (g *Guard) AuthorizeSelected(ctx context.Context, userID int64, rawIDs []in
 		return Auth{}, ErrDatabaseUnavailable
 	}
 	if len(selected) == 0 {
-		return Auth{UserID: userID}, nil
+		return Auth{}, nil
 	}
 	return g.finishAuth(ctx, userID, selected, snap), nil
 }
@@ -70,13 +64,12 @@ func (g *Guard) AuthorizePreselected(ctx context.Context, userID int64, selected
 	return g.finishAuth(ctx, userID, selected, snap), nil
 }
 
-// FenceOnly captures a user-scoped access fence without running a selection or repository access check.
 func (g *Guard) FenceOnly(ctx context.Context, userID int64) (Auth, error) {
 	snap, err := accessfence.TakeSnapshotForUser(ctx, g.Pool, userID)
 	if err != nil {
 		return Auth{}, ErrDatabaseUnavailable
 	}
-	return Auth{UserID: userID, Fence: snap}, nil
+	return Auth{Fence: snap}, nil
 }
 
 func (g *Guard) finishAuth(ctx context.Context, userID int64, selected []int64, snap accessfence.Snapshot) Auth {
@@ -97,7 +90,6 @@ func (g *Guard) finishAuth(ctx context.Context, userID int64, selected []int64, 
 		}
 	}
 	return Auth{
-		UserID:   userID,
 		Allowed:  allowed,
 		Withheld: withheld,
 		RetryAt:  retryAt,

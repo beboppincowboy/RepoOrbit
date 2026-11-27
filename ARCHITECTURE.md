@@ -41,7 +41,7 @@ cd backend && go list -f '{{.ImportPath}}: {{join .Imports " "}}' ./...
 | `internal/testutil` | `internal/platform` |
 | `internal/db` | none (sqlc output) |
 | `internal/githubapp` | none |
-| `internal/githubapp/fake` | none |
+| `internal/githubapp/fake` | `internal/githubapp` |
 | `internal/platform` | none |
 
 ## Composition roots

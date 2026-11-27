@@ -17,7 +17,7 @@ func (r *queryResolver) repositoryBoard(ctx context.Context, id string, include 
 	if err != nil {
 		return nil, err
 	}
-	if _, err := board.ValidateInclude(include); err != nil {
+	if err := board.ValidateInclude(include); err != nil {
 		return nil, err
 	}
 	ctx, cancel := withReadDeadline(ctx)
