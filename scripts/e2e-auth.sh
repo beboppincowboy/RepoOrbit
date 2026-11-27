@@ -27,4 +27,4 @@ for url in http://127.0.0.1:8090/ready http://127.0.0.1:3100/login; do
   for _ in $(seq 60); do curl -fs -o /dev/null "$url" && break; sleep 1; done
   curl -fs -o /dev/null "$url"
 done
-cd apps/web && BASE_URL=http://127.0.0.1:3100 E2E_AUTH_URL=http://127.0.0.1:3100 ./node_modules/.bin/playwright test tests/auth.spec.ts tests/access.spec.ts
+cd apps/web && BASE_URL=http://127.0.0.1:3100 E2E_AUTH_URL=http://127.0.0.1:3100 bun run --bun playwright test tests/auth.spec.ts tests/access.spec.ts

@@ -8,9 +8,9 @@
     "dev": "bun run --bun vite dev --host 0.0.0.0",
     "build": "bun run --bun vite build",
     "start": "bun server.mjs",
-    "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
-    "test:e2e": "playwright test"
+    "lint": "bun run --bun eslint .",
+    "typecheck": "bun run --bun tsc --noEmit",
+    "test:e2e": "bun run --bun playwright test"
   },
   "dependencies": {
     "@fontsource-variable/geist": "5.3.0",
