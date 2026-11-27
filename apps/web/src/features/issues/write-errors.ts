@@ -1,7 +1,4 @@
-import type { BoardStatus, WriteOperation } from "./api";
-
-// An issue's Board-relevant state: a staged card's snapshot, and the `current` of a 409 "changed on GitHub".
-export type BoardSnapshot = { state: "open" | "closed"; labels: string[]; assignees: string[]; status: BoardStatus; updatedAt: string };
+import type { BoardSnapshot, WriteOperation } from "./api";
 
 export type IssueWriteErrorKind =
   | "validation"
