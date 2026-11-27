@@ -1,4 +1,7 @@
 const DRAFT_PREFIX = "repoorbit:issue-draft:";
+const CLEARED_KEY = "repoorbit:issue-draft-cleared";
+
+const repositoryClearedKey = (viewerKey: string, repositoryId: string) => `${CLEARED_KEY}:${viewerKey}:${repositoryId}`;
 
 function repositoryDraftPrefix(viewerKey: string, repositoryId: string): string {
   return `${DRAFT_PREFIX}${viewerKey}:${repositoryId}:`;
@@ -26,11 +29,24 @@ function storageKeys(prefix: string): string[] {
 }
 
 export function clearRepositoryIssueDrafts(viewerKey: string, repositoryId: string): void {
+  markDraftsCleared(repositoryClearedKey(viewerKey, repositoryId));
   for (const key of storageKeys(repositoryDraftPrefix(viewerKey, repositoryId))) removeStorage(key);
 }
 
 export function clearAllIssueDrafts(): void {
+  markDraftsCleared(CLEARED_KEY);
   for (const key of storageKeys(DRAFT_PREFIX)) removeStorage(key);
+}
+
+function markDraftsCleared(key: string): void {
+  if (typeof window !== "undefined") writeStorage(key, { token: crypto.getRandomValues(new Uint32Array(4)).join("-") });
+}
+
+export function watchIssueDraftCleanup(viewerKey: string, repositoryId: string): () => boolean {
+  const keys = [CLEARED_KEY, repositoryClearedKey(viewerKey, repositoryId)];
+  const token = (key: string) => readStorage<{ token: string }>(key)?.token;
+  const baseline = keys.map(token);
+  return () => keys.some((key, index) => token(key) !== baseline[index]);
 }
 
 // The parsed object stored under key, or null when it is missing, not JSON or not an object.
