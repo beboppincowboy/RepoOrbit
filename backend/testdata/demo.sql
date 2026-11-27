@@ -68,7 +68,6 @@ WHERE p.repository_id IN (SELECT id FROM repositories WHERE is_demo) AND p.numbe
 INSERT INTO activity_children (repository_id, resource, parent_id, parent_number, complete, watermark)
 SELECT repository_id, 'reviews', source_id, number, true, now() FROM activity_pull_requests WHERE repository_id IN (SELECT id FROM repositories WHERE is_demo);
 
--- Stable commit IDs let the demo show only GitHub-reported associations.
 UPDATE activity_pull_requests SET head_sha = lpad(to_hex(repository_id * 1000 + number), 40, '0')
 WHERE repository_id IN (SELECT id FROM repositories WHERE is_demo);
 INSERT INTO workflows (repository_id, source_id, name, path, state, html_url, updated_at)

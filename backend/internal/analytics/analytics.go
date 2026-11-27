@@ -28,6 +28,7 @@ const (
 	ReasonWindowBeforeBoundary Reason = "window_before_boundary"
 	ReasonHistoricalGap        Reason = "historical_gap"
 	ReasonChildrenIncomplete   Reason = "children_incomplete"
+	ReasonPermissionDenied     Reason = "permission_denied"
 )
 
 // Coverage says whether the evidence behind a metric is complete. Through is the minimum input watermark,

@@ -41,9 +41,10 @@ type IssueBoardProps = {
   assignable: string[];
   openIssue: number | undefined;
   onOpenIssue: (issueNumber: number | undefined) => void;
+  onOpenRun?: (runId: string) => void;
 };
 
-export function IssueBoard({ session, repositoryId, github, capabilities, capabilitiesError, assignable, openIssue, onOpenIssue }: IssueBoardProps) {
+export function IssueBoard({ session, repositoryId, github, capabilities, capabilitiesError, assignable, openIssue, onOpenIssue, onOpenRun }: IssueBoardProps) {
   const viewerKey = viewerKeyOf(session);
   const viewerLogin = session.user?.login ?? null;
   const demo = session.mode === "demo";
@@ -303,6 +304,9 @@ export function IssueBoard({ session, repositoryId, github, capabilities, capabi
         <TaskDrawer
           key={openIssue}
           issueNumber={openIssue}
+          repositoryId={repositoryId}
+          viewerKey={viewerKey}
+          onOpenRun={onOpenRun}
           issue={openRow}
           card={openCard}
           github={github}

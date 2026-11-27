@@ -1,20 +1,28 @@
-import { useEffect, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { SideDrawer } from "@/components/side-drawer";
 import { Button } from "@/components/ui/button";
 import { BOARD_STATUSES, stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
-import type { BoardIssue, BoardStatus } from "@/lib/api";
+import { fetchIssueDelivery, type BoardIssue, type BoardStatus, type DeliveryCheck, type IssueDelivery } from "@/lib/api";
+import { deploymentUnavailableNote, githubHref, isFailedConclusion, isGitHubUrl, reviewLabels, workflowStatusLabel } from "@/lib/delivery";
 
 // Each Board column's name.
 export const STATUS_NAMES: Record<BoardStatus, string> = { backlog: "Backlog", todo: "Todo", in_progress: "In Progress", in_review: "In Review", done: "Done" };
 
 const mini = "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-[7px] text-[11px]";
 const option = "inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-0.5 text-xs has-checked:border-primary has-checked:bg-primary-soft has-checked:font-semibold has-checked:text-primary has-disabled:opacity-50";
-// Links come from the API; only GitHub URLs are rendered as links.
-const githubHref = (url: string, fallback: string) => url.startsWith("https://github.com/") ? url : fallback;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const has = (list: string[], value: string) => list.some(item => same(item, value));
 
+const isFailed = (check: DeliveryCheck) => check.status === "completed" && isFailedConclusion(check.conclusion);
+const checkTone = (check: DeliveryCheck) => isFailed(check) ? "border-destructive/30 bg-destructive/10 text-destructive"
+  : check.status === "completed" && check.conclusion === "success" ? "border-success/30 bg-success/10 text-success"
+  : "border-border bg-muted text-muted-foreground";
+
 type TaskDrawerProps = {
   issueNumber: number;
+  repositoryId: string;
+  viewerKey: string;
+  onOpenRun?: (runId: string) => void;
   // Undefined when the latest Board read did not return the issue.
   issue: BoardIssue | undefined;
   card: BoardCard | undefined;
@@ -32,21 +40,19 @@ type TaskDrawerProps = {
 
 // The Board's side panel for one issue: its details, plus a status menu, an assignee menu and Close or Reopen, each of
 // which only stages a change on the card. It takes focus when it opens, and Escape closes it.
-export function TaskDrawer({ issueNumber, issue, card, github, assignable, blocked, sideEffects, onStage, onDiscard, onClose }: TaskDrawerProps) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => ref.current?.focus(), []);
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
+export function TaskDrawer({ issueNumber, repositoryId, viewerKey, onOpenRun, issue, card, github, assignable, blocked, sideEffects, onStage, onDiscard, onClose }: TaskDrawerProps) {
   // A card holds the user's target over its snapshot; an unstaged issue's target is where it is now.
   const target: BoardTarget | null = card?.target ?? (issue?.status ? { status: issue.status, assigneesAdd: [], assigneesRemove: [] } : null);
   const base = card?.snapshot.assignees ?? issue?.assignees ?? [];
   const assigned = target ? [...base.filter(login => !has(target.assigneesRemove, login)), ...target.assigneesAdd.filter(login => !has(base, login))] : base;
   const people = [...base, ...assignable, ...assigned].filter((login, i, all) => all.findIndex(other => same(other, login)) === i);
   const disabled = blocked !== null;
+  const delivery = useQuery({
+    queryKey: ["issueDelivery", viewerKey, repositoryId, issueNumber],
+    queryFn: ({ signal }) => fetchIssueDelivery(repositoryId, issueNumber, signal),
+    gcTime: 0,
+    retry: false,
+  });
 
   function toggleAssignee(login: string, on: boolean) {
     const next = on ? [...assigned, login] : assigned.filter(other => !same(other, login));
@@ -54,62 +60,111 @@ export function TaskDrawer({ issueNumber, issue, card, github, assignable, block
   }
 
   return (
-    <div
-      ref={ref}
-      role="dialog"
-      aria-label={`Issue #${issueNumber}`}
-      tabIndex={-1}
-      className="fixed inset-y-3 right-3 z-40 flex w-[min(400px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[0_18px_44px_rgba(15,23,42,.22)] outline-none"
+    <SideDrawer
+      ariaLabel={`Issue #${issueNumber}`}
+      closeLabel="Close task drawer"
+      eyebrow={<>#{issueNumber}{issue && ` · ${issue.state}`}</>}
+      title={issue?.title ?? "Issue not on the Board"}
+      onClose={onClose}
     >
-      <div className="flex flex-none items-start justify-between gap-2 border-b border-border p-4">
-        <div className="min-w-0">
-          <div className="font-mono text-xs text-muted-foreground">#{issueNumber}{issue && ` · ${issue.state}`}</div>
-          <h2 className="m-0 break-words text-base">{issue?.title ?? "Issue not on the Board"}</h2>
+      {!issue ? <p className="m-0 text-muted-foreground">The Board's latest read did not include this issue.</p> : <>
+        <a href={githubHref(issue.url, `${github}/issues/${issueNumber}`)} target="_blank" rel="noreferrer" className="self-start text-primary underline">Open on GitHub ↗</a>
+        <div className="flex flex-wrap gap-1">
+          {issue.labels.length ? issue.labels.map(name => <span key={name} className={`${mini} border-border bg-muted text-soft`}>{name}</span>) : <span className="text-xs text-muted-foreground">No labels</span>}
         </div>
-        <Button variant="outline" size="sm" onClick={onClose} aria-label="Close task drawer">Close</Button>
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 text-[13px]">
-        {!issue ? <p className="m-0 text-muted-foreground">The Board's latest read did not include this issue.</p> : <>
-          <a href={githubHref(issue.url, `${github}/issues/${issueNumber}`)} target="_blank" rel="noreferrer" className="self-start text-primary underline">Open on GitHub ↗</a>
-          <div className="flex flex-wrap gap-1">
-            {issue.labels.length ? issue.labels.map(name => <span key={name} className={`${mini} border-border bg-muted text-soft`}>{name}</span>) : <span className="text-xs text-muted-foreground">No labels</span>}
-          </div>
-          {blocked && <p role="status" className="m-0 rounded-[10px] border border-warning bg-warning-soft px-3 py-2">{blocked}</p>}
-          {target ? <>
-            <fieldset className="m-0 flex flex-col gap-1.5 border-0 p-0">
-              <legend className="mb-1.5 text-xs font-medium text-soft">Status</legend>
-              <div className="flex flex-wrap gap-1.5">
-                {BOARD_STATUSES.map(status => (
-                  <label key={status} className={option}>
-                    <input type="radio" name={`board-status-${issueNumber}`} className="accent-primary" checked={target.status === status} disabled={disabled} onChange={() => onStage({ ...target, status })} />
-                    {STATUS_NAMES[status]}
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-            <fieldset className="m-0 flex flex-col gap-1 border-0 p-0">
-              <legend className="mb-1.5 text-xs font-medium text-soft">Assignees</legend>
-              {people.length ? people.map(login => (
-                <label key={login} className="flex items-center gap-2 has-disabled:opacity-50">
-                  <input type="checkbox" className="accent-primary" checked={has(assigned, login)} disabled={disabled} onChange={e => toggleAssignee(login, e.target.checked)} />
-                  {login}
+        {blocked && <p role="status" className="m-0 rounded-[10px] border border-warning bg-warning-soft px-3 py-2">{blocked}</p>}
+        {target ? <>
+          <fieldset className="m-0 flex flex-col gap-1.5 border-0 p-0">
+            <legend className="mb-1.5 text-xs font-medium text-soft">Status</legend>
+            <div className="flex flex-wrap gap-1.5">
+              {BOARD_STATUSES.map(status => (
+                <label key={status} className={option}>
+                  <input type="radio" name={`board-status-${issueNumber}`} className="accent-primary" checked={target.status === status} disabled={disabled} onChange={() => onStage({ ...target, status })} />
+                  {STATUS_NAMES[status]}
                 </label>
-              )) : <span className="text-xs text-muted-foreground">No assignable users.</span>}
-            </fieldset>
-            <Button variant="outline" size="sm" className="self-start" disabled={disabled} onClick={() => onStage({ ...target, status: target.status === "done" ? "backlog" : "done" })}>
-              {target.status === "done" ? "Reopen issue" : "Close issue"}
-            </Button>
-          </> : <p className="m-0 text-xs text-muted-foreground">Assignees: {issue.assignees.length ? issue.assignees.map(a => `@${a}`).join(", ") : "none"}</p>}
-        </>}
-        {card && (
-          <section aria-label="Staged change" className="flex flex-col gap-1.5 rounded-[10px] border border-primary-soft bg-primary-soft px-3 py-2">
-            <strong>{card.target.status === card.snapshot.status ? "Staged assignee change" : `Staged: ${STATUS_NAMES[card.snapshot.status]} → ${STATUS_NAMES[card.target.status]}`}</strong>
-            {sideEffects.length > 0 && <ul className="m-0 list-disc pl-4">{sideEffects.map(line => <li key={line}>{line}</li>)}</ul>}
-            <span className="text-xs text-muted-foreground">Nothing is sent to GitHub until you save.</span>
-            <Button variant="outline" size="sm" className="self-start" disabled={card.phase === "pending" || card.phase === "unknown"} onClick={onDiscard}>Discard</Button>
-          </section>
-        )}
-      </div>
-    </div>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset className="m-0 flex flex-col gap-1 border-0 p-0">
+            <legend className="mb-1.5 text-xs font-medium text-soft">Assignees</legend>
+            {people.length ? people.map(login => (
+              <label key={login} className="flex items-center gap-2 has-disabled:opacity-50">
+                <input type="checkbox" className="accent-primary" checked={has(assigned, login)} disabled={disabled} onChange={e => toggleAssignee(login, e.target.checked)} />
+                {login}
+              </label>
+            )) : <span className="text-xs text-muted-foreground">No assignable users.</span>}
+          </fieldset>
+          <Button variant="outline" size="sm" className="self-start" disabled={disabled} onClick={() => onStage({ ...target, status: target.status === "done" ? "backlog" : "done" })}>
+            {target.status === "done" ? "Reopen issue" : "Close issue"}
+          </Button>
+        </> : <p className="m-0 text-xs text-muted-foreground">Assignees: {issue.assignees.length ? issue.assignees.map(a => `@${a}`).join(", ") : "none"}</p>}
+      </>}
+      <DeliverySection query={delivery} github={github} onOpenRun={onOpenRun} />
+      {card && (
+        <section aria-label="Staged change" className="flex flex-col gap-1.5 rounded-[10px] border border-primary-soft bg-primary-soft px-3 py-2">
+          <strong>{card.target.status === card.snapshot.status ? "Staged assignee change" : `Staged: ${STATUS_NAMES[card.snapshot.status]} → ${STATUS_NAMES[card.target.status]}`}</strong>
+          {sideEffects.length > 0 && <ul className="m-0 list-disc pl-4">{sideEffects.map(line => <li key={line}>{line}</li>)}</ul>}
+          <span className="text-xs text-muted-foreground">Nothing is sent to GitHub until you save.</span>
+          <Button variant="outline" size="sm" className="self-start" disabled={card.phase === "pending" || card.phase === "unknown"} onClick={onDiscard}>Discard</Button>
+        </section>
+      )}
+    </SideDrawer>
+  );
+}
+
+function DeliverySection({ query, github, onOpenRun }: { query: { isPending: boolean; isError: boolean; data: IssueDelivery | null | undefined }; github: string; onOpenRun?: (runId: string) => void }) {
+  const data = query.data;
+  const denied = data && !data.actionsCoverage.covered && data.actionsCoverage.reason === "permission_denied";
+  return (
+    <section aria-label="Delivery lifecycle" className="flex flex-col gap-2 rounded-[10px] border border-border px-3 py-2.5">
+      <h3 className="m-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">Delivery lifecycle</h3>
+      {query.isPending && <p role="status" className="m-0 text-xs text-muted-foreground">Loading delivery lifecycle…</p>}
+      {query.isError && <p role="alert" className="m-0 text-xs text-muted-foreground">Delivery lifecycle is unavailable right now.</p>}
+      {!query.isPending && !query.isError && !data && <p className="m-0 text-xs text-muted-foreground">Delivery lifecycle is not available for this issue.</p>}
+      {data && <>
+        {denied && <p role="status" className="m-0 rounded-lg border border-warning bg-warning-soft px-2.5 py-1.5 text-xs">CI/CD data unavailable: missing GitHub Actions read permission.</p>}
+        {data.pullRequests.length === 0
+          ? <p className="m-0 text-xs text-muted-foreground">No confirmed GitHub-linked pull requests.</p>
+          : <ul className="m-0 flex list-none flex-col gap-2.5 p-0">
+            {data.pullRequests.map(pr => {
+              const review = pr.reviewState ? reviewLabels[pr.reviewState] : null;
+              return <li key={pr.number} className="flex flex-col gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <a href={githubHref(pr.url, `${github}/pull/${pr.number}`)} target="_blank" rel="noreferrer" className="font-medium text-primary underline">PR #{pr.number}</a>
+                  <span className="min-w-0 break-words">{pr.title}</span>
+                  {review ? <span className={`${mini} ${review[1]}`}>{review[0]}</span>
+                    : <span className={`${mini} border-dashed border-border-strong text-muted-foreground`}>Review history importing</span>}
+                </div>
+                {!denied && (pr.checks.length === 0
+                  ? <p className="m-0 text-xs text-muted-foreground">No CI checks recorded for this pull request.</p>
+                  : <ul aria-label={`Checks for PR #${pr.number}`} className="m-0 flex list-none flex-col gap-1.5 p-0">
+                    {pr.checks.map(check => <li key={check.runId} className="flex flex-col gap-1 rounded-lg bg-muted px-2.5 py-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">{check.workflowName}</span>
+                        <span className={`${mini} ${checkTone(check)}`}>{workflowStatusLabel(check.status, check.conclusion)}</span>
+                      </div>
+                      {isFailed(check) && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                        {check.failingJobName && <span>Failing job: <strong>{check.failingJobName}</strong></span>}
+                        {check.failingJobUrl && isGitHubUrl(check.failingJobUrl) && <a href={check.failingJobUrl} target="_blank" rel="noreferrer" className="text-primary underline">View logs on GitHub ↗</a>}
+                        <a href={githubHref(check.htmlUrl, `${github}/actions/runs/${check.runId}`)} target="_blank" rel="noreferrer" className="text-primary underline">View run on GitHub ↗</a>
+                        {onOpenRun && <Button variant="outline" size="sm" onClick={() => onOpenRun(check.runId)}>Open run detail</Button>}
+                      </div>}
+                    </li>)}
+                  </ul>)}
+                {pr.deployments.length > 0 && <ul aria-label={`Deployments for PR #${pr.number}`} className="m-0 flex list-none flex-col gap-1 p-0 text-xs">
+                  {pr.deployments.map(dep => <li key={dep.id} className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{dep.environment}</span>
+                    <span className={`${mini} border-border bg-muted text-muted-foreground`}>{dep.state}</span>
+                    <a href={githubHref(dep.htmlUrl, `${github}/deployments`)} target="_blank" rel="noreferrer" className="text-primary underline">GitHub ↗</a>
+                  </li>)}
+                </ul>}
+              </li>;
+            })}
+          </ul>}
+        {data.deploymentUnavailable
+          ? <p className="m-0 text-xs text-muted-foreground"><strong className="font-medium text-foreground">Deployment data unavailable</strong> — {deploymentUnavailableNote(data.deploymentsCoverage)}</p>
+          : data.pullRequests.every(pr => pr.deployments.length === 0) && <p className="m-0 text-xs text-muted-foreground">No deployments recorded for these pull requests.</p>}
+      </>}
+    </section>
   );
 }

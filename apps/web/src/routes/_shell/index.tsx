@@ -3,7 +3,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { AssignedToMeList } from "@/components/assigned-to-me";
-import { ChevronIcon, IssueIcon, NeedsAttentionList, PullRequestIcon } from "@/components/needs-attention";
+import { ChevronIcon, IssueIcon, NeedsAttentionList, PullRequestIcon, WorkflowIcon } from "@/components/needs-attention";
 import { segGroupClass, segItemClass, warnNoteClass } from "@/components/repository-list";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { RepositoryAccessUnverifiedError, fetchCrossRepositoryOverview, type CrossRepositoryOverview, type MetricWindow } from "@/lib/api";
@@ -34,6 +34,7 @@ const coverageLabels: Record<string, string> = {
   historical_gap: "Issue event history is incomplete",
   children_incomplete: "Related activity is still importing",
   access_changed: "Refreshing after access change",
+  permission_denied: "Missing Actions read permission",
 };
 
 function Overview() {
@@ -99,6 +100,8 @@ function Overview() {
         <section aria-label="Totals" className={`${card} grid shrink-0 grid-cols-[repeat(auto-fit,minmax(150px,1fr))]`}>
           <Stat icon={<IssueIcon />} metric={data.openIssues} label="Open issues" sub="across repositories" />
           <Stat icon={<PullRequestIcon />} warn={!!data.reviewBacklog.value} metric={data.reviewBacklog} label="Review backlog" sub="PRs awaiting review" />
+          <Stat icon={<WorkflowIcon />} warn={!!data.failingWorkflows.value} metric={data.failingWorkflows} label="Failing workflows" sub="30d latest failed" />
+          <RateStat icon={<WorkflowIcon />} metric={data.buildSuccessRate} label="Build success" sub="30d completed runs" />
         </section>
         <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] gap-3 max-[900px]:flex max-[900px]:flex-col">
           <div className="flex min-h-0 flex-col gap-3">
@@ -159,14 +162,29 @@ function Panel({ id, title, count, extra, fold, onToggle, children }: { id: stri
   </section>;
 }
 
-function Stat({ icon, metric, label, sub, warn }: { icon: ReactNode; metric: CrossRepositoryOverview["openIssues"]; label: string; sub: string; warn?: boolean }) {
-  const known = metric.value !== null;
+function StatTile({ icon, display, label, detail, warn }: { icon: ReactNode; display: ReactNode; label: string; detail: string; warn?: boolean }) {
   return <div className="flex flex-col gap-0.5 border-l border-border px-4 py-3 first:border-l-0">
     <span className={warn ? "text-warning" : "text-muted-foreground"}>{icon}</span>
-    <b className="num text-2xl leading-tight font-semibold tracking-[-.02em]">{known ? metric.value : "—"}</b>
+    <b className="num text-2xl leading-tight font-semibold tracking-[-.02em]">{display}</b>
     <div className="text-[12.5px] font-medium">{label}</div>
-    <div className="text-[11.5px] text-muted-foreground">{known ? sub : coverageLabels[metric.coverage.reason ?? ""] ?? "Coverage is incomplete"}</div>
+    <div className="text-[11.5px] text-muted-foreground">{detail}</div>
   </div>;
+}
+
+function coverageFallback(reason: string | null) {
+  return coverageLabels[reason ?? ""] ?? "Coverage is incomplete";
+}
+
+function Stat({ icon, metric, label, sub, warn }: { icon: ReactNode; metric: CrossRepositoryOverview["openIssues"]; label: string; sub: string; warn?: boolean }) {
+  const known = metric.value !== null;
+  return <StatTile icon={icon} display={known ? metric.value : "—"} label={label} detail={known ? sub : coverageFallback(metric.coverage.reason)} warn={warn} />;
+}
+
+function RateStat({ icon, metric, label, sub }: { icon: ReactNode; metric: CrossRepositoryOverview["buildSuccessRate"]; label: string; sub: string }) {
+  const covered = metric.coverage.covered;
+  const display = covered && metric.rate !== null ? `${(metric.rate * 100).toFixed(1)}%` : "—";
+  const detail = covered ? (metric.denominator ? `${metric.numerator ?? 0} of ${metric.denominator} completed` : sub) : coverageFallback(metric.coverage.reason);
+  return <StatTile icon={icon} display={display} label={label} detail={detail} />;
 }
 
 function ActivityChart({ daily }: { daily: CrossRepositoryOverview["daily"] }) {

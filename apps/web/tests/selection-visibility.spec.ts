@@ -96,7 +96,7 @@ test('per-alias denial removes A snapshots and drafts while temporary uncertaint
               days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
               repositoriesCounted: 2, repositoriesSyncing: 0, withheld: 0, retryAt: null,
               openIssues: { value: 8, coverage: covered },
-              reviewBacklog: { value: 1, coverage: covered },
+              reviewBacklog: { value: 1, coverage: covered }, failingWorkflows: { value: 0, coverage: covered }, buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: covered },
               needsAttention: [], assignedToMe: [], daily: [],
             },
           },
@@ -230,7 +230,7 @@ test('aggregate overview hides rejected repository rows and totals immediately w
     withheld: 0,
     retryAt: null,
     openIssues: { value: 9, coverage: covered },
-    reviewBacklog: { value: 4, coverage: covered },
+    reviewBacklog: { value: 4, coverage: covered }, failingWorkflows: { value: 0, coverage: covered }, buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: covered },
     needsAttention: [
       { kind: 'issue_no_response', repositoryId: '1', fullName: 'ada/repo-1', number: 11, title: 'Secret issue 1', url: 'https://github.com/ada/repo-1/issues/11', since: '2026-11-15T00:00:00Z' },
       { kind: 'issue_no_response', repositoryId: '2', fullName: 'ada/repo-2', number: 22, title: 'Visible issue 2', url: 'https://github.com/ada/repo-2/issues/22', since: '2026-11-15T00:00:00Z' },
@@ -353,6 +353,8 @@ test('all-withheld metadata page still advances its cursor to load the next page
               repositoriesCounted: 0, repositoriesSyncing: 0, withheld: 2, retryAt: null,
               openIssues: { value: null, coverage: { covered: false, reason: 'not_synchronized', through: null } },
               reviewBacklog: { value: null, coverage: { covered: false, reason: 'not_synchronized', through: null } },
+              failingWorkflows: { value: null, coverage: { covered: false, reason: 'not_synchronized', through: null } },
+              buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: { covered: false, reason: 'not_synchronized', through: null } },
               needsAttention: [], assignedToMe: [], daily: [],
             },
           },
@@ -413,7 +415,7 @@ test('a detail retry that denies a repository on Overview refetches the aggregat
   const aggregate = (openIssues: number) => ({
     days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
     repositoriesCounted: 2, repositoriesSyncing: 0, withheld: 0, retryAt: null,
-    openIssues: { value: openIssues, coverage: covered }, reviewBacklog: { value: 1, coverage: covered },
+    openIssues: { value: openIssues, coverage: covered }, reviewBacklog: { value: 1, coverage: covered }, failingWorkflows: { value: 0, coverage: covered }, buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: covered },
     needsAttention: [], assignedToMe: [], daily: [{ day: '2026-11-17T00:00:00Z', issuesOpened: 1, pullRequestsMerged: 1 }],
   });
 
@@ -479,7 +481,7 @@ test('a rate-limited repository missing from a complete selection refresh loses 
             crossRepositoryOverview: {
               days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
               repositoriesCounted: 1, repositoriesSyncing: 0, withheld: 0, retryAt: null,
-              openIssues: { value: 3, coverage: covered }, reviewBacklog: { value: 1, coverage: covered },
+              openIssues: { value: 3, coverage: covered }, reviewBacklog: { value: 1, coverage: covered }, failingWorkflows: { value: 0, coverage: covered }, buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: covered },
               needsAttention: [], assignedToMe: [], daily: [],
             },
           },
@@ -649,7 +651,7 @@ test('a denial recorded while the first Overview aggregate is still loading star
   const aggregate = (openIssues: number) => ({
     days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
     repositoriesCounted: 1, repositoriesSyncing: 0, withheld: 0, retryAt: null,
-    openIssues: { value: openIssues, coverage: covered }, reviewBacklog: { value: 1, coverage: covered },
+    openIssues: { value: openIssues, coverage: covered }, reviewBacklog: { value: 1, coverage: covered }, failingWorkflows: { value: 0, coverage: covered }, buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: covered },
     needsAttention: [], assignedToMe: [], daily: [],
   });
 

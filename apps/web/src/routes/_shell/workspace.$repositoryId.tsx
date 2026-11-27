@@ -1,10 +1,13 @@
 import { repositorySnapshotKey } from "@/lib/repository-snapshots";
+import { githubHref, reviewLabels, utcTimestampFormatter as stamp } from "@/lib/delivery";
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { createColumnHelper, tableFeatures, useTable } from "@tanstack/react-table";
 import { hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/components/issue-editor";
+import { CicdTab } from "@/components/cicd-tab";
 import { IssueBoard } from "@/components/issue-board";
+import { RunDetailDrawer } from "@/components/run-detail-drawer";
 import { IssueIcon, PullRequestIcon } from "@/components/needs-attention";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
@@ -35,14 +38,13 @@ import {
   fetchWorkspacePullRequests,
   type ActivityResourceStatus,
   type MetricWindow,
-  type ReviewState,
   type WorkspaceIssue,
   type WorkspacePullRequest,
   type WriteOperation,
   type WriteOperationIssue,
 } from "@/lib/api";
 
-const tabs = { overview: "Overview", issues: "Issues", board: "Board", pulls: "Pull Requests", contributors: "Contributors", activity: "Activity" } as const;
+const tabs = { overview: "Overview", issues: "Issues", board: "Board", pulls: "Pull Requests", cicd: "CI/CD", contributors: "Contributors", activity: "Activity" } as const;
 type Tab = keyof typeof tabs;
 const windows = [7, 30, 90] as const;
 type EditorSearch = "new" | number | undefined;
@@ -57,15 +59,24 @@ function parseEditorSearch(raw: unknown): EditorSearch {
   return undefined;
 }
 
+// A workflow run id is a positive integer, kept as a string because GitHub ids can exceed Number.MAX_SAFE_INTEGER.
+function parseRunSearch(raw: unknown): string | undefined {
+  const text = typeof raw === "number" && Number.isSafeInteger(raw) ? String(raw) : raw;
+  return typeof text === "string" && /^[1-9]\d{0,18}$/.test(text) ? text : undefined;
+}
+
 export const Route = createFileRoute("/_shell/workspace/$repositoryId")({
-  validateSearch: (search: Record<string, unknown>): { days: MetricWindow; tab: Tab; editor?: "new" | number; issue?: number } => {
+  validateSearch: (search: Record<string, unknown>): { days: MetricWindow; tab: Tab; editor?: "new" | number; issue?: number; run?: string } => {
     const editor = parseEditorSearch(search.editor);
     const issue = parseEditorSearch(search.issue);
+    const tab: Tab = typeof search.tab === "string" && Object.hasOwn(tabs, search.tab) ? search.tab as Tab : "overview";
+    const run = tab === "cicd" ? parseRunSearch(search.run) : undefined;
     return {
       days: search.days === 7 || search.days === 90 ? search.days : 30,
-      tab: typeof search.tab === "string" && Object.hasOwn(tabs, search.tab) ? search.tab as Tab : "overview",
+      tab,
       ...(editor !== undefined ? { editor } : {}),
       ...(typeof issue === "number" ? { issue } : {}),
+      ...(run !== undefined ? { run } : {}),
     };
   },
   component: RepositoryWorkspace,
@@ -94,7 +105,6 @@ const Ico = ({ children, tone = "bg-muted text-muted-foreground" }: { children: 
   <span className={`grid size-7 shrink-0 place-items-center rounded-lg ${tone}`}>{children}</span>;
 
 const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
-const stamp = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" });
 const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" });
 function ago(iso: string) {
   const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
@@ -107,7 +117,6 @@ function duration(seconds: number | null) {
   if (hours < 48) return hours < 10 ? `${hours.toFixed(1)}h` : `${Math.round(hours)}h`;
   return `${(hours / 24).toFixed(1)}d`;
 }
-const githubHref = (url: string, fallback: string) => url.startsWith("https://github.com/") ? url : fallback;
 
 const coverageReasons: Record<string, [string, string]> = {
   not_synchronized: ["Awaiting data", muted],
@@ -234,7 +243,15 @@ function RepositoryWorkspace() {
   function closeEditor() {
     setSelectedEditIssue(null);
     setDraftRevision(v => v + 1);
-    void navigate({ search: prev => ({ days: prev.days, tab: prev.tab }), replace: true });
+    void navigate({ search: prev => ({ days: prev.days, tab: prev.tab, ...(parseRunSearch(prev.run) ? { run: prev.run } : {}) }), replace: true });
+  }
+
+  function selectRun(runId: string) {
+    void navigate({ search: prev => ({ days: prev.days, tab: "cicd", run: runId }), replace: true });
+  }
+
+  function closeRun() {
+    void navigate({ search: prev => ({ ...prev, run: undefined }), replace: true });
   }
 
   function handleWriteRecorded(op: WriteOperation) {
@@ -292,6 +309,8 @@ function RepositoryWorkspace() {
     ? (selectedEditIssue?.number === search.editor ? selectedEditIssue : restoredIssueQuery.data ?? { number: search.editor })
     : undefined;
   const tabSearch = { days: search.days, tab: search.tab };
+  // TanStack Start SSR can pass raw query strings through useSearch before validateSearch runs.
+  const runId = search.tab === "cicd" ? parseRunSearch(search.run) : undefined;
 
   return <div className="flex h-full min-h-0 flex-col gap-3 max-[900px]:overflow-auto">
     <section className={`${card} flex flex-none flex-col gap-2.5 px-4 pt-4`}>
@@ -353,11 +372,18 @@ function RepositoryWorkspace() {
         assignable={assigneeSuggestions}
         openIssue={search.issue}
         onOpenIssue={issue => void navigate({ search: prev => ({ ...prev, issue }), replace: true })}
+        onOpenRun={selectRun}
       />
     ))}
     {search.tab === "pulls" && (snapshot ? <p className={`${card} p-4`}>The pull request list needs a live connection. Saved PR counts are available on Overview.</p> : <PullRequests key={repositoryId} id={repositoryId} viewer={viewerKey} github={github} />)}
+    {search.tab === "cicd" && (snapshot ? <p className={`${card} p-4`}>CI/CD metrics need a live connection. Saved issue counts are available on Overview.</p> : (
+      <CicdTab key={repositoryId} repositoryId={repositoryId} viewerKey={viewerKey} days={search.days} github={github} onSelectRun={selectRun} />
+    ))}
     {search.tab === "contributors" && <Contributors overview={overview} days={search.days} />}
     {search.tab === "activity" && <section className={`${card} flex-1 overflow-auto`}><Timeline overview={overview} github={github} /></section>}
+    {runId && !snapshot && (
+      <RunDetailDrawer key={runId} repositoryId={repositoryId} viewerKey={viewerKey} runId={runId} github={github} onClose={closeRun} />
+    )}
     {editorOpen && !snapshot && (
       <IssueEditor
         key={`${repositoryId}:${search.editor}`}
@@ -544,14 +570,6 @@ function Contributors({ overview: o, days }: { overview: Overview; days: MetricW
   </section>;
 }
 
-const reviewLabels: Record<ReviewState, [string, string]> = {
-  awaiting_review: ["Awaiting review", "border-border text-soft"],
-  commented: ["Commented", "border-border text-soft"],
-  approved: ["Approved", "border-success-soft bg-success-soft text-success-foreground"],
-  changes_requested: ["Changes requested", "border-warning-soft bg-warning-soft text-warning"],
-  merged: ["Merged", "border-primary-soft bg-primary-soft text-primary"],
-  closed: ["Closed", "border-border bg-muted text-muted-foreground"],
-};
 const features = tableFeatures({});
 const column = createColumnHelper<typeof features, WorkspacePullRequest>();
 const noPulls: WorkspacePullRequest[] = [];

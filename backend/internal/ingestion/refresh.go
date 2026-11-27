@@ -73,6 +73,8 @@ func (d *Deps) Register(w *jobs.Worker) {
 	w.Register(jobs.KindActivityIssueEvents, d.SyncIssueEvents)
 	w.Register(jobs.KindActivityReviews, d.SyncReviews)
 	w.Register(jobs.KindActivityComments, d.SyncComments)
+	w.Register(jobs.KindActivityActions, d.SyncActions)
+	w.Register(jobs.KindActivityDeployments, d.SyncDeployments)
 	w.Register(jobs.KindStatusLabelCleanup, d.CleanupStatusLabels)
 }
 
