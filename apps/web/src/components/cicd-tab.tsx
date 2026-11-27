@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/shared/ui/button";
 import { fetchRepositoryActions, type MetricWindow, type RepositoryActions } from "@/lib/api";
 import { deploymentUnavailableNote, formatDurationSeconds, githubHref, utcTimestampFormatter, workflowStatusLabel, workflowStatusTone } from "@/lib/delivery";
 

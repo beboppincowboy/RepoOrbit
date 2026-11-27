@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { refreshActivity, type ActivityResourceStatus, type ActivityStatus, type ChildResourceStatus, type MetadataStatus, type SyncState } from "@/lib/api";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/shared/ui/button";
 
 const when = (iso: string) => new Date(iso).toLocaleString();
 // Mirrors the backend's safeActivityCode allowlist; anything else is shown as "unknown", never as server text.

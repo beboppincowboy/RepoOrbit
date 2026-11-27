@@ -1,7 +1,11 @@
 import { clearAllIssueDrafts } from "@/lib/drafts";
+import { GraphQLUnavailableError, RepositoryAccessUnverifiedError } from "@/shared/api/errors";
+import { coverageFields, getCsrfToken, graphqlQuery, guardedGraphql, restFetch, setCsrfToken, type Coverage, type MetricWindow, type ReviewState, type ViewerSession } from "@/shared/api/transport";
+
+export { GraphQLUnavailableError, RepositoryAccessUnverifiedError };
+export type { Coverage, MetricWindow, ReviewState, ViewerSession };
 
 export type Issue = { id: string; repositoryId: string; title: string; state: string };
-const ACCESS_UNVERIFIED_MESSAGE = "Access could not be verified";
 // Wire values of the backend's repositories.SyncState; "demo" appears only in Demo mode.
 export type SyncState = "demo" | "awaiting-sync" | "not-synchronized";
 // Shared metadata refresh status (null when not selected, and in Demo mode). Times are RFC 3339; failureCode is a safe machine code.
@@ -24,39 +28,20 @@ export type RepositoryConnection = { nodes: SelectedRepository[]; endCursor: str
 export type ListedRepo = { id: string; fullName: string; description: string; private: boolean; selected: boolean; syncState: SyncState };
 export type OwnedPage = { repositories: ListedRepo[]; nextPage: number; refreshFailed: boolean; withheld: number; retryAt: string | null; installUrl: string };
 export type StarredPage = { repositories: ListedRepo[]; nextPage: number; refreshedAt: string | null; refreshFailed: boolean; withheld: number; retryAt: string | null; installUrl: string };
-export type ViewerSession = { mode: "demo" | "real"; user: { login: string; demo: boolean } | null; csrfToken: string | null };
-let csrfToken: string | null = null;
 async function fetchViewerSession(): Promise<ViewerSession> {
-  const response = await fetch("/auth/me", { cache: "no-store" });
+  const response = await restFetch("/auth/me");
   if (!response.ok) throw new Error("Unable to load session");
   const result: ViewerSession = await response.json();
-  csrfToken = result.csrfToken;
+  setCsrfToken(result.csrfToken);
   return result;
 }
 // Fetches the current session on workspace entry and supplies the CSRF token for subsequent requests.
 export const sessionQuery = { queryKey: ["session"], queryFn: fetchViewerSession, staleTime: 0 } as const;
 // Ends the current session in Go. The caller owns navigation and local query state. Rejects on HTTP or network failure.
 export async function logout() {
-  const response = await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
+  const response = await fetch("/auth/logout", { method: "POST", headers: { "X-CSRF-Token": getCsrfToken() } });
   if (!response.ok) throw new Error("Could not sign out. Try again.");
   await clearAllIssueDrafts();
-}
-type GraphQLResponse<Data> = {
-  data?: Data | null;
-  errors?: { message?: string; path?: (string | number)[]; extensions?: { code?: string; retryAt?: string } }[];
-};
-
-// A network failure or temporary HTTP gateway error. The message explains why a saved view may be shown.
-export class GraphQLUnavailableError extends Error {}
-
-async function graphqlQuery<Data>(queryText: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<GraphQLResponse<Data>> {
-  const response = await fetch("/graphql", { method: "POST", headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "" }, cache: "no-store", signal, body: JSON.stringify({ query: queryText, variables }) }).catch((error: unknown) => {
-    if (signal?.aborted || !(error instanceof TypeError)) throw error;
-    throw new GraphQLUnavailableError("RepoOrbit could not reach the server.");
-  });
-  if ([502, 503, 504].includes(response.status)) throw new GraphQLUnavailableError("The server is temporarily unavailable.");
-  if (!response.ok) throw new Error("Unable to load repositories");
-  return response.json();
 }
 const activityResourceFields = "phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt";
 const childResourceFields = "complete pendingChildren lastSuccessAt failureCode nextAttemptAt";
@@ -128,32 +113,32 @@ export async function fetchSelectedRepositoryDetailsPage(metadataPage: Promise<R
   return { ...connection, batches };
 }
 export async function ownedRepositories(page = 1): Promise<OwnedPage> {
-  const response = await fetch(`/api/repositories/owned?page=${page}`, { cache: "no-store" });
+  const response = await restFetch(`/api/repositories/owned?page=${page}`);
   if (!response.ok) throw new Error("Unable to load your repositories");
   return response.json();
 }
 // Connects (selected=true) or disconnects an owned repository. Throws a user-facing Error on failure.
 export async function setSelected(id: string, selected: boolean) {
-  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/selection`, { method: selected ? "PUT" : "DELETE", headers: { "X-CSRF-Token": csrfToken ?? "" } });
+  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/selection`, { method: selected ? "PUT" : "DELETE", headers: { "X-CSRF-Token": getCsrfToken() } });
   if (response.status === 503) throw new Error("GitHub could not verify access right now. Try again shortly.");
   if (!response.ok) throw new Error(selected ? "Could not connect this repository." : "Could not disconnect this repository.");
 }
 // Loads one page of the stored star snapshot; refresh=true first re-reads the stars from GitHub.
 export async function starredRepositories(page = 1, refresh = false): Promise<StarredPage> {
-  const response = await fetch(`/api/repositories/starred?page=${page}${refresh ? "&refresh=1" : ""}`, { cache: "no-store" });
+  const response = await restFetch(`/api/repositories/starred?page=${page}${refresh ? "&refresh=1" : ""}`);
   if (!response.ok) throw new Error("Unable to load your starred repositories");
   return response.json();
 }
 // Follows (followed=true) or unfollows a starred repository. Throws a user-facing Error on failure.
 export async function setFollowed(id: string, followed: boolean) {
   const base = `/api/repositories/${encodeURIComponent(id)}`;
-  const response = await fetch(followed ? `${base}/follow` : `${base}/selection`, { method: followed ? "PUT" : "DELETE", headers: { "X-CSRF-Token": csrfToken ?? "" } });
+  const response = await fetch(followed ? `${base}/follow` : `${base}/selection`, { method: followed ? "PUT" : "DELETE", headers: { "X-CSRF-Token": getCsrfToken() } });
   if (response.status === 503) throw new Error("GitHub could not verify access right now. Try again shortly.");
   if (!response.ok) throw new Error(followed ? "Could not follow this repository. Refresh your stars and try again." : "Could not unfollow this repository.");
 }
 // Requests an activity refresh. Returns "accepted" or "coalesced" (202); throws a user-facing Error otherwise.
 export async function refreshActivity(id: string): Promise<"accepted" | "coalesced"> {
-  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/activity/refresh`, { method: "POST", headers: { "X-CSRF-Token": csrfToken ?? "" } });
+  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/activity/refresh`, { method: "POST", headers: { "X-CSRF-Token": getCsrfToken() } });
   if (response.status === 202) return (await response.json().catch(() => null))?.state === "coalesced" ? "coalesced" : "accepted";
   if (response.status === 409) throw new Error("Activity sync stopped after repeated failures; an operator must requeue it.");
   if (response.status === 404) throw new Error("This repository is no longer eligible for activity sync.");
@@ -161,8 +146,6 @@ export async function refreshActivity(id: string): Promise<"accepted" | "coalesc
   throw new Error("Could not request an activity refresh.");
 }
 
-export type MetricWindow = 7 | 30 | 90;
-export type Coverage = { covered: boolean; reason: string | null; through: string | null };
 export type CountMetric = { value: number | null; coverage: Coverage };
 export type MedianMetric = { seconds: number | null; sampleSize: number | null; coverage: Coverage };
 export type RateMetric = { rate: number | null; numerator: number | null; denominator: number | null; coverage: Coverage };
@@ -188,25 +171,9 @@ type RepositoryOverview = {
   daily: { day: string; issuesOpened: number | null; pullRequestsMerged: number | null }[];
 };
 
-// GitHub access is unverified. retryAt is a UTC timestamp, or null when the server supplies no retry time.
-export class RepositoryAccessUnverifiedError extends Error {
-  constructor(readonly retryAt: string | null) {
-    super(ACCESS_UNVERIFIED_MESSAGE);
-  }
-}
-
-const coverageFields = "covered reason through";
 const countFields = `value coverage { ${coverageFields} }`;
 const medianFields = `seconds sampleSize coverage { ${coverageFields} }`;
 const rateFields = `rate numerator denominator coverage { ${coverageFields} }`;
-
-async function guardedGraphql<T>(query: string, variables: Record<string, unknown>, fallbackError: string, signal?: AbortSignal): Promise<T> {
-  const { data, errors } = await graphqlQuery<T>(query, variables, signal);
-  const accessError = errors?.find(error => error.extensions?.code === "ACCESS_UNVERIFIED");
-  if (accessError) throw new RepositoryAccessUnverifiedError(accessError.extensions?.retryAt ?? null);
-  if (!data || errors?.length) throw new Error(fallbackError);
-  return data;
-}
 
 // Fetches stored repository analytics after server-side access verification. Null means the repo is missing,
 // unselected, or denied. Unverified access and temporary transport failures reject with their typed errors.
@@ -228,8 +195,6 @@ export async function fetchRepositoryOverview(id: string, days: MetricWindow, si
   return data.repositoryOverview;
 }
 
-// "merged" | "closed", or for an open PR the human reviewers' latest decision; null while its review history is not imported.
-export type ReviewState = "awaiting_review" | "commented" | "approved" | "changes_requested" | "merged" | "closed";
 export type WorkspacePullRequest = { id: string; number: number; title: string; state: string; url: string; createdAt: string; mergedAt: string | null; reviewState: ReviewState | null; author: { login: string; type: string } | null };
 
 // Fetches imported PRs in descending source ID order. Start with null, then pass the previous endCursor.
@@ -733,27 +698,27 @@ export async function fetchWorkspaceIssue(id: string, number: number, signal: Ab
 }
 
 export async function fetchIssueCapabilities(id: string, signal?: AbortSignal): Promise<IssueCapabilities> {
-  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/issue-capabilities`, { cache: "no-store", signal });
+  const response = await restFetch(`/api/repositories/${encodeURIComponent(id)}/issue-capabilities`, { signal });
   if (!response.ok) throw await toIssueWriteError(response);
   return response.json();
 }
 
 // Lists the users GitHub would accept as assignees (empty when the viewer cannot assign), for editor suggestions.
 export async function fetchAssignableUsers(id: string, signal?: AbortSignal): Promise<string[]> {
-  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/assignees`, { cache: "no-store", signal });
+  const response = await restFetch(`/api/repositories/${encodeURIComponent(id)}/assignees`, { signal });
   if (!response.ok) throw await toIssueWriteError(response);
   return ((await response.json()) as { assignees: string[] }).assignees;
 }
 
 export async function fetchWriteOperations(id: string, signal?: AbortSignal): Promise<WriteOperation[]> {
-  const response = await fetch(`/api/repositories/${encodeURIComponent(id)}/write-operations`, { cache: "no-store", signal });
+  const response = await restFetch(`/api/repositories/${encodeURIComponent(id)}/write-operations`, { signal });
   if (!response.ok) throw await toIssueWriteError(response);
   const body: { operations: WriteOperation[] } = await response.json();
   return body.operations ?? [];
 }
 
 export async function fetchWriteOperation(operationId: number, signal?: AbortSignal): Promise<WriteOperation> {
-  const response = await fetch(`/api/write-operations/${encodeURIComponent(String(operationId))}`, { cache: "no-store", signal });
+  const response = await restFetch(`/api/write-operations/${encodeURIComponent(String(operationId))}`, { signal });
   if (!response.ok) throw await toIssueWriteError(response);
   return response.json();
 }
@@ -767,7 +732,7 @@ export async function submitIssueUpdate(repositoryId: string, issueNumber: numbe
 }
 
 export async function fetchStatusLabels(repositoryId: string, signal?: AbortSignal): Promise<StatusLabelState> {
-  const response = await fetch(`/api/repositories/${encodeURIComponent(repositoryId)}/status-labels`, { cache: "no-store", signal });
+  const response = await restFetch(`/api/repositories/${encodeURIComponent(repositoryId)}/status-labels`, { signal });
   if (!response.ok) throw await toIssueWriteError(response);
   return response.json();
 }
@@ -779,24 +744,14 @@ export async function enableStatusLabels(repositoryId: string, idempotencyKey: s
 
 // Turns status labels off. Nothing is written to GitHub; the labels stay.
 export async function disableStatusLabels(repositoryId: string): Promise<void> {
-  const response = await fetch(`/api/repositories/${encodeURIComponent(repositoryId)}/status-labels`, {
-    method: "DELETE",
-    headers: { "X-CSRF-Token": csrfToken ?? "" },
-    cache: "no-store",
-  }).catch(() => {
+  const response = await restFetch(`/api/repositories/${encodeURIComponent(repositoryId)}/status-labels`, { method: "DELETE" }).catch(() => {
     throw new IssueWriteError("Could not reach the server. Check the setting before trying again.", { status: 0, kind: "transport" });
   });
   if (!response.ok) throw await toIssueWriteError(response);
 }
 
 async function submitIssueWrite(path: string, idempotencyKey: string, draft: IssueCreateDraft | IssueUpdateDraft | Record<string, never>, signal?: AbortSignal): Promise<WriteOperation> {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "", "Idempotency-Key": idempotencyKey },
-    cache: "no-store",
-    body: JSON.stringify(draft),
-    signal,
-  }).catch(() => {
+  const response = await restFetch(path, { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, json: draft, signal }).catch(() => {
     throw new IssueWriteError("No reliable answer from the server. Your draft is preserved; check Write history before retrying.", { status: 0, kind: "transport" });
   });
   if (!response.ok) throw await toIssueWriteError(response);
@@ -805,13 +760,7 @@ async function submitIssueWrite(path: string, idempotencyKey: string, draft: Iss
 
 export async function recheckWriteOperation(operationId: number, issueNumber?: number, signal?: AbortSignal): Promise<WriteOperation> {
   const payload = issueNumber !== undefined ? { issueNumber } : {};
-  const response = await fetch(`/api/write-operations/${encodeURIComponent(String(operationId))}/recheck`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken ?? "" },
-    cache: "no-store",
-    body: JSON.stringify(payload),
-    signal,
-  }).catch(() => {
+  const response = await restFetch(`/api/write-operations/${encodeURIComponent(String(operationId))}/recheck`, { method: "POST", json: payload, signal }).catch(() => {
     throw new IssueWriteError("Could not reach the server to recheck this operation. Try again shortly.", { status: 0, kind: "transport" });
   });
   if (!response.ok) throw await toIssueWriteError(response);

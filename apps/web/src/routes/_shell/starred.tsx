@@ -1,7 +1,7 @@
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/shared/ui/button";
 import { SyncStatus } from "@/components/sync-status";
 import { RepositoryCell, RepositoriesHeading, SourceTabs, ToolsRow, noteClass, searchBoxClass, tableCardClass, tdClass, thClass, warnNoteClass } from "@/components/repository-list";
 import { matchesListSearch, validateListSearch } from "@/lib/list-search";

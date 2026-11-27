@@ -8,10 +8,10 @@ import { hasSavedCreateDraft, IssueEditor, type EditableIssue } from "@/componen
 import { CicdTab } from "@/components/cicd-tab";
 import { IssueBoard } from "@/components/issue-board";
 import { RunDetailDrawer } from "@/components/run-detail-drawer";
-import { IssueIcon, PullRequestIcon } from "@/components/needs-attention";
+import { IssueIcon, PullRequestIcon } from "@/shared/ui/icons";
 import { LineChart, type ChartSeries } from "@/components/line-chart";
 import { describeActivity, describeMetadata, LoadingCircle, RefreshActivityButton, syncDisplay, SyncStatus, type SyncInput } from "@/components/sync-status";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/shared/ui/button";
 import { WriteHistory, writeOperationsQueryKey } from "@/components/write-history";
 import { StatusSourceSetup } from "@/components/status-source-setup";
 import {

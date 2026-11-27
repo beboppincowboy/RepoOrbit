@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { SideDrawer } from "@/components/side-drawer";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/shared/ui/button";
 import { BOARD_STATUSES, stageAssignees, type BoardCard, type BoardTarget } from "@/lib/board";
 import { canDiscardBoardCard, recoveryAction } from "@/lib/board-recovery";
 import { confirmDisabled } from "@/lib/board-review";

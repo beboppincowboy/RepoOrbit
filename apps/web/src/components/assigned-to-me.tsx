@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
-import { ChevronIcon, emptyListClass, listRowClass, pillClass } from "@/components/needs-attention";
+import { emptyListClass, listRowClass, pillClass } from "@/components/needs-attention";
+import { ChevronIcon } from "@/shared/ui/icons";
 import { STATUS_NAMES } from "@/components/task-drawer";
 import { BOARD_STATUSES } from "@/lib/board";
 import type { AssignedIssue, MetricWindow } from "@/lib/api";

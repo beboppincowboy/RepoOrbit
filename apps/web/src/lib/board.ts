@@ -1,5 +1,6 @@
 import { classifyWriteFailure, type BoardIssue, type BoardSnapshot, type BoardStatus, type IssueUpdateDraft, type WriteOperation } from "./api";
-import { boardDraftPrefix, issueDraftStorageKey, readStorageByPrefix, removeStorage, writeStorage } from "./drafts";
+import { readStorageByPrefix, removeStorage, writeStorage } from "@/shared/utils/storage";
+import { boardDraftPrefix, issueDraftStorageKey } from "./drafts";
 
 export const BOARD_STATUSES: readonly BoardStatus[] = ["backlog", "todo", "in_progress", "in_review", "done"];
 
