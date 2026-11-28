@@ -215,12 +215,14 @@ test('creates a new issue through Edit -> Review -> Submit -> Confirmed and show
 
 test('edits an existing issue with add/remove deltas and open-state change', async ({ page }) => {
   const updateRequests: Record<string, unknown>[] = [];
+  const updateHeaders: Record<string, string>[] = [];
   const ops: Record<string, unknown>[] = [];
 
   await setupWorkspace(page, { operations: ops });
   await page.route('**/api/repositories/1/issues/12/updates', async route => {
     const body = route.request().postDataJSON() as Record<string, unknown>;
     updateRequests.push(body);
+    updateHeaders.push(route.request().headers());
     const updated = {
       id: 601,
       repositoryId: 1,
@@ -278,11 +280,13 @@ test('edits an existing issue with add/remove deltas and open-state change', asy
       state: 'closed',
     },
   ]);
+  for (const headers of updateHeaders) expect(headers['x-csrf-token']).toBe('t');
 });
 
 test('unknown create never resends, rejects mismatched recheck, and links verified issue after reload', async ({ page }) => {
   let createCalls = 0;
   const recheckCalls: number[] = [];
+  const recheckHeaders: Record<string, string>[] = [];
   let operation: Record<string, unknown> = {
     id: 701,
     repositoryId: 1,
@@ -307,6 +311,7 @@ test('unknown create never resends, rejects mismatched recheck, and links verifi
   await page.route('**/api/write-operations/701/recheck', async route => {
     const body = route.request().postDataJSON() as { issueNumber?: number };
     recheckCalls.push(body.issueNumber ?? 0);
+    recheckHeaders.push(route.request().headers());
     if (body.issueNumber !== 43) {
       return route.fulfill({ status: 409, json: operation });
     }
@@ -364,6 +369,7 @@ test('unknown create never resends, rejects mismatched recheck, and links verifi
   await expect(reloadedDialog).toContainText('#43 · Investigate slow query');
   expect(createCalls).toBe(1);
   expect(recheckCalls).toEqual([99, 43]);
+  for (const headers of recheckHeaders) expect(headers['x-csrf-token']).toBe('t');
 });
 
 test('failed submit preserves draft across reload and retries with a new idempotency key', async ({ page }) => {
@@ -685,9 +691,15 @@ test('an Admin turns status labels on through review; the result names the creat
   };
   let enabled = false;
   const posts: Record<string, string>[] = [];
+  const deletes: Record<string, string>[] = [];
   await setupWorkspace(page, { statusLabels: off });
   await page.route('**/api/repositories/1/status-labels', async route => {
     if (route.request().method() === 'GET') return route.fulfill({ json: enabled ? { enabled: true, canChange: true } : off });
+    if (route.request().method() === 'DELETE') {
+      deletes.push(route.request().headers());
+      enabled = false;
+      return route.fulfill({ status: 204, body: '' });
+    }
     posts.push(route.request().headers());
     enabled = true;
     return route.fulfill({
@@ -718,6 +730,13 @@ test('an Admin turns status labels on through review; the result names the creat
   expect(posts[0]['x-csrf-token']).toBe('t');
   expect(posts[0]['idempotency-key']).toMatch(/^[A-Za-z0-9_.:-]{1,128}$/);
   expect(await page.getByRole('main').evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true);
+
+  await setup.getByRole('button', { name: 'Turn off' }).click();
+  await expect(setup).toContainText('Turn status labels off for everyone?');
+  await setup.getByRole('button', { name: 'Turn off' }).click();
+  await expect(setup.getByRole('button', { name: 'Turn on…' })).toBeVisible();
+  expect(deletes).toHaveLength(1);
+  for (const headers of deletes) expect(headers['x-csrf-token']).toBe('t');
 });
 
 test('a user without Admin or Maintain sees the setting but cannot change it', async ({ page }) => {

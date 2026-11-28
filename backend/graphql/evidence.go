@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/readguard"
 )
 
 func actor(id *int64, login, kind *string) *model.EvidenceActor {
@@ -78,17 +79,17 @@ func (r *queryResolver) issues(ctx context.Context, repositoryIds []string, firs
 		return nil, err
 	}
 	withhold := func() (*model.IssueConnection, error) {
-		return &model.IssueConnection{Nodes: []*model.Issue{}, Withheld: auth.withheld + len(auth.ids), RetryAt: auth.retryAtString()}, nil
+		return &model.IssueConnection{Nodes: []*model.Issue{}, Withheld: auth.Withheld + len(auth.Allowed), RetryAt: retryAtString(auth.RetryAt)}, nil
 	}
-	if len(auth.ids) == 0 {
+	if len(auth.Allowed) == 0 {
 		return withhold()
 	}
-	return guardedRead(ctx, r.RepoAccess.Pool, auth, func() (*model.IssueConnection, error) {
-		rows, err := r.Queries.ListIssues(ctx, db.ListIssuesParams{Demo: false, RepositoryIds: auth.ids, After: args.after, Number: issueNumber, PageSize: int32(args.limit + 1)})
+	return readguard.Run(ctx, r.RepoAccess.Pool, auth, func() (*model.IssueConnection, error) {
+		rows, err := r.Queries.ListIssues(ctx, db.ListIssuesParams{Demo: false, RepositoryIds: auth.Allowed, After: args.after, Number: issueNumber, PageSize: int32(args.limit + 1)})
 		if err != nil {
 			return nil, fmt.Errorf("database unavailable")
 		}
-		return build(rows, auth.withheld, auth.retryAtString()), nil
+		return build(rows, auth.Withheld, retryAtString(auth.RetryAt)), nil
 	}, withhold)
 }
 

@@ -42,7 +42,7 @@ type WebhookDeps struct {
 // never stored; only a signed deletion adds a tombstone (see applyDeletion).
 func signalsActivity(event string) bool {
 	switch event {
-	case "issues", "issue_comment", "pull_request", "pull_request_review", "pull_request_review_comment", "release":
+	case "issues", "issue_comment", "pull_request", "pull_request_review", "pull_request_review_comment", "release", "workflow_run", "workflow_job", "deployment_status":
 		return true
 	}
 	return false
@@ -169,7 +169,7 @@ func classifyWebhook(event, action string) whKind {
 	switch event {
 	case "push", "issues", "pull_request":
 		return whOrdinary
-	case "issue_comment", "pull_request_review", "pull_request_review_comment", "release":
+	case "issue_comment", "pull_request_review", "pull_request_review_comment", "release", "workflow_run", "workflow_job", "deployment_status":
 		return whActivity
 	case "repository":
 		switch action {
@@ -208,9 +208,16 @@ func (d WebhookDeps) accept(ctx context.Context, id, event string, k whKind, p w
 				_, err = d.refresh(ctx, tx, p.Repository.ID)
 			}
 			if err == nil && (signalsActivity(event) || event == "repository") {
-				// Job rows first (SignalActivity), then checkpoint rows (applyDeletion): the order sync commits take them in.
-				if _, err = SignalActivity(ctx, tx, p.Repository.ID, now); err == nil {
-					err = applyDeletion(ctx, tx, p.Repository.ID, event, p.Action, p)
+				switch event {
+				case "workflow_run", "workflow_job":
+					err = SignalDeliveryResource(ctx, tx, p.Repository.ID, "actions", jobs.KindActivityActions, now)
+				case "deployment_status":
+					err = SignalDeliveryResource(ctx, tx, p.Repository.ID, "deployments", jobs.KindActivityDeployments, now)
+				default:
+					// Job rows first (SignalActivity), then checkpoint rows (applyDeletion): the order sync commits take them in.
+					if _, err = SignalActivity(ctx, tx, p.Repository.ID, now); err == nil {
+						err = applyDeletion(ctx, tx, p.Repository.ID, event, p.Action, p)
+					}
 				}
 			}
 		case event == "repository":

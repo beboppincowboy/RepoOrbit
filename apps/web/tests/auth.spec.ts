@@ -11,7 +11,7 @@ test('signed-out visitors go to login, sign in with GitHub, and sign out', async
   await expect(page).toHaveURL(/\/$/);
   await page.getByRole('button', { name: 'Account menu' }).click();
   await expect(page.getByText('Signed in as')).toBeVisible();
-  await expect(page.getByText('Signed in as').getByText('octocat')).toBeVisible();
+  await expect(page.getByText('Signed in as octocat')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'No repositories yet' })).toBeVisible();
   await expect(page.getByText('orbit/example')).toHaveCount(0); // demo rows never appear in real mode
   // The account menu is still open from the identity checks above.

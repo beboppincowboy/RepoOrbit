@@ -62,7 +62,7 @@ test('select an owned repository, then install the app to reveal a private one',
   await page.context().addCookies([{ name: 'fake_as', value: 'grace', url: 'http://127.0.0.1:9090' }]);
   await page.getByRole('link', { name: 'Continue with GitHub' }).click();
   await page.getByRole('button', { name: 'Account menu' }).click();
-  await expect(page.getByText('Signed in as').getByText('grace')).toBeVisible();
+  await expect(page.getByText('Signed in as grace')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'No repositories yet' })).toBeVisible();
   await expect(page.getByText('ada/secret')).toHaveCount(0);
 

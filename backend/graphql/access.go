@@ -17,20 +17,6 @@ func (r *Resolver) userID(ctx context.Context) (int64, error) {
 	return userID, nil
 }
 
-// laterRetry keeps the latest retry time (RFC 3339) among withheld items.
-func laterRetry(current *string, t time.Time) *string {
-	if t.IsZero() {
-		return current
-	}
-	if current != nil {
-		if prev, err := time.Parse(time.RFC3339, *current); err == nil && prev.After(t) {
-			return current
-		}
-	}
-	s := t.UTC().Format(time.RFC3339)
-	return &s
-}
-
 // Machine-readable GraphQL error codes (errors[].extensions.code). Clients branch on these, never on the message.
 const (
 	codeUnauthenticated  = "UNAUTHENTICATED"   // no real signed-in viewer

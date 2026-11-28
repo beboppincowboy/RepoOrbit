@@ -46,7 +46,12 @@ func (operationLimits) MutateOperationContext(_ context.Context, op *graphql.Ope
 		return gqlerror.Errorf("query depth exceeds limit")
 	}
 	// Expensive reads whose cost the complexity budget does not see: at most one of each group per request.
-	once := map[string]string{"repositoryOverview": "repository overview", "crossRepositoryOverview": "repository overview", "repositoryBoard": "repository board"}
+	once := map[string]string{
+		"repositoryOverview":      "repository overview",
+		"crossRepositoryOverview": "repository overview",
+		"repositoryBoard":         "repository board",
+		"repositoryActions":       "repository actions",
+	}
 	seen := map[string]bool{}
 	for _, field := range graphql.CollectFields(op, op.Operation.SelectionSet, []string{"Query"}) {
 		group := once[field.Name]
@@ -88,6 +93,13 @@ func Server(resolver *Resolver) http.Handler {
 	cfg.Complexity.CrossRepositoryOverview.Daily = func(child int) int { return 90 * child }
 	cfg.Complexity.RepositoryOverview.Timeline = func(child int) int { return 50 * child }
 	cfg.Complexity.RepositoryOverview.Daily = func(child int) int { return 90 * child }
+	cfg.Complexity.Query.RepositoryActions = func(child int, _ string, _ int) int { return 100 + child }
+	cfg.Complexity.RepositoryActions.Daily = func(child int) int { return 20 + child }
+	cfg.Complexity.RepositoryActions.FailuresByWorkflow = func(child int) int { return 20 + child }
+	cfg.Complexity.RepositoryActions.RecentRuns = func(child int) int { return 50 + child }
+	cfg.Complexity.RepositoryActions.Deployments = func(child int) int { return 20 + child }
+	cfg.Complexity.Query.WorkflowRun = func(child int, _ string, _ string) int { return 50 + child }
+	cfg.Complexity.Query.IssueDelivery = func(child int, _ string, _ int) int { return 50 + child }
 	srv := handler.New(NewExecutableSchema(cfg))
 	srv.AddTransport(transport.POST{})
 	srv.Use(operationLimits{})

@@ -11,6 +11,9 @@ import (
 )
 
 type PullRequestFixture struct {
+	Head struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
 	ID        int64      `json:"id"`
 	Number    int64      `json:"number"`
 	Title     string     `json:"title"`
@@ -126,6 +129,8 @@ func (s *Server) repoActivity(w http.ResponseWriter, r *http.Request, login stri
 		activityFixturePage(w, r, s.repoComments(id, r))
 	} else if strings.HasSuffix(r.URL.Path, "/issues/events") {
 		activityFixturePage(w, r, s.issueEvents[id])
+	} else if strings.HasSuffix(r.URL.Path, "/timeline") {
+		activityFixturePage(w, r, s.timelines[id][number])
 	} else if strings.HasSuffix(r.URL.Path, "/pulls") {
 		if r.URL.Query().Get("state") != "all" {
 			http.Error(w, `{"message":"Bad Request"}`, http.StatusBadRequest)
@@ -159,7 +164,7 @@ func (s *Server) repoComments(id int64, r *http.Request) []CommentFixture {
 	return out
 }
 
-func activityFixturePage[T any](w http.ResponseWriter, r *http.Request, items []T) {
+func paginateFixture[T any](w http.ResponseWriter, r *http.Request, items []T) []T {
 	per, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
 	pg, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if per < 1 || per > 100 {
@@ -174,12 +179,37 @@ func activityFixturePage[T any](w http.ResponseWriter, r *http.Request, items []
 		if r.TLS != nil {
 			scheme = "https"
 		}
-		q := r.URL.Query() // carry state, since, sort and direction forward as GitHub does
+		q := r.URL.Query()
 		q.Set("per_page", strconv.Itoa(per))
 		q.Set("page", strconv.Itoa(pg+1))
 		w.Header().Set("Link", fmt.Sprintf(`<%s://%s%s?%s>; rel="next"`, scheme, r.Host, r.URL.Path, q.Encode()))
 	}
 	out := make([]T, hi-lo)
 	copy(out, items[lo:hi])
-	writeJSON(w, out)
+	return out
+}
+
+func activityFixturePage[T any](w http.ResponseWriter, r *http.Request, items []T) {
+	writeJSON(w, paginateFixture(w, r, items))
+}
+
+type TimelineEventFixture struct {
+	Event     string    `json:"event"`
+	CreatedAt time.Time `json:"created_at"`
+	Source    struct {
+		Issue struct {
+			Number      int64     `json:"number"`
+			URL         string    `json:"url"`
+			PullRequest *struct{} `json:"pull_request"`
+		} `json:"issue"`
+	} `json:"source"`
+}
+
+func (s *Server) SetIssueTimeline(id, number int64, items ...TimelineEventFixture) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.timelines[id] == nil {
+		s.timelines[id] = map[int64][]TimelineEventFixture{}
+	}
+	s.timelines[id][number] = append([]TimelineEventFixture{}, items...)
 }

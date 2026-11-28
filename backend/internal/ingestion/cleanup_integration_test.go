@@ -65,6 +65,14 @@ func TestCleanupInventoryFencesAndPreservesBoundary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			_, err = e.pool.Exec(ctx, `INSERT INTO workflows VALUES(70,1,'ci','ci.yml','active','',now());
+INSERT INTO workflow_runs(repository_id,source_id,workflow_id,workflow_name,run_number,event,status,conclusion,head_branch,head_sha,html_url,created_at,updated_at) VALUES(70,1,1,'ci',1,'push','completed','success','main','sha','',now(),now());
+INSERT INTO workflow_jobs(repository_id,source_id,run_id,name,status,conclusion,html_url,created_at) VALUES(70,1,1,'job','completed','success','',now());
+INSERT INTO deployments VALUES(70,1,'production','sha','main','success','','',now(),now());
+INSERT INTO issue_pull_request_links VALUES(70,1,2,'timeline',now())`)
+			if err != nil {
+				t.Fatal(err)
+			}
 			inv := &inventories{results: tc.inv}
 			if tc.fail {
 				inv.err = errors.New("unavailable")
@@ -97,10 +105,10 @@ func TestCleanupInventoryFencesAndPreservesBoundary(t *testing.T) {
 				t.Fatal("uncertainty must defer")
 			}
 			var count, evidence int
-			if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_pull_requests WHERE repository_id=70) + (SELECT count(*) FROM activity_reviews WHERE repository_id=70) + (SELECT count(*) FROM activity_comments WHERE repository_id=70) + (SELECT count(*) FROM activity_children WHERE repository_id=70)`).Scan(&evidence); err != nil {
+			if err = e.pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM activity_pull_requests WHERE repository_id=70) + (SELECT count(*) FROM activity_reviews WHERE repository_id=70) + (SELECT count(*) FROM activity_comments WHERE repository_id=70) + (SELECT count(*) FROM activity_children WHERE repository_id=70) + (SELECT count(*) FROM workflows WHERE repository_id=70) + (SELECT count(*) FROM workflow_runs WHERE repository_id=70) + (SELECT count(*) FROM workflow_jobs WHERE repository_id=70) + (SELECT count(*) FROM deployments WHERE repository_id=70) + (SELECT count(*) FROM issue_pull_request_links WHERE repository_id=70)`).Scan(&evidence); err != nil {
 				t.Fatal(err)
 			}
-			if (tc.purge && evidence != 0) || (!tc.purge && evidence != 4) {
+			if (tc.purge && evidence != 0) || (!tc.purge && evidence != 9) {
 				t.Fatalf("evidence count %d", evidence)
 			}
 			var phase string

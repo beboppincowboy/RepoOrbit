@@ -23,6 +23,8 @@ const (
 	KindActivityComments     Kind = "activity_comments"
 	KindActivityReleases     Kind = "activity_releases"
 	KindActivityIssueEvents  Kind = "activity_issue_events"
+	KindActivityActions      Kind = "activity_actions"
+	KindActivityDeployments  Kind = "activity_deployments"
 	KindActivityCleanup      Kind = "activity_cleanup"
 	KindStarReconcile        Kind = "star_reconcile"       // Key "user:<users.id>"
 	KindStatusLabelCleanup   Kind = "status_label_cleanup" // Key "repo:<repositories.id>"

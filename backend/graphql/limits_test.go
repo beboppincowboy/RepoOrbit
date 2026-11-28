@@ -31,7 +31,7 @@ func TestOverviewRejectsMultipleWindowsInOneOperation(t *testing.T) {
 	}
 }
 
-// Copies of the operations apps/web/src/lib/api.ts sends; keep them in sync.
+// Copies of the operations apps/web/src/features/*/api.ts send; keep them in sync.
 const activityFieldsForTest = `synchronized message issues { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } pullRequests { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } releases { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } reviews { complete pendingChildren lastSuccessAt failureCode nextAttemptAt } comments { complete pendingChildren lastSuccessAt failureCode nextAttemptAt } issueEvents { traversal { phase boundary catchupThrough lastSuccessAt failureCode jobState nextAttemptAt } historicalGap } futureResources`
 
 const repositoryOverviewQuery = `query RepositoryOverview($id: ID!, $days: Int!) {
@@ -67,15 +67,59 @@ const crossOverviewQuery = `query CrossRepositoryOverview($days: Int! = 30) {
       days windowStart now repositoriesCounted repositoriesSyncing withheld retryAt
       openIssues { value coverage { covered reason through } }
       reviewBacklog { value coverage { covered reason through } }
-      needsAttention { kind repositoryId fullName number title url since }
+      failingWorkflows { value coverage { covered reason through } }
+      buildSuccessRate { rate numerator denominator coverage { covered reason through } }
+      needsAttention { kind repositoryId fullName number title url since runId }
       assignedToMe { repositoryId fullName number title url updatedAt status }
       daily { day issuesOpened pullRequestsMerged }
     }
   }`
 
+const repositoryActionsQuery = `query RepositoryActions($id: ID!, $days: Int! = 30) {
+    repositoryActions(id: $id, days: $days) {
+      days windowStart now deploymentUnavailable
+      actionsCoverage { covered reason through }
+      deploymentsCoverage { covered reason through }
+      buildSuccessRate { rate numerator denominator coverage { covered reason through } }
+      failedJobs { value coverage { covered reason through } }
+      runningJobs { value coverage { covered reason through } }
+      durationP50 { seconds sampleSize coverage { covered reason through } }
+      durationP95 { seconds sampleSize coverage { covered reason through } }
+      queueWaitP50 { seconds sampleSize coverage { covered reason through } }
+      daily { day succeeded failed other }
+      failuresByWorkflow { workflowId workflowName failedRuns totalRuns latestRunId latestStatus latestConclusion latestAt htmlUrl }
+      recentRuns { id workflowId workflowName runNumber event status conclusion headBranch headSha htmlUrl createdAt runStartedAt updatedAt durationSeconds queueSeconds }
+      deployments { id environment sha ref state description htmlUrl createdAt updatedAt }
+    }
+  }`
+
+const workflowRunQuery = `query WorkflowRun($id: ID!, $runId: ID!) {
+    workflowRun(repositoryId: $id, runId: $runId) {
+      run { id workflowId workflowName runNumber event status conclusion headBranch headSha htmlUrl createdAt runStartedAt updatedAt durationSeconds queueSeconds }
+      jobs { id runId name status conclusion htmlUrl createdAt startedAt completedAt durationSeconds queueSeconds }
+    }
+  }`
+
+const issueDeliveryQuery = `query IssueDelivery($id: ID!, $issueNumber: Int!) {
+    issueDelivery(repositoryId: $id, issueNumber: $issueNumber) {
+      issueNumber deploymentUnavailable
+      actionsCoverage { covered reason through }
+      deploymentsCoverage { covered reason through }
+      pullRequests {
+        number title state url reviewState headSha
+        checks { runId workflowName status conclusion htmlUrl updatedAt failingJobName failingJobUrl }
+        deployments { id environment sha ref state description htmlUrl createdAt updatedAt }
+      }
+    }
+  }`
+
 func TestFrontendOperationsFitLimits(t *testing.T) {
-	for name, query := range map[string]string{"overview": repositoryOverviewQuery, "pulls": workspacePullRequestsQuery, "issues": workspaceIssuesQuery, "cross": crossOverviewQuery, "board": repositoryBoardQuery} {
-		body, _ := json.Marshal(map[string]any{"query": query, "variables": map[string]any{"id": "1", "days": 90}})
+	for name, query := range map[string]string{
+		"overview": repositoryOverviewQuery, "pulls": workspacePullRequestsQuery, "issues": workspaceIssuesQuery,
+		"cross": crossOverviewQuery, "board": repositoryBoardQuery,
+		"actions": repositoryActionsQuery, "workflowRun": workflowRunQuery, "issueDelivery": issueDeliveryQuery,
+	} {
+		body, _ := json.Marshal(map[string]any{"query": query, "variables": map[string]any{"id": "1", "days": 90, "runId": "1001", "issueNumber": 2}})
 		req := httptest.NewRequest(http.MethodPost, "/graphql", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()

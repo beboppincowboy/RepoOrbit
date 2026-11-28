@@ -2,7 +2,7 @@
 // evidence in a single read-only REPEATABLE READ snapshot.
 //
 // Precondition: LoadRepositoryOverview performs no access check. The caller must take the access fence, verify the user may read
-// repositoryID, call LoadRepositoryOverview, and discard the result if the fence moved (graphql/evidence.go read order).
+// repositoryID, call LoadRepositoryOverview, and discard the result if the fence moved (internal/readguard read order).
 package analytics
 
 import (
@@ -28,6 +28,7 @@ const (
 	ReasonWindowBeforeBoundary Reason = "window_before_boundary"
 	ReasonHistoricalGap        Reason = "historical_gap"
 	ReasonChildrenIncomplete   Reason = "children_incomplete"
+	ReasonPermissionDenied     Reason = "permission_denied"
 )
 
 // Coverage says whether the evidence behind a metric is complete. Through is the minimum input watermark,

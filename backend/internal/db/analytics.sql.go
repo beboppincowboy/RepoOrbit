@@ -35,7 +35,7 @@ WITH first_comments AS (
   FROM activity_issues i LEFT JOIN first_comments c ON c.source_id = i.source_id
   WHERE i.repository_id = $1
 ), pulls AS (
-  SELECT p.source_id, p.repository_id, p.number, p.title, p.state, p.html_url, p.created_at, p.updated_at, p.closed_at, p.merged_at, p.author_id, p.author_login, p.author_type, r.reviewed_at,
+  SELECT p.source_id, p.repository_id, p.number, p.title, p.state, p.html_url, p.created_at, p.updated_at, p.closed_at, p.merged_at, p.author_id, p.author_login, p.author_type, p.head_sha, r.reviewed_at,
     p.created_at BETWEEN $2::timestamptz AND $3::timestamptz AS in_window,
     p.merged_at BETWEEN $2::timestamptz AND $3::timestamptz AS merged_in_window
   FROM activity_pull_requests p LEFT JOIN first_reviews r ON r.source_id = p.source_id

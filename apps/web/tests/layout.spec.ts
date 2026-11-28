@@ -31,7 +31,7 @@ async function mockLongOverview(page: Page) {
     if (!String(route.request().postDataJSON().query).startsWith('query CrossRepositoryOverview')) return route.fallback();
     return route.fulfill({ json: { data: { crossRepositoryOverview: {
       days: 30, windowStart: '2026-10-18T00:00:00Z', now: '2026-11-17T00:00:00Z', repositoriesCounted: 40, repositoriesSyncing: 0, withheld: 0, retryAt: null,
-      openIssues: { value: 40, coverage }, reviewBacklog: { value: 0, coverage }, needsAttention, assignedToMe: [], daily: [],
+      openIssues: { value: 40, coverage }, reviewBacklog: { value: 0, coverage }, failingWorkflows: { value: 0, coverage }, buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage }, needsAttention, assignedToMe: [], daily: [],
     } } } });
   });
 }

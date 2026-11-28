@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { LogoMark } from "@/components/app-shell";
-import { sessionQuery } from "@/lib/api";
+import { LogoMark } from "@/shared/ui/logo";
+import { sessionQuery } from "@/features/auth/api";
 
 type LoginSearch = { error?: string };
 

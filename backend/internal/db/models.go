@@ -109,6 +109,7 @@ type ActivityPullRequest struct {
 	AuthorID     pgtype.Int8
 	AuthorLogin  pgtype.Text
 	AuthorType   pgtype.Text
+	HeadSha      string
 }
 
 type ActivityRelease struct {
@@ -180,6 +181,19 @@ type CredentialThrottle struct {
 	RetryAfter pgtype.Timestamptz
 }
 
+type Deployment struct {
+	RepositoryID int64
+	SourceID     int64
+	Environment  string
+	Sha          string
+	Ref          string
+	State        string
+	Description  string
+	HtmlUrl      string
+	CreatedAt    pgtype.Timestamptz
+	UpdatedAt    pgtype.Timestamptz
+}
+
 type Installation struct {
 	UserID         int64
 	InstallationID int64
@@ -198,6 +212,14 @@ type IssueBoardState struct {
 	IssueID        int64
 	Status         string
 	MultipleStatus bool
+}
+
+type IssuePullRequestLink struct {
+	RepositoryID      int64
+	IssueNumber       int64
+	PullRequestNumber int64
+	Source            string
+	CreatedAt         pgtype.Timestamptz
 }
 
 type Job struct {
@@ -282,6 +304,47 @@ type WebhookDelivery struct {
 	DeliveryID string
 	Event      string
 	ReceivedAt pgtype.Timestamptz
+}
+
+type Workflow struct {
+	RepositoryID int64
+	SourceID     int64
+	Name         string
+	Path         string
+	State        string
+	HtmlUrl      string
+	UpdatedAt    pgtype.Timestamptz
+}
+
+type WorkflowJob struct {
+	RepositoryID int64
+	SourceID     int64
+	RunID        int64
+	Name         string
+	Status       string
+	Conclusion   string
+	HtmlUrl      string
+	CreatedAt    pgtype.Timestamptz
+	StartedAt    pgtype.Timestamptz
+	CompletedAt  pgtype.Timestamptz
+}
+
+type WorkflowRun struct {
+	RepositoryID       int64
+	SourceID           int64
+	WorkflowID         int64
+	WorkflowName       string
+	RunNumber          int64
+	Event              string
+	Status             string
+	Conclusion         string
+	HeadBranch         string
+	HeadSha            string
+	HtmlUrl            string
+	CreatedAt          pgtype.Timestamptz
+	RunStartedAt       pgtype.Timestamptz
+	UpdatedAt          pgtype.Timestamptz
+	PullRequestNumbers []int64
 }
 
 type WriteOperation struct {

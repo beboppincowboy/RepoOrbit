@@ -262,3 +262,58 @@ func TestDemoRepositoryBoard(t *testing.T) {
 		t.Fatalf("demo assigned to me: %s", got)
 	}
 }
+
+func TestRepositoryBoardOpenCapAndQueryCount(t *testing.T) {
+	ctx := context.Background()
+	h, rec, runVars := newTracedGraphQLHarness(t)
+	alice := h.signIn("alice")
+	aliceID := h.userID(ctx, "alice")
+	repo := h.gh.AddRepo("alice", "board-scale", true)
+	h.gh.Install("alice", 12, repo)
+	if err := h.repos.Connect(ctx, aliceID, repo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.pool.Exec(ctx, `UPDATE repositories SET status_labels=true WHERE id=$1`, repo); err != nil {
+		t.Fatal(err)
+	}
+	seedOpen := func(from, to int) {
+		t.Helper()
+		if _, err := h.pool.Exec(ctx, `INSERT INTO activity_issues(source_id,repository_id,number,title,state,html_url,created_at,updated_at,author_id,author_login,author_type)
+		 SELECT g,$1,g,'open '||g,'open','url/'||g,now(),now()-(g * interval '1 second'),1,'alice','User'
+		 FROM generate_series($2::int,$3::int) g`, repo, from, to); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const q = `query Board($id: ID!) { repositoryBoard(id: $id) { statusLabels truncated issues { number title state status multipleStatus } } }`
+	vars := map[string]any{"id": fmt.Sprintf("%d", repo)}
+
+	seedOpen(1, 3)
+	warmAccessCache(runVars, rec, alice, q, vars)
+
+	raw3 := runVars(alice, q, vars)
+	qs3 := rec.Stop()
+	b3 := decodeBoard(t, raw3)
+	if b3 == nil || !b3.StatusLabels || b3.Truncated || len(b3.Issues) != 3 {
+		t.Fatalf("3 open issues: %s", raw3)
+	}
+
+	seedOpen(4, 300)
+	raw300 := runVars(alice, q, vars)
+	qs300 := rec.Stop()
+	b300 := decodeBoard(t, raw300)
+	if b300 == nil || !b300.StatusLabels || b300.Truncated || len(b300.Issues) != 300 {
+		t.Fatalf("300 open issues: len=%d truncated=%v", len(b300.Issues), b300.Truncated)
+	}
+	if len(qs300) != len(qs3) {
+		t.Fatalf("expected constant SQL query count for 3 vs 300 issues: 3=%d (%v), 300=%d (%v)", len(qs3), qs3, len(qs300), qs300)
+	}
+
+	seedOpen(301, 501)
+	raw501 := runVars(alice, q, vars)
+	_ = rec.Stop()
+	b501 := decodeBoard(t, raw501)
+	if b501 == nil || !b501.Truncated || len(b501.Issues) != 500 {
+		t.Fatalf("501 open issues: truncated=%v len=%d", b501.Truncated, len(b501.Issues))
+	}
+}

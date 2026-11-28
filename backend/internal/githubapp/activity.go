@@ -15,6 +15,9 @@ import (
 )
 
 type PullRequest struct {
+	Head struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
 	ID        int64      `json:"id"`
 	Number    int64      `json:"number"`
 	Title     string     `json:"title"`
@@ -266,4 +269,64 @@ func (c *Client) FetchIssueEventsCursor(ctx context.Context, token, fullName, cu
 		}
 	}
 	return items, next, nil
+}
+
+type IssuePRLink struct {
+	Number    int64
+	Source    string
+	CreatedAt time.Time
+}
+
+// FetchIssueTimelinePRLinks keeps only GitHub-reported pull requests in this repository.
+func (c *Client) FetchIssueTimelinePRLinks(ctx context.Context, token, fullName string, issueNumber int64) ([]IssuePRLink, error) {
+	if issueNumber <= 0 {
+		return nil, errors.New("github: invalid issue number")
+	}
+	suffix := "/issues/" + strconv.FormatInt(issueNumber, 10) + "/timeline"
+	var links []IssuePRLink
+	cursor := ""
+	seen := map[string]bool{}
+	for {
+		var events []struct {
+			Event     string    `json:"event"`
+			CreatedAt time.Time `json:"created_at"`
+			Source    struct {
+				Issue struct {
+					Number      int64            `json:"number"`
+					URL         string           `json:"url"`
+					PullRequest *json.RawMessage `json:"pull_request"`
+				} `json:"issue"`
+			} `json:"source"`
+		}
+		next, err := c.activityPage(ctx, token, fullName, suffix, cursor, false, &events)
+		if err != nil {
+			return nil, err
+		}
+		if events == nil {
+			return nil, errors.New("github: invalid issue timeline")
+		}
+		for _, e := range events {
+			source := e.Source.Issue
+			if (e.Event != "cross-referenced" && e.Event != "connected") || source.PullRequest == nil || source.Number <= 0 {
+				continue
+			}
+			u, err := url.Parse(source.URL)
+			expected := "/repos/" + fullName + "/issues/" + strconv.FormatInt(source.Number, 10)
+			if err != nil || !strings.EqualFold(u.Path, expected) {
+				continue
+			}
+			if e.CreatedAt.IsZero() {
+				return nil, errors.New("github: invalid issue link")
+			}
+			links = append(links, IssuePRLink{Number: source.Number, Source: e.Event, CreatedAt: e.CreatedAt})
+		}
+		if next == "" {
+			return links, nil
+		}
+		if seen[next] {
+			return nil, errors.New("github: cyclic timeline pagination")
+		}
+		seen[next] = true
+		cursor = next
+	}
 }

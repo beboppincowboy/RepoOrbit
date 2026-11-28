@@ -3,6 +3,8 @@ package ingestion
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +15,10 @@ import (
 
 type issueFetcher interface {
 	FetchIssuesCursor(context.Context, string, string, string) ([]githubapp.Issue, string, error)
+}
+
+type issueTimelineFetcher interface {
+	FetchIssueTimelinePRLinks(context.Context, string, string, int64) ([]githubapp.IssuePRLink, error)
 }
 
 // SyncIssues imports one page and its checkpoint under the claim, selection and access fences.
@@ -64,12 +70,33 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 	}
 	var scanTime, now time.Time
 	var items []githubapp.Issue
+	var links map[int64][]githubapp.IssuePRLink
 	var next string
 	committed := false
 	err = d.withEvidencePage(ctx, job, fence, repoID, func(token string, repo githubapp.Repo) (any, error) {
 		scanTime = d.Clock.Now()
 		var err error
 		items, next, err = fetcher.FetchIssuesCursor(ctx, token, repo.FullName, cursor)
+		if err == nil {
+			if timeline, ok := d.GitHub.(issueTimelineFetcher); ok {
+				links = make(map[int64][]githubapp.IssuePRLink)
+				for _, issue := range items {
+					if issue.PullRequest != nil || issue.Number <= 0 || (issue.State != "open" && issue.CreatedAt.Before(boundary) && issue.UpdatedAt.Before(boundary) && (issue.ClosedAt == nil || issue.ClosedAt.Before(boundary))) {
+						continue
+					}
+					found, linkErr := timeline.FetchIssueTimelinePRLinks(ctx, token, repo.FullName, issue.Number)
+					if linkErr != nil {
+						if failsIssuePage(ctx, linkErr) {
+							return nil, linkErr
+						}
+						// No map entry: the commit keeps the issue's stored links.
+						slog.Warn("issue timeline skipped", "repository", repoID, "issue", issue.Number, "err", linkErr)
+						continue
+					}
+					links[issue.Number] = found
+				}
+			}
+		}
 		return nil, err
 	}, func(tx pgx.Tx, _ any) error {
 		committed, now = true, d.Clock.Now()
@@ -106,6 +133,16 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 			if err := ProjectIssue(ctx, tx, repoID, issue); err != nil {
 				return err
 			}
+			if issueLinks, ok := links[issue.Number]; ok {
+				if _, err := tx.Exec(ctx, `DELETE FROM issue_pull_request_links WHERE repository_id=$1 AND issue_number=$2 AND source IN ('connected','cross-referenced')`, repoID, issue.Number); err != nil {
+					return err
+				}
+				for _, link := range issueLinks {
+					if _, err := tx.Exec(ctx, `INSERT INTO issue_pull_request_links(repository_id,issue_number,pull_request_number,source,created_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(repository_id,issue_number,pull_request_number) DO UPDATE SET source=EXCLUDED.source,created_at=EXCLUDED.created_at`, repoID, issue.Number, link.Number, link.Source, link.CreatedAt); err != nil {
+						return err
+					}
+				}
+			}
 		}
 		_, err := tx.Exec(ctx, `UPDATE activity_resources SET scan_started_at=COALESCE(scan_started_at,$3), current_scan=ARRAY(SELECT DISTINCT x FROM unnest(current_scan || $4::bigint[]) AS x ORDER BY x), last_error_code=NULL WHERE repository_id=$1 AND resource=$2`, repoID, "issues", scanTime, ids)
 		if err != nil {
@@ -126,6 +163,13 @@ func (d *Deps) SyncIssues(ctx context.Context, job jobs.Job, fence jobs.ClaimFen
 		return err
 	}
 	return &jobs.Defer{RetryAt: now, Reason: "continue"}
+}
+
+// failsIssuePage reports whether a timeline fetch error must fail the whole issue page (cancellation, rate limit,
+// rejected credential or forbidden) rather than skip that one issue's links.
+func failsIssuePage(ctx context.Context, err error) bool {
+	var api *githubapp.APIError
+	return ctx.Err() != nil || errors.As(err, &api) && (api.RateLimited() || api.Unauthorized() || api.Status == http.StatusForbidden)
 }
 
 // ProjectIssue upserts one GitHub issue (from a sync page or a create response) with its labels and assignees into the
@@ -173,12 +217,12 @@ func projectCleanupObservation(ctx context.Context, tx pgx.Tx, repoID int64, iss
 // projectIssue is ProjectIssue (sameSecond false) or ProjectConfirmedIssue (true). With cleanup, a projected closed
 // issue that still has a status label queues the app's status label cleanup; the cleanup itself projects without it.
 func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.Issue, sameSecond, cleanup bool) error {
-	actorID, actorLogin, actorType, err := evidenceActor(issue.User)
+	args, err := issueProjectionArgs(repoID, issue, sameSecond)
 	if err != nil {
 		return err
 	}
 	var inserted int64
-	err = tx.QueryRow(ctx, `INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, closed_at, author_id, author_login, author_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (source_id) DO UPDATE SET title=EXCLUDED.title,state=EXCLUDED.state,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,closed_at=EXCLUDED.closed_at,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_issues.repository_id=EXCLUDED.repository_id AND (activity_issues.updated_at < EXCLUDED.updated_at OR ($13 AND activity_issues.updated_at = EXCLUDED.updated_at)) RETURNING source_id`, issue.ID, repoID, issue.Number, issue.Title, issue.State, issue.HTMLURL, issue.CreatedAt, issue.UpdatedAt, issue.ClosedAt, actorID, actorLogin, actorType, sameSecond).Scan(&inserted)
+	err = tx.QueryRow(ctx, `INSERT INTO activity_issues (source_id, repository_id, number, title, state, html_url, created_at, updated_at, closed_at, author_id, author_login, author_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (source_id) DO UPDATE SET title=EXCLUDED.title,state=EXCLUDED.state,html_url=EXCLUDED.html_url,updated_at=EXCLUDED.updated_at,closed_at=EXCLUDED.closed_at,author_id=EXCLUDED.author_id,author_login=EXCLUDED.author_login,author_type=EXCLUDED.author_type WHERE activity_issues.repository_id=EXCLUDED.repository_id AND (activity_issues.updated_at < EXCLUDED.updated_at OR ($13 AND activity_issues.updated_at = EXCLUDED.updated_at)) RETURNING source_id`, args...).Scan(&inserted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // the stored copy is as new or newer, or the issue is tombstoned
 	}
@@ -189,10 +233,11 @@ func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.
 		return err
 	}
 	for _, label := range issue.Labels {
-		if label.ID <= 0 {
-			return errors.New("invalid issue label")
+		labelArgs, err := issueLabelProjectionArgs(issue.ID, label.ID, label.Name)
+		if err != nil {
+			return err
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_labels(issue_id,source_id,name) VALUES($1,$2,$3)`, issue.ID, label.ID, label.Name); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_labels(issue_id,source_id,name) VALUES($1,$2,$3)`, labelArgs...); err != nil {
 			return err
 		}
 	}
@@ -200,10 +245,11 @@ func projectIssue(ctx context.Context, tx pgx.Tx, repoID int64, issue githubapp.
 		return err
 	}
 	for _, assignee := range issue.Assignees {
-		if assignee.ID <= 0 {
-			return errors.New("invalid issue assignee")
+		assigneeArgs, err := issueAssigneeProjectionArgs(issue.ID, assignee)
+		if err != nil {
+			return err
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_assignees(issue_id,source_id,login,type) VALUES($1,$2,$3,$4)`, issue.ID, assignee.ID, assignee.Login, assignee.Type); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO activity_issue_assignees(issue_id,source_id,login,type) VALUES($1,$2,$3,$4)`, assigneeArgs...); err != nil {
 			return err
 		}
 	}

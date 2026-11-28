@@ -9,9 +9,9 @@ import (
 	"github.com/repoorbit/repoorbit/backend/internal/db"
 )
 
-// AttentionItem is one concrete problem in a counted repository. Kind is "pr_awaiting_review", "issue_no_response" or
-// "stale_issue" (docs/metrics-definitions.md 5.8). Since is when the item was opened, or for "stale_issue" when it was
-// last updated.
+// AttentionItem is one concrete problem in a counted repository. Kind is "pr_awaiting_review", "issue_no_response",
+// "stale_issue", or "failed_workflow_run" (docs/metrics-definitions.md 5.8 & 10). Since is when the item was opened,
+// or for "stale_issue" / "failed_workflow_run" when it was last updated. RunID is set for "failed_workflow_run".
 type AttentionItem struct {
 	Kind         string
 	RepositoryID int64
@@ -20,6 +20,7 @@ type AttentionItem struct {
 	Title        string
 	URL          string
 	Since        time.Time
+	RunID        *int64
 }
 
 // AssignedIssue is one open issue assigned to the viewer.
@@ -57,8 +58,15 @@ type CrossOverview struct {
 	// also not covered (children_incomplete) when any counted repository's UnreviewedOpenPullRequests is unknown.
 	OpenIssues    Count
 	ReviewBacklog Count
-	// NeedsAttention holds up to 25 items, oldest Since first, one row per item: PR rows from counted repositories whose
-	// UnreviewedOpenPullRequests is covered, issue rows from those whose UnansweredOpenIssues is covered.
+	// FailingWorkflows and BuildSuccessRate aggregate the fixed 30-day window across counted repositories whose
+	// actions stream is covered, with Through the oldest of those; other repositories are left out. Not covered only when
+	// there is none: permission_denied if any counted repository was denied, else not_synchronized
+	// (docs/metrics-definitions.md 10).
+	FailingWorkflows Count
+	BuildSuccessRate Rate
+	// NeedsAttention holds up to 25 items: first the 5 most recently updated failed workflow runs of the repositories
+	// behind FailingWorkflows, newest first, then oldest Since first, one row per item: PR rows from counted repositories
+	// whose UnreviewedOpenPullRequests is covered, issue rows from those whose UnansweredOpenIssues is covered.
 	NeedsAttention []AttentionItem
 	// AssignedToMe holds up to 25 open issues, most recently updated first, from repositories whose issue stream is
 	// covered (counted or not).
@@ -83,10 +91,15 @@ func LoadCrossRepositoryOverview(ctx context.Context, pool *pgxpool.Pool, reposi
 
 	out := &CrossOverview{
 		Days: days, WindowStart: w.start, Now: w.now, NeedsAttention: []AttentionItem{}, AssignedToMe: []AssignedIssue{},
-		OpenIssues: count(0, uncovered(ReasonNotSynchronized)), ReviewBacklog: count(0, uncovered(ReasonNotSynchronized)),
+		OpenIssues:       count(0, uncovered(ReasonNotSynchronized)),
+		ReviewBacklog:    count(0, uncovered(ReasonNotSynchronized)),
+		FailingWorkflows: count(0, uncovered(ReasonNotSynchronized)),
+		BuildSuccessRate: rate(0, 0, uncovered(ReasonNotSynchronized)),
 	}
-	var counted, withIssues, pullRows, issueRows []int64
-	var openIssues, backlog int64
+	w30 := newWindow(30, now)
+	var counted, withIssues, pullRows, issueRows, actionsRows []int64
+	var openIssues, backlog, failingWorkflows, succeededRuns, completedRuns int64
+	actionsCov := uncovered(ReasonNotSynchronized)
 	daily := make([]CrossDailyPoint, days)
 	for i := range daily {
 		daily[i].Day = w.start.AddDate(0, 0, i)
@@ -123,9 +136,46 @@ func LoadCrossRepositoryOverview(ctx context.Context, pool *pgxpool.Pool, reposi
 			daily[i].PullRequestsMerged = add(daily[i].PullRequestsMerged, *d.PullRequestsMerged)
 		}
 	}
+	if len(counted) > 0 {
+		covRows, err := q.ListActionsCoverageByRepo(ctx, counted)
+		if err != nil {
+			return nil, err
+		}
+		covByRepo := make(map[int64]db.ListActionsCoverageByRepoRow, len(covRows))
+		for _, r := range covRows {
+			covByRepo[r.RepositoryID] = r
+		}
+		denied := false
+		for _, id := range counted {
+			row := covByRepo[id]
+			c := actionsStreamCoverage(row.Watermark, row.Boundary, row.ErrorCode, w30.start)
+			if c.Covered {
+				actionsRows = append(actionsRows, id)
+				actionsCov = oldest(actionsCov, c)
+			} else if *c.Reason == ReasonPermissionDenied {
+				denied = true
+			}
+		}
+		if denied && len(actionsRows) == 0 {
+			actionsCov = uncovered(ReasonPermissionDenied)
+		}
+	}
+	if len(actionsRows) > 0 {
+		totals, err := q.GetCrossActionsTotals(ctx, db.GetCrossActionsTotalsParams{
+			RepositoryIds: actionsRows, WindowStart: w30.startArg(), Now: w30.nowArg(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		failingWorkflows = totals.FailingWorkflows
+		succeededRuns = totals.SucceededRuns
+		completedRuns = totals.CompletedRuns
+	}
 	out.RepositoriesCounted = len(counted)
 	out.OpenIssues = count(openIssues, out.OpenIssues.Coverage)
 	out.ReviewBacklog = count(backlog, out.ReviewBacklog.Coverage)
+	out.FailingWorkflows = count(failingWorkflows, actionsCov)
+	out.BuildSuccessRate = rate(succeededRuns, completedRuns, actionsCov)
 	out.Daily = daily
 
 	if len(pullRows)+len(issueRows) > 0 {
@@ -139,6 +189,28 @@ func LoadCrossRepositoryOverview(ctx context.Context, pool *pgxpool.Pool, reposi
 			out.NeedsAttention = append(out.NeedsAttention, AttentionItem{
 				Kind: r.Kind, RepositoryID: r.RepositoryID, FullName: r.FullName, Number: r.Number, Title: r.Title, URL: r.Url, Since: r.Since.Time,
 			})
+		}
+	}
+	if len(actionsRows) > 0 {
+		failedRuns, err := q.ListCrossFailedWorkflowRuns(ctx, db.ListCrossFailedWorkflowRunsParams{
+			RepositoryIds: actionsRows, WindowStart: w30.startArg(), Now: w30.nowArg(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(failedRuns) > 0 {
+			failedItems := make([]AttentionItem, 0, len(failedRuns))
+			for _, r := range failedRuns {
+				runID := r.RunID
+				failedItems = append(failedItems, AttentionItem{
+					Kind: "failed_workflow_run", RepositoryID: r.RepositoryID, FullName: r.FullName,
+					Number: r.RunNumber, Title: r.WorkflowName, URL: r.HtmlUrl, Since: r.UpdatedAt.Time, RunID: &runID,
+				})
+			}
+			out.NeedsAttention = append(failedItems, out.NeedsAttention...)
+			if len(out.NeedsAttention) > 25 {
+				out.NeedsAttention = out.NeedsAttention[:25]
+			}
 		}
 	}
 	if len(withIssues) > 0 {

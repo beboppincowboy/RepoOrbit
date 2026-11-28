@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/repoorbit/repoorbit/backend/graphql/model"
-	"github.com/repoorbit/repoorbit/backend/internal/accessfence"
 	"github.com/repoorbit/repoorbit/backend/internal/analytics"
 	"github.com/repoorbit/repoorbit/backend/internal/auth"
 	"github.com/repoorbit/repoorbit/backend/internal/db"
+	"github.com/repoorbit/repoorbit/backend/internal/readguard"
 	"github.com/repoorbit/repoorbit/backend/internal/repositories"
 )
 
@@ -26,6 +26,25 @@ func (r *assignedIssueResolver) RepositoryID(ctx context.Context, obj *analytics
 // RepositoryID is the resolver for the repositoryId field.
 func (r *attentionItemResolver) RepositoryID(ctx context.Context, obj *analytics.AttentionItem) (string, error) {
 	return strconv.FormatInt(obj.RepositoryID, 10), nil
+}
+
+// RunID is the resolver for the runId field.
+func (r *attentionItemResolver) RunID(ctx context.Context, obj *analytics.AttentionItem) (*string, error) {
+	if obj.RunID == nil {
+		return nil, nil
+	}
+	s := strconv.FormatInt(*obj.RunID, 10)
+	return &s, nil
+}
+
+// RunID is the resolver for the runId field.
+func (r *deliveryCheckResolver) RunID(ctx context.Context, obj *analytics.DeliveryCheck) (string, error) {
+	return strconv.FormatInt(obj.RunID, 10), nil
+}
+
+// ID is the resolver for the id field.
+func (r *deploymentSummaryResolver) ID(ctx context.Context, obj *analytics.DeploymentSummary) (string, error) {
+	return strconv.FormatInt(obj.ID, 10), nil
 }
 
 // Viewer is the resolver for the viewer field.
@@ -78,32 +97,33 @@ func (r *queryResolver) SelectedRepositories(ctx context.Context, first int, aft
 	for i, row := range rows {
 		ids[i] = row.ID
 	}
-	readFence, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, userID)
+	auth, err := r.authorizePreselected(ctx, userID, ids)
 	if err != nil {
-		return nil, fmt.Errorf("database unavailable")
+		return nil, err
 	}
-	checks := r.RepoAccess.Check(ctx, userID, ids, true)
+	result.Withheld = auth.Withheld
+	result.RetryAt = retryAtString(auth.RetryAt)
 	for _, row := range rows {
 		cursorID := strconv.FormatInt(row.ID, 10)
 		result.EndCursor = &cursorID
-		d := checks[row.ID]
-		if d.Unverified {
-			result.Withheld++
-			result.RetryAt = laterRetry(result.RetryAt, d.RetryAt)
-		}
+		d := auth.Checks[row.ID]
 		if d.Allowed {
 			result.Nodes = append(result.Nodes, &model.Repository{ID: cursorID, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: true, SyncState: string(repositories.SyncStateFor(true)), Activity: activityStatus(false, true)})
 		}
 	}
-	if err := r.loadSelectedStatuses(ctx, userID, result.Nodes, selectedRepositoryStatusSelection(ctx)); err != nil {
-		return nil, fmt.Errorf("database unavailable")
-	}
-	current, err := readFence.Current(ctx, r.RepoAccess.Pool)
-	if err != nil || !current {
-		result.Withheld += len(result.Nodes)
-		result.Nodes = []*model.Repository{}
-	}
-	return result, nil
+	return readguard.Run(ctx, r.RepoAccess.Pool, auth,
+		func() (*model.RepositoryConnection, error) {
+			if err := r.loadSelectedStatuses(ctx, userID, result.Nodes, selectedRepositoryStatusSelection(ctx)); err != nil {
+				return nil, fmt.Errorf("database unavailable")
+			}
+			return result, nil
+		},
+		func() (*model.RepositoryConnection, error) {
+			result.Withheld += len(result.Nodes)
+			result.Nodes = []*model.Repository{}
+			return result, nil
+		},
+	)
 }
 
 // Repository is the resolver for the repository field. A repository the user can access but has not selected
@@ -129,9 +149,9 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 	if err != nil {
 		return nil, err
 	}
-	readFence, err := accessfence.TakeSnapshotForUser(ctx, r.RepoAccess.Pool, userID)
+	auth, err := r.fenceOnly(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("database unavailable")
+		return nil, err
 	}
 	d := r.RepoAccess.CheckOne(ctx, userID, repoID, true)
 	if d.Unverified {
@@ -140,21 +160,24 @@ func (r *queryResolver) Repository(ctx context.Context, id string) (*model.Repos
 	if !d.Allowed {
 		return nil, nil
 	}
-	selected, err := r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: userID, RepositoryIds: []int64{repoID}})
-	if err != nil {
-		return nil, fmt.Errorf("database unavailable")
-	}
-	repo := &model.Repository{ID: id, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: len(selected) == 1, SyncState: string(repositories.SyncStateFor(len(selected) == 1)), Activity: activityStatus(false, len(selected) == 1)}
-	if len(selected) == 1 {
-		if err := r.loadSelectedStatuses(ctx, userID, []*model.Repository{repo}, repositoryStatusSelection(ctx)); err != nil {
-			return nil, fmt.Errorf("database unavailable")
-		}
-	}
-	current, err := readFence.Current(ctx, r.RepoAccess.Pool)
-	if err != nil || !current {
-		return nil, unverifiedError(time.Time{})
-	}
-	return repo, nil
+	return readguard.Run(ctx, r.RepoAccess.Pool, auth,
+		func() (*model.Repository, error) {
+			selected, err := r.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: userID, RepositoryIds: []int64{repoID}})
+			if err != nil {
+				return nil, fmt.Errorf("database unavailable")
+			}
+			repo := &model.Repository{ID: id, FullName: d.Repo.FullName, Description: d.Repo.Description, Private: d.Repo.Private, Selected: len(selected) == 1, SyncState: string(repositories.SyncStateFor(len(selected) == 1)), Activity: activityStatus(false, len(selected) == 1)}
+			if len(selected) == 1 {
+				if err := r.loadSelectedStatuses(ctx, userID, []*model.Repository{repo}, repositoryStatusSelection(ctx)); err != nil {
+					return nil, fmt.Errorf("database unavailable")
+				}
+			}
+			return repo, nil
+		},
+		func() (*model.Repository, error) {
+			return nil, unverifiedError(time.Time{})
+		},
+	)
 }
 
 // Issues is the resolver for the issues field.
@@ -197,9 +220,54 @@ func (r *queryResolver) CrossRepositoryOverview(ctx context.Context, days int) (
 	return r.crossRepositoryOverview(ctx, days)
 }
 
+// RepositoryActions is the resolver for the repositoryActions field.
+func (r *queryResolver) RepositoryActions(ctx context.Context, id string, days int) (*analytics.RepositoryActions, error) {
+	return r.repositoryActions(ctx, id, days)
+}
+
+// WorkflowRun is the resolver for the workflowRun field.
+func (r *queryResolver) WorkflowRun(ctx context.Context, repositoryID string, runID string) (*analytics.WorkflowRunDetail, error) {
+	return r.workflowRun(ctx, repositoryID, runID)
+}
+
+// IssueDelivery is the resolver for the issueDelivery field.
+func (r *queryResolver) IssueDelivery(ctx context.Context, repositoryID string, issueNumber int) (*analytics.IssueDelivery, error) {
+	return r.issueDelivery(ctx, repositoryID, issueNumber)
+}
+
 // RepositoryBoard is the resolver for the repositoryBoard field.
 func (r *queryResolver) RepositoryBoard(ctx context.Context, id string, include []int) (*model.RepositoryBoard, error) {
 	return r.repositoryBoard(ctx, id, include)
+}
+
+// WorkflowID is the resolver for the workflowId field.
+func (r *workflowFailureSummaryResolver) WorkflowID(ctx context.Context, obj *analytics.WorkflowFailureSummary) (string, error) {
+	return strconv.FormatInt(obj.WorkflowID, 10), nil
+}
+
+// LatestRunID is the resolver for the latestRunId field.
+func (r *workflowFailureSummaryResolver) LatestRunID(ctx context.Context, obj *analytics.WorkflowFailureSummary) (string, error) {
+	return strconv.FormatInt(obj.LatestRunID, 10), nil
+}
+
+// ID is the resolver for the id field.
+func (r *workflowJobDetailResolver) ID(ctx context.Context, obj *analytics.WorkflowJobDetail) (string, error) {
+	return strconv.FormatInt(obj.ID, 10), nil
+}
+
+// RunID is the resolver for the runId field.
+func (r *workflowJobDetailResolver) RunID(ctx context.Context, obj *analytics.WorkflowJobDetail) (string, error) {
+	return strconv.FormatInt(obj.RunID, 10), nil
+}
+
+// ID is the resolver for the id field.
+func (r *workflowRunSummaryResolver) ID(ctx context.Context, obj *analytics.WorkflowRunSummary) (string, error) {
+	return strconv.FormatInt(obj.ID, 10), nil
+}
+
+// WorkflowID is the resolver for the workflowId field.
+func (r *workflowRunSummaryResolver) WorkflowID(ctx context.Context, obj *analytics.WorkflowRunSummary) (string, error) {
+	return strconv.FormatInt(obj.WorkflowID, 10), nil
 }
 
 // AssignedIssue returns AssignedIssueResolver implementation.
@@ -208,9 +276,37 @@ func (r *Resolver) AssignedIssue() AssignedIssueResolver { return &assignedIssue
 // AttentionItem returns AttentionItemResolver implementation.
 func (r *Resolver) AttentionItem() AttentionItemResolver { return &attentionItemResolver{r} }
 
+// DeliveryCheck returns DeliveryCheckResolver implementation.
+func (r *Resolver) DeliveryCheck() DeliveryCheckResolver { return &deliveryCheckResolver{r} }
+
+// DeploymentSummary returns DeploymentSummaryResolver implementation.
+func (r *Resolver) DeploymentSummary() DeploymentSummaryResolver {
+	return &deploymentSummaryResolver{r}
+}
+
 // Query returns QueryResolver implementation.
 func (r *Resolver) Query() QueryResolver { return &queryResolver{r} }
 
+// WorkflowFailureSummary returns WorkflowFailureSummaryResolver implementation.
+func (r *Resolver) WorkflowFailureSummary() WorkflowFailureSummaryResolver {
+	return &workflowFailureSummaryResolver{r}
+}
+
+// WorkflowJobDetail returns WorkflowJobDetailResolver implementation.
+func (r *Resolver) WorkflowJobDetail() WorkflowJobDetailResolver {
+	return &workflowJobDetailResolver{r}
+}
+
+// WorkflowRunSummary returns WorkflowRunSummaryResolver implementation.
+func (r *Resolver) WorkflowRunSummary() WorkflowRunSummaryResolver {
+	return &workflowRunSummaryResolver{r}
+}
+
 type assignedIssueResolver struct{ *Resolver }
 type attentionItemResolver struct{ *Resolver }
+type deliveryCheckResolver struct{ *Resolver }
+type deploymentSummaryResolver struct{ *Resolver }
 type queryResolver struct{ *Resolver }
+type workflowFailureSummaryResolver struct{ *Resolver }
+type workflowJobDetailResolver struct{ *Resolver }
+type workflowRunSummaryResolver struct{ *Resolver }

@@ -96,7 +96,7 @@ test('per-alias denial removes A snapshots and drafts while temporary uncertaint
               days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
               repositoriesCounted: 2, repositoriesSyncing: 0, withheld: 0, retryAt: null,
               openIssues: { value: 8, coverage: covered },
-              reviewBacklog: { value: 1, coverage: covered },
+              reviewBacklog: { value: 1, coverage: covered }, failingWorkflows: { value: 0, coverage: covered }, buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: covered },
               needsAttention: [], assignedToMe: [], daily: [],
             },
           },
@@ -230,7 +230,7 @@ test('aggregate overview hides rejected repository rows and totals immediately w
     withheld: 0,
     retryAt: null,
     openIssues: { value: 9, coverage: covered },
-    reviewBacklog: { value: 4, coverage: covered },
+    reviewBacklog: { value: 4, coverage: covered }, failingWorkflows: { value: 0, coverage: covered }, buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: covered },
     needsAttention: [
       { kind: 'issue_no_response', repositoryId: '1', fullName: 'ada/repo-1', number: 11, title: 'Secret issue 1', url: 'https://github.com/ada/repo-1/issues/11', since: '2026-11-15T00:00:00Z' },
       { kind: 'issue_no_response', repositoryId: '2', fullName: 'ada/repo-2', number: 22, title: 'Visible issue 2', url: 'https://github.com/ada/repo-2/issues/22', since: '2026-11-15T00:00:00Z' },
@@ -353,6 +353,8 @@ test('all-withheld metadata page still advances its cursor to load the next page
               repositoriesCounted: 0, repositoriesSyncing: 0, withheld: 2, retryAt: null,
               openIssues: { value: null, coverage: { covered: false, reason: 'not_synchronized', through: null } },
               reviewBacklog: { value: null, coverage: { covered: false, reason: 'not_synchronized', through: null } },
+              failingWorkflows: { value: null, coverage: { covered: false, reason: 'not_synchronized', through: null } },
+              buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: { covered: false, reason: 'not_synchronized', through: null } },
               needsAttention: [], assignedToMe: [], daily: [],
             },
           },
@@ -413,7 +415,7 @@ test('a detail retry that denies a repository on Overview refetches the aggregat
   const aggregate = (openIssues: number) => ({
     days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
     repositoriesCounted: 2, repositoriesSyncing: 0, withheld: 0, retryAt: null,
-    openIssues: { value: openIssues, coverage: covered }, reviewBacklog: { value: 1, coverage: covered },
+    openIssues: { value: openIssues, coverage: covered }, reviewBacklog: { value: 1, coverage: covered }, failingWorkflows: { value: 0, coverage: covered }, buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: covered },
     needsAttention: [], assignedToMe: [], daily: [{ day: '2026-11-17T00:00:00Z', issuesOpened: 1, pullRequestsMerged: 1 }],
   });
 
@@ -479,7 +481,7 @@ test('a rate-limited repository missing from a complete selection refresh loses 
             crossRepositoryOverview: {
               days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
               repositoriesCounted: 1, repositoriesSyncing: 0, withheld: 0, retryAt: null,
-              openIssues: { value: 3, coverage: covered }, reviewBacklog: { value: 1, coverage: covered },
+              openIssues: { value: 3, coverage: covered }, reviewBacklog: { value: 1, coverage: covered }, failingWorkflows: { value: 0, coverage: covered }, buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: covered },
               needsAttention: [], assignedToMe: [], daily: [],
             },
           },
@@ -561,7 +563,7 @@ test('an error-free null repository alias is a denial even when its issues alias
     }
     if (String(query).startsWith('query RepositoryDetails')) {
       if (!mixed) {
-        return route.fulfill({ json: { data: { a0: { activity: quietActivity }, r0: issuePage('1'), a1: { activity: quietActivity }, r1: issuePage('2') } } });
+        return route.fulfill({ json: { data: { a0: { activity: quietActivity }, r0: issuePage('1'), a1: { activity: fullActivity }, r1: issuePage('2') } } });
       }
       return route.fulfill({
         json: {
@@ -579,6 +581,8 @@ test('an error-free null repository alias is a denial even when its issues alias
   await page.goto('/workspace/2');
   await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
   await page.evaluate(() => localStorage.setItem('repoorbit:issue-draft:real:ada:1:create', JSON.stringify({ version: 1, title: 'Private draft' })));
+  // Reconnect joins an in-flight selection pass, so flip the mock only after the first pass's details have landed.
+  await expect(sidebar(page).getByRole('link', { name: 'repo-2', exact: true })).toHaveAttribute('title', 'repo-2 · Synced');
 
   mixed = true;
   await page.evaluate(() => {
@@ -606,7 +610,7 @@ test('an open workspace stops showing a verified repository once a complete sele
     if (String(query).startsWith('query RepositoryDetails')) {
       if (dropped) await heldDetails;
       const ids = Object.values(variables as Record<string, string>);
-      return route.fulfill({ json: { data: Object.fromEntries(ids.flatMap((id, i) => [[`a${i}`, { activity: quietActivity }], [`r${i}`, issuePage(id)]])) } }).catch(() => {});
+      return route.fulfill({ json: { data: Object.fromEntries(ids.flatMap((id, i) => [[`a${i}`, { activity: fullActivity }], [`r${i}`, issuePage(id)]])) } }).catch(() => {});
     }
     if (String(query).startsWith('query RepositoryOverview')) {
       if (dropped) await heldOverview;
@@ -621,6 +625,9 @@ test('an open workspace stops showing a verified repository once a complete sele
     });
     await page.goto('/workspace/2');
     await expect(page.getByRole('heading', { name: 'repo-2', exact: true })).toBeVisible();
+    // The heading needs only Overview. Reconnect joins an in-flight selection pass instead of starting a new one, so
+    // flip the mock only after the first pass has finished: its details turn the sidebar row from loading to Synced.
+    await expect(sidebar(page).getByRole('link', { name: 'repo-2', exact: true })).toHaveAttribute('title', 'repo-2 · Synced');
     dropped = true;
     await page.evaluate(() => {
       window.dispatchEvent(new Event('offline'));
@@ -648,7 +655,7 @@ test('a denial recorded while the first Overview aggregate is still loading star
   const aggregate = (openIssues: number) => ({
     days: 30, windowStart: '2026-10-19T00:00:00Z', now: '2026-11-17T08:00:00Z',
     repositoriesCounted: 1, repositoriesSyncing: 0, withheld: 0, retryAt: null,
-    openIssues: { value: openIssues, coverage: covered }, reviewBacklog: { value: 1, coverage: covered },
+    openIssues: { value: openIssues, coverage: covered }, reviewBacklog: { value: 1, coverage: covered }, failingWorkflows: { value: 0, coverage: covered }, buildSuccessRate: { rate: null, numerator: null, denominator: null, coverage: covered },
     needsAttention: [], assignedToMe: [], daily: [],
   });
 

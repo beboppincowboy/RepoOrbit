@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -93,6 +94,80 @@ func (s *Service) Deselect(ctx context.Context, userID, repoID int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// requestActivityRefresh checks selection and live access before signaling activity in a transaction.
+func (s *Service) requestActivityRefresh(ctx context.Context, userID, repoID int64) (string, error) {
+	if s.SignalActivity == nil {
+		return "", ErrNotFound
+	}
+	sel, err := s.Queries.ListSelectedIDs(ctx, db.ListSelectedIDsParams{UserID: userID, RepositoryIds: []int64{repoID}})
+	if err != nil {
+		return "", err
+	}
+	if len(sel) == 0 {
+		return "", ErrNotFound
+	}
+	d := s.CheckOne(ctx, userID, repoID, true)
+	if d.Unverified {
+		return "", &UnverifiedError{RetryAt: d.RetryAt}
+	}
+	if !d.Allowed {
+		return "", ErrNotFound
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+	outcome, err := s.SignalActivity(ctx, tx, repoID)
+	if err != nil {
+		return "", err
+	}
+	return outcome, tx.Commit(ctx)
+}
+
+// connectInstallation checks the user's GitHub installations and returns the connection outcome.
+// A match in a partial listing can be stored, and the visibility cache is invalidated after commit.
+func (s *Service) connectInstallation(ctx context.Context, userID, installationID int64) string {
+	token, err := s.TokenSource.AccessToken(ctx, userID)
+	if err != nil {
+		return "failed"
+	}
+	installs, complete, err := collect(func(p int) ([]githubapp.Installation, bool, error) {
+		return s.GitHub.FetchInstallations(ctx, token, p)
+	})
+	for _, in := range installs {
+		if in.ID == installationID {
+			if err := s.storeInstallation(ctx, userID, in); err != nil {
+				log.Printf("repositories: store installation: %v", err)
+				return "failed"
+			}
+			s.visibility.invalidate(userID)
+			return "ok"
+		}
+	}
+	if err == nil && complete {
+		return "rejected"
+	}
+	return "failed"
+}
+
+// storeInstallation saves a connected installation and runs OnEligibilityChange in one transaction, so work paused
+// for lack of access resumes with it.
+func (s *Service) storeInstallation(ctx context.Context, userID int64, in githubapp.Installation) error {
+	return db.InTx(ctx, s.Pool, func(tx pgx.Tx) error {
+		if err := accessfence.BumpAccess(ctx, tx, accessfence.ScopeInstallation, in.ID); err != nil {
+			return err
+		}
+		if err := s.Queries.WithTx(tx).UpsertInstallation(ctx, db.UpsertInstallationParams{UserID: userID, InstallationID: in.ID, AccountLogin: in.Account.Login}); err != nil {
+			return err
+		}
+		if s.OnEligibilityChange != nil {
+			return s.OnEligibilityChange(ctx, tx, userID)
+		}
+		return nil
+	})
 }
 
 // SyncState is what the UI says about a repository's data until ingestion exists (U3). The string values are

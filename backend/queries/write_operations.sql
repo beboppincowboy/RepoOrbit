@@ -10,7 +10,7 @@ SELECT id, request_hash,
 FROM write_operations WHERE user_id = $1 AND idempotency_key = $2;
 
 -- name: GetWriteOperationScope :one
-SELECT repository_id, state,
+SELECT repository_id,
  (state = 'pending' AND created_at < now() - interval '1 minute') AS stale_pending
 FROM write_operations WHERE id = $1 AND user_id = $2;
 
