@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { emptyListClass, listRowClass, pillClass } from "@/components/needs-attention";
+import { emptyListClass, listRowClass, pillClass } from "@/features/analytics/components/needs-attention";
 import { ChevronIcon } from "@/shared/ui/icons";
 import { BOARD_STATUSES, STATUS_NAMES } from "@/features/issues/status";
 import type { AssignedIssue } from "@/features/analytics/api";

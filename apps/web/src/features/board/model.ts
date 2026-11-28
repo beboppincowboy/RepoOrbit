@@ -1,9 +1,12 @@
-import type { BoardIssue } from "@/features/board/api";
-import type { BoardSnapshot, IssueUpdateDraft, WriteOperation } from "@/features/issues/api";
-import { boardDraftPrefix, issueDraftStorageKey } from "@/features/issues/drafts";
+import type { BoardIssue, RepositoryBoard } from "@/features/board/api";
+import type { BoardSnapshot, IssueCapabilities, IssueUpdateDraft, WriteOperation } from "@/features/issues/api";
 import { STATUS_LABELS, type BoardStatus } from "@/features/issues/status";
 import { classifyWriteFailure } from "@/features/issues/write-errors";
-import { readStorageByPrefix, removeStorage, writeStorage } from "@/shared/utils/storage";
+import { hasIgnoreCase } from "@/features/issues/model";
+
+// How many open and closed issues one Board read returns at most.
+export const OPEN_CAP = 500;
+export const CLOSED_CAP = 50;
 
 export function isStatusLabel(label: string): boolean {
   return Object.values(STATUS_LABELS).includes(label.toLowerCase());
@@ -42,40 +45,17 @@ export type BoardChange = { draft: IssueUpdateDraft; sideEffects: string[] };
 // The saver is the signed-in user; assignable means they are in the repository's /assignees list.
 export type BoardSaver = { login: string; assignable: boolean };
 
-// Every staged card of one viewer and repository, in issue-number order.
-export function loadBoardCards(viewerKey: string, repositoryId: string): BoardCard[] {
-  return readStorageByPrefix<BoardCard>(boardDraftPrefix(viewerKey, repositoryId))
-    .filter(card => card.version === 1)
-    .sort((a, b) => a.number - b.number);
-}
-
-// The stored card for one issue number, read from storage now (undefined when none is staged).
-export function loadBoardCard(viewerKey: string, repositoryId: string, issueNumber: number): BoardCard | undefined {
-  return loadBoardCards(viewerKey, repositoryId).find(card => card.number === issueNumber);
-}
-
-// Callers hold the draft storage lock.
-export function saveBoardCard(viewerKey: string, repositoryId: string, card: BoardCard): boolean {
-  return writeStorage(issueDraftStorageKey(viewerKey, repositoryId, { board: card.number }), card.phase === "pending" ? { ...card, phase: "unknown" } : card);
-}
-
-// Callers hold the draft storage lock.
-export function removeBoardCard(viewerKey: string, repositoryId: string, issueNumber: number): void {
-  removeStorage(issueDraftStorageKey(viewerKey, repositoryId, { board: issueNumber }));
-}
-
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-const has = (list: string[], value: string) => list.some(item => same(item, value));
-const sameSet = (a: string[], b: string[]) => a.every(v => has(b, v)) && b.every(v => has(a, v));
+const sameSet = (a: string[], b: string[]) => a.every(v => hasIgnoreCase(b, v)) && b.every(v => hasIgnoreCase(a, v));
 
 export function stageAssignees(target: BoardTarget, assigneesAdd: string[], assigneesRemove: string[]): BoardTarget {
-  const assigning = target.status === "backlog" && assigneesAdd.some(login => !has(target.assigneesAdd, login));
+  const assigning = target.status === "backlog" && assigneesAdd.some(login => !hasIgnoreCase(target.assigneesAdd, login));
   return assigning ? { status: "todo", assigneesAdd, assigneesRemove, assignedFromBacklog: true } : { ...target, assigneesAdd, assigneesRemove };
 }
 
 export function deriveChange(snapshot: BoardSnapshot, target: BoardTarget, saver: BoardSaver): BoardChange | null {
-  const assigneesAdd = target.assigneesAdd.filter(login => !has(snapshot.assignees, login));
-  const assigneesRemove = snapshot.assignees.filter(login => has(target.assigneesRemove, login));
+  const assigneesAdd = target.assigneesAdd.filter(login => !hasIgnoreCase(snapshot.assignees, login));
+  const assigneesRemove = snapshot.assignees.filter(login => hasIgnoreCase(target.assigneesRemove, login));
   if (target.status === snapshot.status && !assigneesAdd.length && !assigneesRemove.length) return null;
 
   const sideEffects: string[] = [];
@@ -86,7 +66,7 @@ export function deriveChange(snapshot: BoardSnapshot, target: BoardTarget, saver
   if (closing) sideEffects.push("Closes the issue as completed");
   if (reopening) sideEffects.push("Reopens the issue");
   const moving = target.status !== snapshot.status;
-  const labelsAdd = moving && targetLabel && (reopening || !has(snapshot.labels, targetLabel)) ? [targetLabel] : [];
+  const labelsAdd = moving && targetLabel && (reopening || !hasIgnoreCase(snapshot.labels, targetLabel)) ? [targetLabel] : [];
   const labelsRemove = moving ? statusLabels.filter(label => !targetLabel || !same(label, targetLabel)) : [];
   for (const label of labelsRemove) sideEffects.push(`Removes label ${label}`);
   if (target.status === "in_progress" && snapshot.status !== "in_progress" && !snapshot.assignees.length && !target.assigneesAdd.length && !target.assigneesRemove.length) {
@@ -150,4 +130,43 @@ export function applySaveResult(card: BoardCard, result: BoardSaveResult): Board
     case "duplicate_create": // Only a create gets this; stay locked if it ever appears.
       return unknown(sameKeyId);
   }
+}
+
+export const locked = (card?: BoardCard) => card?.phase === "pending" || card?.phase === "unknown";
+
+export const cardOf = (cards: readonly BoardCard[], issueNumber: number) => cards.find(card => card.number === issueNumber);
+
+// Where the row's card is staged to go, or where the row is now when it holds no card.
+export const targetOf = (row: BoardIssue, card: BoardCard | undefined): BoardTarget => card?.target ?? { status: row.status!, assigneesAdd: [], assigneesRemove: [] };
+
+// The column that shows the row: a failed card stays where the row is.
+export const columnOf = (row: BoardIssue, card: BoardCard | undefined) => !card || card.phase === "failed" ? row.status : card.target.status;
+
+// The text filter as matchesFilters reads it: trimmed, lower-cased and without a leading #.
+export const searchNeedle = (text: string) => text.trim().toLowerCase().replace(/^#/, "");
+
+// Whether the row passes every filter; an empty filter passes all rows.
+export function matchesFilters(row: BoardIssue, { assignee, label, needle }: { assignee: string; label: string; needle: string }): boolean {
+  return (!assignee || row.assignees.includes(assignee))
+    && (!label || row.labels.includes(label))
+    && (!needle || row.title.toLowerCase().includes(needle) || String(row.number) === needle);
+}
+
+export const filterOptions = (values: string[]) => [...new Set(values)].sort((a, b) => a.localeCompare(b));
+
+type BlockedReasonInput = {
+  demo: boolean;
+  board: RepositoryBoard | null;
+  capabilities: IssueCapabilities | null;
+  capabilitiesError: string | null;
+};
+
+// Why Board changes cannot be staged; null when they can.
+export function getBlockedReason({ demo, board, capabilities, capabilitiesError }: BlockedReasonInput): string | null {
+  if (demo) return "Demo mode — remote GitHub writes are disabled, so Board changes cannot be staged.";
+  if (board && !board.statusLabels) return "No status source: turn status labels on to stage Board changes.";
+  if (capabilitiesError !== null) return capabilitiesError;
+  if (!capabilities) return "Checking your current GitHub permissions…";
+  if (!capabilities.canManageIssues) return "Moving cards, changing assignees, and closing or reopening issues requires Triage or higher permission on GitHub.";
+  return null;
 }

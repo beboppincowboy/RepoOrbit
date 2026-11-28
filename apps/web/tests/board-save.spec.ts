@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { recheckWriteOperation, submitIssueUpdate, type IssueUpdateDraft, type WriteOperation } from '../src/features/issues/api';
 import { IssueWriteError } from '../src/features/issues/write-errors';
-import { loadBoardCards, removeBoardCard, saveBoardCard, type BoardCard } from '../src/lib/board';
-import { saveBoardChanges, type BoardSaveOptions } from '../src/lib/board-save';
+import { loadBoardCards, removeBoardCard, saveBoardCard } from '../src/features/board/card-storage';
+import type { BoardCard } from '../src/features/board/model';
+import { saveBoardChanges, type BoardSaveOptions } from '../src/features/board/save';
 import { clearAllIssueDrafts, clearRepositoryIssueDrafts, issueDraftStorageKey, withDraftStorageLock } from '../src/features/issues/drafts';
 import { mockWindowStorage } from './mocks';
 

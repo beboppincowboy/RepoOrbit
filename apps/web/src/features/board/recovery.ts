@@ -1,6 +1,6 @@
 import { recheckWriteOperation, submitIssueUpdate } from "@/features/issues/api";
 import { canReplayWithSameKey, WRITE_RECOVERY_WINDOW_MS } from "@/features/issues/write-errors";
-import { applySaveResult, type BoardCard, type BoardSaveOutcome } from "./board";
+import { applySaveResult, type BoardCard, type BoardSaveOutcome } from "@/features/board/model";
 
 // "recheck" asks GitHub's operation record about a send that has an operation id. "resend" sends the stored request again
 // under its stored Idempotency-Key. "none" leaves the card locked.

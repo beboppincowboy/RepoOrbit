@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 import type { BoardIssue } from '../src/features/board/api';
 import type { BoardStatus } from '../src/features/issues/status';
-import type { BoardCard, BoardCardPhase, BoardTarget } from '../src/lib/board';
-import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from '../src/lib/board-review';
+import type { BoardCard, BoardCardPhase, BoardTarget } from '../src/features/board/model';
+import { confirmDisabled, reviewItems, reviewableCards, saveButtonState } from '../src/features/board/review';
 
 const ada = { login: 'ada', assignable: true };
 const names: Record<BoardStatus, string> = { backlog: 'Backlog', todo: 'Todo', in_progress: 'In Progress', in_review: 'In Review', done: 'Done' };
