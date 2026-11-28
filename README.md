@@ -12,26 +12,33 @@ Metrics carry coverage information. An unfinished import leaves an unknown value
 
 ## Architecture
 
+RepoOrbit is a modular monolith: one Go module (`backend/`), two Go processes (`api` and `worker`) sharing a single PostgreSQL 17.5 database, and a separate Bun web process (`apps/web/server.mjs`) that serves the built React SPA and proxies same-origin requests to the API. See [ARCHITECTURE.md](ARCHITECTURE.md) for package boundaries, composition roots, and architectural decisions.
+
 ```mermaid
 flowchart LR
-    Browser --> Web["TanStack Start web app"]
-    Web -->|"Same-origin auth, REST, and GraphQL"| API["Go API"]
-    API -->|"Sessions, selections, and authorized analytics"| DB[("PostgreSQL")]
+    Browser --> Web["Bun web server (apps/web/server.mjs)<br/>React SPA + same-origin proxy"]
+    Web -->|"/auth, /api, /graphql"| API["Go API (backend/cmd/api)"]
+    API -->|"Guarded reads (readguard), REST (issues),<br/>auth, selections, and job enqueue"| DB[("PostgreSQL 17.5")]
     API -->|"Sign-in and viewer access checks"| GitHub["GitHub"]
-    GitHub -->|"Signed webhooks"| API
-    DB -->|"Durable jobs and checkpoints"| Worker["Go sync worker"]
+    GitHub -->|"Signed webhooks (/webhooks/github)"| API
+    DB -->|"Transactional job queue (jobs)<br/>and checkpoints"| Worker["Go worker (backend/cmd/worker)"]
     Worker -->|"Paginated activity reads"| GitHub
-    Worker -->|"Fenced writes and coverage updates"| DB
+    Worker -->|"Fenced projection writes (ingestion)<br/>and coverage updates"| DB
 ```
 
-The web app uses TanStack Start and React for navigation, shadcn/ui and Tailwind CSS for components, TanStack Query for fetching and polling, TanStack Table for tabular views, and ECharts for activity charts. Its server proxies requests to Go on the same origin. The Go API manages sessions, repository selection, webhooks, and GraphQL queries. PostgreSQL stores selections, jobs, imported GitHub activity, and coverage checkpoints. SQL queries compute analytics from the stored activity.
+The web app (`apps/web/`) is built with TanStack Start/Router, React 19, Tailwind CSS, Radix UI, TanStack Query, TanStack Table, and ECharts, organized into `src/routes/`, `src/features/` (`analytics`, `auth`, `board`, `issues`, `repositories`), and `src/shared/`. In production, `apps/web/server.mjs` runs on Bun (`oven/bun:1.4.5-alpine`), serves static assets from `dist/client`, and streams `/auth`, `/api`, and `/graphql` to the Go API without holding state.
+
+The Go backend (`backend/`) separates explicit commands and read models across `cmd/api` and `cmd/worker`:
+
+- **`cmd/api`** runs migrations (and Demo mode seeding when GitHub credentials are unset), then serves `/auth`, `/graphql`, `/api`, `/webhooks/github`, `/live`, and `/ready`. Every non-demo GraphQL read goes through `internal/readguard` (user-scoped access fence, fresh access check, read callback, and post-read fence check), while `internal/board` and `internal/analytics` (`REPEATABLE READ` read-only transactions) serve the Board, overview, and delivery read models. REST issue commands live in `internal/issues` (`domain`, `application`, and per-repository access fences) and call `internal/ingestion` as the single owner of issue projection writes.
+- **`cmd/worker`** runs the PostgreSQL-backed job queue (`internal/jobs`), GitHub ingestion and projection (`internal/ingestion`), periodic scheduling, and startup reconciliation, exposing `/live` and `/ready` on internal port `8081`.
 
 ### Synchronization and access
 
-1. Connecting or following a repository records the selection and schedules background work. Workers claim jobs by renewable lease and resume imports from saved cursors. Stable GitHub IDs let a retried page update existing records.
+1. Connecting or following a repository records the selection and enqueues background work in the same database transaction. Workers claim jobs by renewable lease and resume imports from saved cursors. Stable GitHub IDs let a retried page update existing records.
 2. The worker tracks issues, PRs, reviews, comments, releases, and issue events separately. A stalled import can leave one metric incomplete while other data remains readable. Signed webhooks trigger reconciliation, and periodic polling catches missed changes.
 3. Eligible activity imports use short-lived GitHub App installation tokens. The viewer's token handles access checks and public activity imports outside the installation. Rate limits defer work until the next retry.
-4. GraphQL checks viewer access before reading repository data. An access fence detects permission changes during reads and prevents in-flight jobs from committing against outdated permissions. After a temporary connection failure or rate limit, a workspace the viewer already loaded can show a read-only snapshot with its timestamp and the reason it is frozen.
+4. GraphQL reads enforce `internal/readguard` access fences before and after reading repository data, preventing reads against stale permissions. After a temporary connection failure or rate limit, a workspace the viewer already loaded can show a read-only snapshot with its timestamp and the reason it is frozen.
 
 ### Issue management, discovery, and delivery
 
@@ -65,10 +72,25 @@ Open [RepoOrbit](http://localhost:3000). With GitHub credentials unset, the app 
 
 | Path | Responsibility |
 | --- | --- |
-| [`apps/web/`](apps/web/) | Routes, repository workspaces, charts, and the same-origin proxy |
-| [`backend/cmd/`](backend/cmd/) | Go API and worker entry points |
-| [`backend/graphql/`](backend/graphql/) | GraphQL schema, access checks, and analytics resolvers |
-| [`backend/internal/ingestion/`](backend/internal/ingestion/) | Activity imports, reconciliation, and cleanup |
-| [`backend/migrations/`](backend/migrations/) and [`backend/queries/`](backend/queries/) | PostgreSQL schema and sqlc queries |
+| [`apps/web/src/routes/`](apps/web/src/routes/) | TanStack Start/Router pages and shell layout |
+| [`apps/web/src/features/`](apps/web/src/features/) | Feature modules (`analytics`, `auth`, `board`, `issues`, `repositories`) |
+| [`apps/web/src/shared/`](apps/web/src/shared/) | Shared API transport/errors, UI primitives, and utilities |
+| [`apps/web/server.mjs`](apps/web/server.mjs) | Production Bun server serving `dist/client` and proxying `/auth`, `/api`, `/graphql` |
+| [`backend/cmd/`](backend/cmd/) | Go `api`, `worker`, and `fakegithub` entry points |
+| [`backend/graphql/`](backend/graphql/) | GraphQL schema (`gqlgen`) and transport mapping |
+| [`backend/internal/readguard/`](backend/internal/readguard/) | Four-step guarded GraphQL read helper and user-scoped access fences |
+| [`backend/internal/board/`](backend/internal/board/) & [`backend/internal/analytics/`](backend/internal/analytics/) | Board, overview, and delivery read models |
+| [`backend/internal/issues/`](backend/internal/issues/) | REST issue management, domain/application commands, and per-repo access fences |
+| [`backend/internal/ingestion/`](backend/internal/ingestion/) | GitHub activity imports, reconciliation, cleanup, and single issue projection owner |
+| [`backend/internal/jobs/`](backend/internal/jobs/) | PostgreSQL-backed transactional job queue and worker runner |
+| [`backend/internal/auth/`](backend/internal/auth/), [`repositories/`](backend/internal/repositories/), [`accessfence/`](backend/internal/accessfence/), [`githubapp/`](backend/internal/githubapp/) | GitHub OAuth/App auth, repository selection, access checks, and fencing |
+| [`backend/migrations/`](backend/migrations/) and [`backend/queries/`](backend/queries/) | PostgreSQL schema (`goose`) and `sqlc` queries |
 
-Use Go 1.24 and Bun 1.4.5 for local development. Bun installs web dependencies with `bun install --frozen-lockfile` in `apps/web`. It also runs Vite, Playwright, ESLint, tsc and the production web server (`server.mjs`), so Node is not needed. Run `make check` for static checks and builds, `make test` for Go unit tests, and `make test-integration` with the Compose database running. Install Chromium with `bun run --bun playwright install chromium` from `apps/web` to run `make test-e2e`. The `make test-e2e-auth` target exercises sign-in and repository access against a fake GitHub server.
+Use Go 1.24 (`GOTOOLCHAIN=go1.24.6` in `Makefile`) and Bun 1.4.5 for local development. Bun installs web dependencies with `bun install --frozen-lockfile` in `apps/web` and runs Vite, Playwright, ESLint, `tsc`, and the production web server (`server.mjs`), so Node is not needed.
+
+- `make check`: runs `gofmt`, `go vet`, `sqlc`/`gqlgen` generated-code drift check, and web lint, typecheck, and build.
+- `make generate`: regenerates `sqlc` and `gqlgen` output.
+- `make test` / `make test-race`: runs Go unit tests (with or without `-race`).
+- `make test-integration`: runs Go integration tests against the Compose PostgreSQL database (`DATABASE_URL`, default `postgres://repoorbit:repoorbit@localhost:54329/repoorbit?sslmode=disable`).
+- `make test-e2e`: runs Playwright tests against Compose (`bun run --bun playwright install --with-deps chromium` in `apps/web` first).
+- `make test-e2e-auth`: exercises sign-in and repository access against `cmd/fakegithub` (`scripts/e2e-auth.sh`).
